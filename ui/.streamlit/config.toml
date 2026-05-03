@@ -1,0 +1,7 @@
+[theme]
+base="dark"
+primaryColor="#00BFA6"            # accent/primary (teal)
+backgroundColor="#0B1020"         # main background
+secondaryBackgroundColor="#0F1724"# panels / sidebar background
+textColor="#E6EEF8"               # primary text color
+font="sans serif"                 # "serif" | "sans serif" | "monospace"

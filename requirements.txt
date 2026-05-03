@@ -1,0 +1,15 @@
+typer
+youtube-search
+youtube-transcript-api
+beautifulsoup4
+fastapi
+uvicorn
+requests
+pandas
+fake-useragent
+lxml
+pymongo
+python-dotenv
+pdf2image
+pytesseract
+google-genai
