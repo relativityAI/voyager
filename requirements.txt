@@ -1,15 +1,22 @@
 typer
-youtube-search
-youtube-transcript-api
-beautifulsoup4
 fastapi
 uvicorn
 requests
 pandas
-fake-useragent
-lxml
-pymongo
 python-dotenv
-pdf2image
-pytesseract
-google-genai
+
+
+fake-useragent
+beautifulsoup4
+pypdf
+lxml
+# youtube-search
+# youtube-transcript-api
+# pdf2image
+# pytesseract
+
+# google-genai
+
+pymongo
+pydantic
+beanie

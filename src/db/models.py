@@ -16,13 +16,3 @@ class Data(Document):
         name = "data"
 
 
-async def init():
-    # Create Async PyMongo client
-    client = AsyncMongoClient(
-        "mongodb://root:example@mongo:27017/"
-    )
-
-    # Initialize beanie with the Sample document class and a database
-    await init_beanie(database=client, document_models=[Data])
-
-init()

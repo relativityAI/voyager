@@ -70,7 +70,6 @@ tags = [
 from src.utils.web import generate_fake_headers
 import random
 import logging
-from tqdm import tqdm
 import requests
 from lxml import etree
 from io import BytesIO
