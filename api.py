@@ -19,6 +19,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Voyager", version="1.0.0", lifespan=lifespan)
 
+@app.get("/")
+def ping():
+    return {"ok": 1}
+
 @app.get("/screener")
 async def screener_endpoint(symbol: str):
     scr = Screener()
