@@ -40,4 +40,4 @@ def marketsmithindia_endpoint(symbol: str):
     return {"message": "Marketsmith India logic not implemented yet", "symbol": symbol}
 
 if __name__ == "__main__":
-    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("api:app", host="0.0.0.0", port=int(os.getenv("PORT", 8001)), reload=True)
