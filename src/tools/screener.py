@@ -8,6 +8,7 @@ from datetime import datetime
 import calendar
 from collections import defaultdict
 from io import BytesIO
+from loguru import logger
 
 class Screener:
     def __init__(self):
@@ -142,3 +143,84 @@ class Screener:
         items["credit-ratings"] = ratings
 
         return self._sanitize_data(items)
+
+    def scrape_screen(self, base_url: str):
+        """
+        Scrapes multiple pages of a Screener 'screen' URL.
+        """
+        all_data = []
+        page = 1
+        
+        # Strip existing page param if any
+        if "page=" in base_url:
+            import re
+            base_url = re.sub(r'([&?])page=\d+', r'\1', base_url).rstrip('?&')
+
+        while True:
+            sep = "&" if "?" in base_url else "?"
+            url = f"{base_url}{sep}page={page}"
+            
+            logger.info(f"Scraping Screen Page {page}: {url}")
+            try:
+                response = requests.get(url, headers=self.headers, timeout=10)
+                response.raise_for_status()
+                
+                # Use BeautifulSoup to find the table first - more robust than pd.read_html alone
+                soup = BeautifulSoup(response.text, 'html.parser')
+                table_tags = soup.find_all('table')
+                
+                if not table_tags:
+                    title = soup.find('title').text if soup.find('title') else "No title"
+                    logger.error(f"No <table> tags found on page {page}. Page title: '{title}'. Length: {len(response.text)}")
+                    if "Login" in title or "Sign in" in title:
+                        logger.error("It seems Screener is redirecting to a login page. This screen might be private.")
+                    break
+
+                logger.info(f"Found {len(table_tags)} table tags on page {page}")
+                
+                data_df = None
+                for table_tag in table_tags:
+                    # Pass the HTML of the single table to pandas
+                    # Wrap in StringIO to avoid warnings/errors
+                    from io import StringIO
+                    df_list = pd.read_html(StringIO(str(table_tag)))
+                    if not df_list:
+                        continue
+                    df = df_list[0]
+                    
+                    cols = [str(c).lower() for c in df.columns]
+                    if any(x in cols for x in ['name', 's.no.', 's.no']):
+                        data_df = df
+                        break
+                
+                if data_df is None or data_df.empty:
+                    logger.warning(f"Could not identify the main data table among {len(table_tags)} total tables on page {page}.")
+                    break
+
+
+                
+                if data_df is None or data_df.empty:
+                    logger.info("No more data tables found. Stopping.")
+                    break
+                
+                # Clean up DataFrame (remove NaN)
+                data_df = data_df.replace(np.nan, None)
+                all_data.extend(data_df.to_dict(orient="records"))
+                
+                # Check for pagination 'Next' link to decide if we continue
+                soup = BeautifulSoup(response.content, 'html.parser')
+                next_btn = soup.find('a', string=lambda t: t and 'Next' in t)
+                if not next_btn:
+                    logger.info("No 'Next' button found. End of results.")
+                    break
+                
+                page += 1
+                if page > 50: # Safety break
+                    break
+                    
+            except Exception as e:
+                logger.error(f"Error scraping screen page {page}: {e}")
+                break
+        
+        return self._sanitize_data(all_data)
+

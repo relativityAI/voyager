@@ -30,7 +30,10 @@ def coro(f):
         return asyncio.run(run_all())
     return wrapper
 
-@app.command("screener")
+screener_app = typer.Typer()
+app.add_typer(screener_app, name="screener")
+
+@screener_app.command("stock")
 @coro
 async def web_screener_share(symbol: str):
     logger.info(f"Screener scrape : {symbol}")
@@ -67,6 +70,17 @@ async def web_screener_share(symbol: str):
     #     logger.error(f"Failed to process screener data for {symbol}: {str(e)}")
     #     raise typer.Exit(code=1)
 
+@screener_app.command("screen")
+def web_screener_screen(url: str):
+    import json
+    logger.info(f"Screener screen scrape: {url}")
+    scr = Screener()
+    data = scr.scrape_screen(url)
+    if data:
+        print(json.dumps(data, indent=2))
+    else:
+        logger.warning("No data found for the screen.")
+
 @app.command("trendlyne")
 def web_trendlyne_share(symbol: str, display: bool = True):
     logger.info(f"Trendlyne scrape : {symbol}")
@@ -77,10 +91,34 @@ def web_trendlyne_share(symbol: str, display: bool = True):
         print(tr.format_output(data))
     return data
 
-@app.command("stockscans")
-def stockscans_scrape(symbol: str):
-    logger.info(f"Stockscans scrape : {symbol}")
-    logger.info("Stockscans logic not implemented yet. Sending dummy log.")
+stockscans_app = typer.Typer()
+app.add_typer(stockscans_app, name="stockscans")
+
+@stockscans_app.command("scan")
+def stockscans_scan(url: str, payload_str: str = typer.Option("{}", "--payload", help="JSON string for request payload")):
+    import json
+    import ast
+    from src.tools.stockscans import StockScans
+    
+    try:
+        try:
+            payload = json.loads(payload_str)
+        except json.JSONDecodeError:
+            payload = ast.literal_eval(payload_str)
+            if not isinstance(payload, dict):
+                raise ValueError("Parsed payload is not a dictionary.")
+    except Exception as e:
+        logger.error(f"Invalid JSON payload provided: {e}")
+        raise typer.Exit(code=1)
+        
+    logger.info(f"Stockscans scan : {url}")
+    scanner = StockScans()
+    
+    result = scanner.fetch_scan(url, payload)
+    if result:
+        print(json.dumps(result, indent=2))
+    else:
+        logger.warning("No data returned or request failed.")
 
 @app.command("marketsmithindia")
 def marketsmithindia_scrape(symbol: str):

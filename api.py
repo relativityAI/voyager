@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 from src.tools.screener import Screener
 from src.tools.trendlyne import Trendlyne
+from src.tools.stockscans import StockScans
 
 load_dotenv()
 
@@ -27,7 +28,12 @@ def ping():
 async def screener_endpoint(symbol: str):
     scr = Screener()
     data = scr.scrape(symbol)
-    # Note: We could automatically store it here if needed, but currently let's just return
+    return data
+
+@app.get("/screener/screen")
+async def screener_screen_endpoint(url: str):
+    scr = Screener()
+    data = scr.scrape_screen(url)
     return data
 
 @app.get("/trendlyne")
@@ -35,9 +41,11 @@ def trendlyne_endpoint(symbol: str):
     tr = Trendlyne()
     return tr.fetch(symbol)
 
-@app.get("/stockscans")
-def stockscans_endpoint(symbol: str):
-    return {"message": "Stockscans logic not implemented yet", "symbol": symbol}
+@app.post("/stockscans")
+async def stockscans_endpoint(url: str, payload: dict = {}):
+    ss = StockScans()
+    data = ss.fetch_scan(url, payload)
+    return data
 
 @app.get("/marketsmithindia")
 def marketsmithindia_endpoint(symbol: str):
