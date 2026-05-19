@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from src.tools.screener import Screener
 from src.tools.trendlyne import Trendlyne
 from src.tools.stockscans import StockScans
+from __version__ import __version__
 
 load_dotenv()
 
@@ -18,7 +19,7 @@ async def lifespan(app: FastAPI):
     await init_db()
     yield
 
-app = FastAPI(title="Voyager", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Voyager", version=__version__, lifespan=lifespan)
 
 @app.get("/")
 def ping():
