@@ -8,6 +8,7 @@ from src.utils.mongodb import DB
 from datetime import datetime
 import pandas as pd
 from loguru import logger
+from __version__ import __version__
 
 from src.tools.screener import Screener
 from src.tools.trendlyne import Trendlyne
@@ -19,6 +20,11 @@ db = DB()
 import asyncio
 from db.connection import init_db
 from db.models import ScreenerData
+
+@app.command()
+def version():
+    """Show the version of Voyager."""
+    typer.echo(f"Voyager v{__version__}")
 
 def coro(f):
     import functools
