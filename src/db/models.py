@@ -1,18 +1,31 @@
-from beanie import init_beanie, Document
-from pymongo import AsyncMongoClient
+from beanie import Document
+from pydantic import Field
 from datetime import datetime
-from pydantic import BaseModel, Field
-from typing import Any
+from typing import Optional, Dict, Any
 
-
-
-class Data(Document):
-    source: str
-    category: str
-    created_at: datetime = Field(default_factory=datetime.now)
-    data: dict
+class ScreenerData(Document):
+    symbol: str
+    source: str = "screener"
+    extracted_at: datetime = Field(default_factory=datetime.now)
+    data: Dict[str, Any]
 
     class Settings:
-        name = "data"
+        name = "screener_data"
+        indexes = ["symbol"]
 
+class NSEFinancials(Document):
+    symbol: str
+    consolidated: str
+    date: str
+    
+    class Settings:
+        name = "nse-financials"
+        indexes = ["symbol", "date"]
 
+class NSEShareholdings(Document):
+    symbol: str
+    broadcast_date: str
+    
+    class Settings:
+        name = "nse-shareholdings"
+        indexes = ["symbol", "broadcast_date"]
