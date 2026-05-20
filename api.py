@@ -2,7 +2,7 @@ import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 import uvicorn
-from db.connection import init_db
+from src.db.connection import init_db
 from loguru import logger
 from dotenv import load_dotenv
 
