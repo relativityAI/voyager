@@ -18,8 +18,8 @@ app = typer.Typer()
 db = DB()
 
 import asyncio
-from db.connection import init_db
-from db.models import ScreenerData
+from src.db.connection import init_db
+from src.db.models import ScreenerData
 
 @app.command()
 def version():
