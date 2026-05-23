@@ -6,12 +6,13 @@ from src.db.connection import init_db
 from loguru import logger
 from dotenv import load_dotenv
 
-from src.models import ScreenerResponse, TrendlyneResponse, SOURCE_MODELS
+from src.models import ScreenerResponse, TrendlyneResponse, MarketSmithIndiaResponse, SOURCE_MODELS
 from src.core import (
     fetch_screener_data,
     fetch_screener_screen,
     fetch_trendlyne_data,
-    fetch_stockscans_data
+    fetch_stockscans_data,
+    fetch_marketsmithindia_data
 )
 from __version__ import __version__
 
@@ -55,9 +56,10 @@ async def stockscans_endpoint(url: str, payload: dict = {}):
     data = fetch_stockscans_data(url, payload)
     return data
 
-@app.get("/marketsmithindia")
+@app.get("/marketsmithindia", response_model=MarketSmithIndiaResponse)
 def marketsmithindia_endpoint(symbol: str):
-    return {"message": "Marketsmith India logic not implemented yet", "symbol": symbol}
+    data = fetch_marketsmithindia_data(symbol)
+    return data
 
 if __name__ == "__main__":
     uvicorn.run("api:app", host="0.0.0.0", port=int(os.getenv("PORT", 8001)), reload=True)
