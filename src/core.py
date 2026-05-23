@@ -2,6 +2,7 @@ from src.tools.screener import Screener
 from src.tools.trendlyne import Trendlyne
 from src.tools.stockscans import StockScans
 from src.tools.nse import NSEIndia
+from src.tools.marketsmithindia import MarketSmithIndia
 from datetime import datetime
 from loguru import logger
 from typing import List, Dict, Any, Optional
@@ -29,6 +30,12 @@ def fetch_stockscans_data(url: str, payload: Dict[str, Any]) -> Optional[Dict[st
     logger.info(f"Stockscans fetch: {url}")
     ss = StockScans()
     return ss.fetch_scan(url, payload)
+
+def fetch_marketsmithindia_data(symbol: str) -> Optional[Dict[str, Any]]:
+    """Fetch data for a symbol from MarketSmith India."""
+    logger.info(f"MarketSmith India fetch: {symbol}")
+    ms = MarketSmithIndia()
+    return ms.fetch(symbol)
 
 def fetch_nse_financials(symbol: str) -> List[Dict[str, Any]]:
     """Fetch and extract financial data (Integrated & Quarterly) from NSE."""

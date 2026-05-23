@@ -24,7 +24,8 @@ from src.core import (
     fetch_nse_shareholdings,
     fetch_nse_annual_reports,
     extract_pdf_content,
-    process_annual_report_toc
+    process_annual_report_toc,
+    fetch_marketsmithindia_data
 )
 
 app = typer.Typer()
@@ -151,7 +152,11 @@ def stockscans_scan(url: str, payload_str: str = typer.Option("{}", "--payload",
 @app.command("marketsmithindia")
 def marketsmithindia_scrape(symbol: str):
     logger.info(f"Marketsmith India scrape : {symbol}")
-    logger.info("Marketsmith India logic not implemented yet. Sending dummy log.")
+    data = fetch_marketsmithindia_data(symbol)
+    if data:
+        pprint(data)
+    else:
+        logger.error(f"Failed to fetch data for {symbol}")
 
 # ##############################################
 # # NSE Commands
