@@ -6,9 +6,13 @@ from src.db.connection import init_db
 from loguru import logger
 from dotenv import load_dotenv
 
-from src.tools.screener import Screener
-from src.tools.trendlyne import Trendlyne
-from src.tools.stockscans import StockScans
+from src.models import ScreenerResponse, TrendlyneResponse, SOURCE_MODELS
+from src.core import (
+    fetch_screener_data,
+    fetch_screener_screen,
+    fetch_trendlyne_data,
+    fetch_stockscans_data
+)
 from __version__ import __version__
 
 load_dotenv()
@@ -25,27 +29,30 @@ app = FastAPI(title="Voyager", version=__version__, lifespan=lifespan)
 def ping():
     return {"ok": 1}
 
-@app.get("/screener")
+@app.get("/schema/{source}")
+async def get_schema(source: str):
+    model = SOURCE_MODELS.get(source.lower())
+    if not model:
+        return {"error": f"No model found for source: {source}"}
+    return model.model_json_schema()
+
+@app.get("/screener", response_model=ScreenerResponse)
 async def screener_endpoint(symbol: str):
-    scr = Screener()
-    data = scr.scrape(symbol)
+    data = await fetch_screener_data(symbol)
     return data
 
 @app.get("/screener/screen")
 async def screener_screen_endpoint(url: str):
-    scr = Screener()
-    data = scr.scrape_screen(url)
+    data = fetch_screener_screen(url)
     return data
 
-@app.get("/trendlyne")
-def trendlyne_endpoint(symbol: str):
-    tr = Trendlyne()
-    return tr.fetch(symbol)
+@app.get("/trendlyne", response_model=TrendlyneResponse)
+async def trendlyne_endpoint(symbol: str):
+    return fetch_trendlyne_data(symbol)
 
 @app.post("/stockscans")
 async def stockscans_endpoint(url: str, payload: dict = {}):
-    ss = StockScans()
-    data = ss.fetch_scan(url, payload)
+    data = fetch_stockscans_data(url, payload)
     return data
 
 @app.get("/marketsmithindia")

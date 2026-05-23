@@ -18,6 +18,10 @@ async def init_db():
     logger.info(f"Connecting to MongoDB at {mongodb_url}...")
     client = AsyncIOMotorClient(mongodb_url)
     
+    # Motor 3.x attribute access returns a MotorDatabase, which Beanie tries to call.
+    # We explicitly set append_metadata to something non-callable to skip Beanie's check.
+    client.append_metadata = None # type: ignore 
+    
     await init_beanie(
         database=client[db_name],
         document_models=[

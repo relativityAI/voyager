@@ -3,6 +3,7 @@ import requests
 from collections import defaultdict
 from pprint import pprint
 from bs4 import BeautifulSoup
+# from loguru import logger
 import json
 
 class Trendlyne(object):
@@ -11,6 +12,7 @@ class Trendlyne(object):
     
     def fetch(self, symbol = "KEI"):
         url = self.url_format.format(symbol=symbol)
+        # logger.info(f"Endpoint : {url}")
         response = requests.get(url, headers=generate_fake_headers(), allow_redirects=True)
         assert response.status_code == 200
 

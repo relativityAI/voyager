@@ -9,10 +9,23 @@ from datetime import datetime
 import pandas as pd
 from loguru import logger
 from __version__ import __version__
+from pprint import pprint
 
 from src.tools.screener import Screener
 from src.tools.trendlyne import Trendlyne
 from src.tools.tijori import Tijori
+from src.core import (
+    fetch_screener_data,
+    fetch_screener_screen,
+    fetch_trendlyne_data,
+    fetch_stockscans_data,
+    fetch_nse_financials,
+    fetch_nse_announcements,
+    fetch_nse_shareholdings,
+    fetch_nse_annual_reports,
+    extract_pdf_content,
+    process_annual_report_toc
+)
 
 app = typer.Typer()
 db = DB()
@@ -20,11 +33,23 @@ db = DB()
 import asyncio
 from src.db.connection import init_db
 from src.db.models import ScreenerData
+from src.models import SOURCE_MODELS
+import json
 
 @app.command()
 def version():
     """Show the version of Voyager."""
     typer.echo(f"Voyager v{__version__}")
+
+@app.command()
+def schema(source: str):
+    """Get the response model schema for a data source (e.g. 'screener')."""
+    model = SOURCE_MODELS.get(source.lower())
+    if not model:
+        typer.echo(f"Error: No model found for source '{source}'", err=True)
+        raise typer.Exit(code=1)
+    
+    typer.echo(json.dumps(model.model_json_schema(), indent=2))
 
 def coro(f):
     import functools
@@ -41,16 +66,19 @@ app.add_typer(screener_app, name="screener")
 
 @screener_app.command("stock")
 @coro
-async def web_screener_share(symbol: str):
+async def web_screener_share(symbol: str, save: bool = typer.Option(False, "--save", help="Save data to MongoDB")):
     logger.info(f"Screener scrape : {symbol}")
     logger.info("Scraping...")
     
-    # try:
-    scr = Screener()
-    response = scr.scrape(symbol)
+    # Logic moved to core.py
+    response = await fetch_screener_data(symbol)
     
     if not response:
         logger.warning(f"No data returned for {symbol}")
+        return
+
+    if not save:
+        pprint(response)
         return
 
     logger.info(f"Storing data for {symbol} in DB via Beanie...")
@@ -80,8 +108,7 @@ async def web_screener_share(symbol: str):
 def web_screener_screen(url: str):
     import json
     logger.info(f"Screener screen scrape: {url}")
-    scr = Screener()
-    data = scr.scrape_screen(url)
+    data = fetch_screener_screen(url)
     if data:
         print(json.dumps(data, indent=2))
     else:
@@ -89,12 +116,9 @@ def web_screener_screen(url: str):
 
 @app.command("trendlyne")
 def web_trendlyne_share(symbol: str, display: bool = True):
-    logger.info(f"Trendlyne scrape : {symbol}")
-    logger.info("Scraping...")
-    tr = Trendlyne()
-    data = tr.fetch(symbol)
+    data = fetch_trendlyne_data(symbol)
     if display:
-        print(tr.format_output(data))
+        pprint(data)
     return data
 
 stockscans_app = typer.Typer()
@@ -118,9 +142,7 @@ def stockscans_scan(url: str, payload_str: str = typer.Option("{}", "--payload",
         raise typer.Exit(code=1)
         
     logger.info(f"Stockscans scan : {url}")
-    scanner = StockScans()
-    
-    result = scanner.fetch_scan(url, payload)
+    result = fetch_stockscans_data(url, payload)
     if result:
         print(json.dumps(result, indent=2))
     else:
@@ -139,48 +161,30 @@ nse_app = typer.Typer()
 app.add_typer(nse_app, name="nse")
 
 @nse_app.command("financials")
-def nse_financials_download(symbol: str):
-    nseindia = NSEIndia()
-
+def nse_financials_download(symbol: str, save: bool = typer.Option(False, "--save", help="Save to DB")):
     collection = db.get_collection("nse-financials")
     db.create_index(collection, ["xbrl"])
 
-    for x in nseindia.integrated_filing_xbrls(symbol)["data"]:
-        xbrl = x["xbrl"]
-        broadcast_date = None
-        if x["broadcast_Date"]:
-            broadcast_date = datetime.strptime(
-                x["broadcast_Date"], "%d-%b-%Y %H:%M:%S"
-            ).strftime("%Y-%m-%d %H:%M:%S")
-        data = nseindia.extract(xbrl, symbol)
-        if data:
-            data["consolidated"] = x["consolidated"]
-            data["xbrl"] = xbrl
-            data["broadcast_date"] = broadcast_date
-            db.insert(collection, data)
+    results = fetch_nse_financials(symbol)
+    if not save:
+        pprint(results)
+        return
 
-    for x in nseindia.quarterly_results_xbrls(symbol):
-        xbrl = x["xbrl"]
-        broadcast_date = None
-        if x["broadCastDate"]:
-            broadcast_date = datetime.strptime(
-                x["broadCastDate"], "%d-%b-%Y %H:%M:%S"
-            ).strftime("%Y-%m-%d %H:%M:%S")
-        data = nseindia.extract(xbrl, symbol)
-        if data:
-            data["consolidated"] = x["consolidated"]
-            data["xbrl"] = xbrl
-            data["broadcast_date"] = broadcast_date
-            db.insert(collection, data)
+    for data in results:
+        db.insert(collection, data)
 
     logger.info("Scrape and save complete")
 
 @nse_app.command("announcements")
-def nse_announcements_download(symbol: str):
-    nseindia = NSEIndia()
+def nse_announcements_download(symbol: str, save: bool = typer.Option(False, "--save", help="Save to DB")):
     collection = db.get_collection("nse-announcements")
     db.create_index(collection, ["attchmntFile"])
-    for x in nseindia.announcements_xbrls(symbol):
+    results = fetch_nse_announcements(symbol)
+    if not save:
+        pprint(results)
+        return
+        
+    for x in results:
         db.insert(collection, x)
     logger.info("Scrape and save complete")
 
@@ -204,7 +208,7 @@ def nse_announcement_extract(path_or_url: str):
     if len(data) == 0:
         logger.error("No document found in DB")
         return
-    text = read_pdf(path_or_url)
+    text = extract_pdf_content(path_or_url)
     return text
 
 @nse_app.command("list-annual-reports")
@@ -216,45 +220,43 @@ def nse_annual_reports_list(symbol: str):
     return df.to_dict("records")
 
 @nse_app.command("annual-reports")
-def nse_annual_reports_download(symbol: str):
-    nseindia = NSEIndia()
+def nse_annual_reports_download(symbol: str, save: bool = typer.Option(False, "--save", help="Save to DB")):
     collection = db.get_collection("nse-annual-reports")
     db.create_index(collection, ["fileName"])
-    for x in nseindia.annual_reports_xbrls(symbol)["data"]:
-        x["symbol"] = symbol
+    results = fetch_nse_annual_reports(symbol)
+    if not save:
+        pprint(results)
+        return
+
+    for x in results:
         db.insert(collection, x)
     logger.info("Scrape and save complete")
 
 @nse_app.command("shareholdings")
-def nse_shareholdings_download(symbol: str):
-    nseindia = NSEIndia()
+def nse_shareholdings_download(symbol: str, save: bool = typer.Option(False, "--save", help="Save to DB")):
     collection = db.get_collection("nse-shareholdings")
     db.create_index(collection, ["xbrl"])
-    for x in nseindia.shareholding_xbrls(symbol):
-        xbrl = x["xbrl"]
-        broadcast_date = None
-        if x["broadcastDate"]:
-            broadcast_date = datetime.strptime(
-                x["broadcastDate"], "%d-%b-%Y %H:%M:%S"
-            ).strftime("%Y-%m-%d %H:%M:%S")
-        data = nseindia.extract(xbrl, symbol)
-        if data:
-            data["xbrl"] = xbrl
-            data["broadcast_date"] = broadcast_date
-            db.insert(collection, data)
+    results = fetch_nse_shareholdings(symbol)
+    if not save:
+        pprint(results)
+        return
+
+    for x in results:
+        db.insert(collection, x)
     logger.info("Scrape and save complete")
 
 @nse_app.command("process-annual-report")
-def nse_process_annual_report(path_or_url: str):
-    from src.utils.annual_report_extraction import extract_first_pages, extract_table_of_contents
+def nse_process_annual_report(path_or_url: str, save: bool = typer.Option(False, "--save", help="Update DB with TOC")):
     collection = db.get_collection("nse-annual-reports")
     data = db.read(collection, {"fileName": path_or_url})
     if not data: return
     data = data[0]
     if not "toc" in data.keys():
-        num_pages, text = extract_first_pages(path_or_url)
-        toc = extract_table_of_contents(text)
-        collection.update_one({"fileName": path_or_url}, {"$set": {"toc": toc, "num_pages": num_pages}})
+        result = process_annual_report_toc(path_or_url)
+        if save:
+            collection.update_one({"fileName": path_or_url}, {"$set": {"toc": result["toc"], "num_pages": result["num_pages"]}})
+        else:
+            pprint(result)
     logger.info("Done")
 
 @nse_app.command("list-annual-report-section")
@@ -275,11 +277,11 @@ def nse_annual_report_section_download(path_or_url: str, keywords: str = "manage
     pass
 
 @nse_app.command("full-download")
-def nse_full_download(symbol: str):
-    nse_financials_download(symbol)
-    nse_announcements_download(symbol)
-    nse_shareholdings_download(symbol)
-    nse_annual_reports_download(symbol)
+def nse_full_download(symbol: str, save: bool = typer.Option(False, "--save", help="Save all data to DB")):
+    nse_financials_download(symbol, save=save)
+    nse_announcements_download(symbol, save=save)
+    nse_shareholdings_download(symbol, save=save)
+    nse_annual_reports_download(symbol, save=save)
     logger.info("Full Data scrape and download complete")
 
 if __name__ == "__main__":
