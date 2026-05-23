@@ -6,7 +6,7 @@ from src.db.connection import init_db
 from loguru import logger
 from dotenv import load_dotenv
 
-from src.models import ScreenerResponse, SOURCE_MODELS
+from src.models import ScreenerResponse, TrendlyneResponse, SOURCE_MODELS
 from src.core import (
     fetch_screener_data,
     fetch_screener_screen,
@@ -46,8 +46,8 @@ async def screener_screen_endpoint(url: str):
     data = fetch_screener_screen(url)
     return data
 
-@app.get("/trendlyne")
-def trendlyne_endpoint(symbol: str):
+@app.get("/trendlyne", response_model=TrendlyneResponse)
+async def trendlyne_endpoint(symbol: str):
     return fetch_trendlyne_data(symbol)
 
 @app.post("/stockscans")
