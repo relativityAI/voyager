@@ -122,24 +122,46 @@ class Screener:
                     items[category][self.clean(str(i))] = values
 
         soup = BeautifulSoup(response.content, "html.parser")
-        company_ratios = soup.find("div", class_="company-ratios").find("ul", id="top-ratios").find_all("li")
-        items["ratios"] = {
-            x.find("span", class_="name").get_text().strip(): 
-            float(x.find("span", class_="value").find("span", class_="number").get_text().replace(",", ""))
-            for x in company_ratios
-        }
+        
+        # Ratios
+        ratios_div = soup.find("div", class_="company-ratios")
+        if ratios_div:
+            ratios_ul = ratios_div.find("ul", id="top-ratios")
+            if ratios_ul:
+                company_ratios = ratios_ul.find_all("li")
+                items["ratios"] = {
+                    x.find("span", class_="name").get_text().strip(): 
+                    float(x.find("span", class_="value").find("span", class_="number").get_text().replace(",", ""))
+                    for x in company_ratios
+                }
 
-        items["about"] = soup.find("div", class_="company-profile").find("div", class_="about").get_text()
+        # About
+        about_div = soup.find("div", class_="company-profile")
+        if about_div:
+            about_text = about_div.find("div", class_="about")
+            if about_text:
+                items["about"] = about_text.get_text().strip()
 
+        # Annual Reports
         reports = []
-        for i in soup.find("div", class_="annual-reports").find_all("a", href=True):
-            reports.append({"year": i.get_text().split()[-1], "url": i["href"]})
+        reports_div = soup.find("div", class_="annual-reports")
+        if reports_div:
+            for i in reports_div.find_all("a", href=True):
+                reports.append({"year": i.get_text().split()[-1], "url": i["href"]})
         items["annual-report"] = reports
 
+        # Credit Ratings
         ratings = []
-        for i in soup.find("div", class_="credit-ratings").find_all("a", href=True):
-            date, org = i.find("div").get_text().split("from")
-            ratings.append({"organization": org, "date": self.process_date(date), "url": i["href"]})
+        ratings_div = soup.find("div", class_="credit-ratings")
+        if ratings_div:
+            for i in ratings_div.find_all("a", href=True):
+                try:
+                    div_text = i.find("div").get_text()
+                    if "from" in div_text:
+                        date, org = div_text.split("from")
+                        ratings.append({"organization": org.strip(), "date": self.process_date(date), "url": i["href"]})
+                except:
+                    pass
         items["credit-ratings"] = ratings
 
         return self._sanitize_data(items)
