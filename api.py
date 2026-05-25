@@ -30,6 +30,10 @@ app = FastAPI(title="Voyager", version=__version__, lifespan=lifespan)
 def ping():
     return {"ok": 1}
 
+@app.get("/sources")
+async def list_sources():
+    return {"sources": list(SOURCE_MODELS.keys())}
+
 @app.get("/schema/{source}")
 async def get_schema(source: str):
     model = SOURCE_MODELS.get(source.lower())
