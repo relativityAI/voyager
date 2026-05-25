@@ -69,6 +69,107 @@ class Screener:
     def clean(self, s):
         return re.sub(r"^[^A-Za-z0-9]+|[^A-Za-z0-9]+$", "", s).strip()
 
+    def _parse_value(self, val):
+        if val is None: return None
+        if isinstance(val, (int, float)): return val
+        s = str(val).replace(",", "").replace("%", "").strip()
+        if not s or s == "-": return None
+        try:
+            if "." in s: return float(s)
+            return int(s)
+        except:
+            return val
+
+    def _calculate_growth(self, data_dict, period='QOQ'):
+        if not data_dict or not isinstance(data_dict, dict):
+            return None
+        sorted_dates = sorted([d for d in data_dict.keys() if d and d != "TTM" and isinstance(d, str) and re.match(r'\d{4}-\d{2}-\d{2}', d)])
+        if not sorted_dates:
+            return None
+        
+        current_date = sorted_dates[-1]
+        current_val = self._parse_value(data_dict[current_date])
+        
+        if period == 'QOQ':
+            if len(sorted_dates) < 2: return None
+            prev_val = self._parse_value(data_dict[sorted_dates[-2]])
+        elif period == 'YOY':
+            try:
+                dt = datetime.strptime(current_date, "%Y-%m-%d")
+                target_year = dt.year - 1
+                target_month = dt.month
+                prev_date = next((d for d in sorted_dates if datetime.strptime(d, "%Y-%m-%d").year == target_year and datetime.strptime(d, "%Y-%m-%d").month == target_month), None)
+                if prev_date:
+                    prev_val = self._parse_value(data_dict[prev_date])
+                else:
+                    return None
+            except:
+                return None
+        else:
+            return None
+            
+        if current_val is not None and prev_val is not None and prev_val != 0:
+            try:
+                return round(((float(current_val) - float(prev_val)) / abs(float(prev_val))) * 100, 2)
+            except:
+                return None
+        return None
+
+    def _flatten_data(self, items):
+        flat_data = {}
+        
+        def get_latest(d):
+            if not d or not isinstance(d, dict): return None
+            sorted_keys = sorted([k for k in d.keys() if k and k != "TTM" and isinstance(k, str) and re.match(r'\d{4}-\d{2}-\d{2}', k)])
+            return d[sorted_keys[-1]] if sorted_keys else None
+
+        # 1. Quarterly Growth
+        q_res = items.get("quarterly-results", {})
+        flat_data["YOY Sales Growth %"] = self._calculate_growth(q_res.get("Sales", {}), 'YOY')
+        flat_data["QOQ Sales Growth %"] = self._calculate_growth(q_res.get("Sales", {}), 'QOQ')
+        flat_data["YOY Profit Growth %"] = self._calculate_growth(q_res.get("Net Profit", {}), 'YOY')
+        flat_data["QOQ Profit Growth %"] = self._calculate_growth(q_res.get("Net Profit", {}), 'QOQ')
+
+        # 2. Latest values
+        mappings = {
+            "quarterly-results": "",
+            "annual-results": "Annual ",
+            "balance-sheet": "Balance Sheet ",
+            "cash-flow": "Cash Flow ",
+            "quarterly-shareholding": "Quarterly Shareholding ",
+            "annual-shareholding": "Annual Shareholding "
+        }
+        
+        for section, prefix in mappings.items():
+            section_data = items.get(section, {})
+            if isinstance(section_data, dict):
+                for param, values in section_data.items():
+                    val = get_latest(values)
+                    flat_data[f"{prefix}{param}"] = self._parse_value(val)
+
+        # 3. Growth Metrics
+        growth_metrics = ["sales-growth", "profit-growth", "price-cagr", "return-on-equity"]
+        for section in growth_metrics:
+            section_data = items.get(section, {})
+            if isinstance(section_data, dict):
+                for category, periods in section_data.items():
+                    if isinstance(periods, dict):
+                        for period, val in periods.items():
+                            clean_period = period.replace(":", "").strip()
+                            flat_data[f"{category} {clean_period}"] = self._parse_value(val)
+
+        # 4. Ratios
+        ratios = items.get("ratios", {})
+        if isinstance(ratios, dict):
+            for k, v in ratios.items():
+                flat_data[k] = self._parse_value(v)
+
+        # About
+        if "about" in items:
+            flat_data["About"] = items["about"]
+
+        return flat_data
+
     def scrape(self, symbol: str):
         url = self.generate_url(symbol)
         response = requests.get(url, headers=self.headers, timeout=10)
@@ -164,7 +265,8 @@ class Screener:
                     pass
         items["credit-ratings"] = ratings
 
-        return self._sanitize_data(items)
+        return self._sanitize_data(self._flatten_data(items))
+
 
     def scrape_screen(self, base_url: str):
         """
