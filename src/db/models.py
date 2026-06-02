@@ -1,7 +1,9 @@
+from datetime import datetime
+from typing import Any, Dict
+
 from beanie import Document
 from pydantic import Field
-from datetime import datetime
-from typing import Optional, Dict, Any
+
 
 class ScreenerData(Document):
     symbol: str
@@ -13,19 +15,21 @@ class ScreenerData(Document):
         name = "screener_data"
         indexes = ["symbol"]
 
+
 class NSEFinancials(Document):
     symbol: str
     consolidated: str
     date: str
-    
+
     class Settings:
         name = "nse-financials"
         indexes = ["symbol", "date"]
 
+
 class NSEShareholdings(Document):
     symbol: str
     broadcast_date: str
-    
+
     class Settings:
         name = "nse-shareholdings"
         indexes = ["symbol", "broadcast_date"]

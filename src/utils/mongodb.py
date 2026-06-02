@@ -1,10 +1,10 @@
-from src.utils import console, hash_doc
-from pymongo.mongo_client import MongoClient
-from pymongo import UpdateOne
-from typing import Dict, Any, List, Optional, Union
-from pymongo import ASCENDING, InsertOne
-
 import logging
+from typing import Any, Dict, List, Optional, Union
+
+from pymongo import ASCENDING, UpdateOne
+from pymongo.mongo_client import MongoClient
+
+from src.utils import console
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -18,9 +18,6 @@ import os
 MONGODB_URL = os.getenv("MONGODB_URL")
 MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME")
 # ==========================================
-
-
-from typing import List
 
 
 class DB:
@@ -74,7 +71,7 @@ class DB:
         try:
             collection.insert_one(data)
             logging.info(f"Inserted {log_str}")
-        except Exception as e:
+        except Exception:
             logging.warning(f"Ignored duplicate: {log_str}")
 
     def create(

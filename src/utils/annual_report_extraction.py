@@ -1,29 +1,22 @@
-from rich import print
-from rich.console import Console
-from rich.progress import track
-from google import genai
-
-import pytesseract
-from pdf2image import convert_from_path, convert_from_bytes
-
-import pandas as pd
 import json
+import os
 import re
 
-import os
+import pandas as pd
+import pytesseract
+from dotenv import load_dotenv
+from google import genai
+from pdf2image import convert_from_path
+from rich.console import Console
+from rich.progress import track
 
 from src.utils.helpers import load_pdf
-
-from dotenv import load_dotenv
 
 load_dotenv()
 
 console = Console()
 
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-
-
-
 
 
 def extract_first_pages(path_or_url, num_pages=6):
@@ -156,9 +149,7 @@ Return a JSON list like:
 ]
 
 Here is the extracted ToC JSON:
-""" + json.dumps(
-        toc_json, indent=2
-    )
+""" + json.dumps(toc_json, indent=2)
 
     model = genai.GenerativeModel(model_name="gemini-2.0-flash")
     with console.status("📡 Sending ToC to Gemini to identify financial sections..."):
@@ -206,7 +197,7 @@ def extract_pages_text(pdf_path, start, end):
         if len(text) < 100:
             images = convert_from_path(pdf_path, first_page=i + 1, last_page=i + 1)
             text = pytesseract.image_to_string(images[0])
-        content += f"\n--- PAGE {i+1} ---\n{text}"
+        content += f"\n--- PAGE {i + 1} ---\n{text}"
     doc.close()
     return content
 
@@ -262,8 +253,6 @@ def to_dataframe(name, table_data):
     df.columns.name = name
     return df
 
-
-import pandas as pd
 
 if __name__ == "__main__":
     pdf_file = "annual_report.pdf"

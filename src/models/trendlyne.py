@@ -1,11 +1,14 @@
-from typing import List, Dict, Optional, Union, Any
-from pydantic import BaseModel, Field, ConfigDict
+from typing import Optional, Union
+
+from pydantic import BaseModel, ConfigDict, Field
+
 
 class TrendlyneResponse(BaseModel):
     """
     Model for the response from the Trendlyne tool.
     Matches the flattened structure returned by Trendlyne.fetch().
     """
+
     model_config = ConfigDict(populate_by_name=True, extra="allow")
 
     # SWOT Scores
@@ -13,7 +16,7 @@ class TrendlyneResponse(BaseModel):
     swot_w_score: Optional[float] = Field(None, alias="SWOT W Score")
     swot_o_score: Optional[float] = Field(None, alias="SWOT O Score")
     swot_t_score: Optional[float] = Field(None, alias="SWOT T Score")
-    
+
     # Core Technicals & Metadata
     current_price: Optional[float] = Field(None, alias="current_price")
     nse_code: Optional[Union[str, int]] = Field(None, alias="NSEcode")
@@ -22,7 +25,7 @@ class TrendlyneResponse(BaseModel):
     full_name: Optional[str] = Field(None, alias="get_full_name")
     last_modified: Optional[str] = Field(None, alias="last_modified")
     momentum_score: Optional[float] = Field(None, alias="Trendlyne Momentum Score")
-    
+
     # MA Signals
     ma_signal_bullish: Optional[int] = Field(None, alias="MA Signal bullish")
     ma_signal_bearish: Optional[int] = Field(None, alias="MA Signal bearish")
@@ -102,5 +105,3 @@ class TrendlyneResponse(BaseModel):
     day_high: Optional[float] = Field(None, alias="day_high")
     day_change: Optional[float] = Field(None, alias="day_change")
     day_change_percent: Optional[float] = Field(None, alias="day_changeP")
-
-

@@ -11,12 +11,11 @@ class BSEIndia(StockExchangeBase):
         self.share_base_url_format = ""
 
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': 'https://www.bseindia.com/'
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.bseindia.com/",
         }
-
 
     def extract(url):
         """
@@ -33,10 +32,10 @@ class BSEIndia(StockExchangeBase):
 
         # Add headers to mimic a web browser
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': 'https://www.bseindia.com/'
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.bseindia.com/",
         }
 
         try:
@@ -64,12 +63,12 @@ class BSEIndia(StockExchangeBase):
             return None
 
 
-
-
 class BSEIndia_old:
     def __init__(self, useful_desc_path=None):
         self.curr_dir = os.path.dirname(os.path.abspath(__file__))
-        self.useful_desc_path = useful_desc_path or os.path.join(self.curr_dir, "ann_desc.json")
+        self.useful_desc_path = useful_desc_path or os.path.join(
+            self.curr_dir, "ann_desc.json"
+        )
         self.useful_descriptions = self._load_useful_descriptions()
         self.session = self._init_session()
 
@@ -94,11 +93,11 @@ class BSEIndia_old:
         """Return headers for HTTP requests."""
         return {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                          "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
             "Accept": "application/json, text/javascript, */*; q=0.01",
             "Connection": "keep-alive",
             "Referer": "https://www.bseindia.com/",
-            "X-Requested-With": "XMLHttpRequest"
+            "X-Requested-With": "XMLHttpRequest",
         }
 
     def _construct_api_params(self, ticker, start_date, end_date):
@@ -111,7 +110,7 @@ class BSEIndia_old:
             "strSearch": "P",
             "strToDate": end_date.strftime("%Y%m%d"),
             "strType": "C",
-            "subcategory": "-1"
+            "subcategory": "-1",
         }
 
     def fetch_announcements(self, ticker, end_date=None, num_years=1):
@@ -140,7 +139,9 @@ class BSEIndia_old:
                 all_data.extend(data["Table"])
                 params["pageno"] += 1
             else:
-                print(f"Failed to fetch data. Status code: {response.status_code} on page {params['pageno']}.")
+                print(
+                    f"Failed to fetch data. Status code: {response.status_code} on page {params['pageno']}."
+                )
                 break
 
         return all_data
@@ -155,15 +156,23 @@ class BSEIndia_old:
         """
         filtered = {}
         for ann in announcements:
-            ratio = process.extractOne(ann.get("NEWSSUB", ""), self.useful_descriptions, scorer=fuzz.token_set_ratio)
+            ratio = process.extractOne(
+                ann.get("NEWSSUB", ""),
+                self.useful_descriptions,
+                scorer=fuzz.token_set_ratio,
+            )
             if ratio and ratio[1] > threshold:
                 headline = ann.get("HEADLINE")
                 file_name = ann.get("ATTACHMENTNAME")
                 if headline and file_name:
-                    filtered[headline] = f"https://www.bseindia.com/xml-data/corpfiling/AttachHis/{file_name}"
+                    filtered[headline] = (
+                        f"https://www.bseindia.com/xml-data/corpfiling/AttachHis/{file_name}"
+                    )
         return filtered
 
-    def get_filtered_announcements(self, ticker, end_date=None, num_years=1, threshold=75):
+    def get_filtered_announcements(
+        self, ticker, end_date=None, num_years=1, threshold=75
+    ):
         """
         Full pipeline: fetch and filter useful announcements.
 
@@ -173,5 +182,7 @@ class BSEIndia_old:
         :param threshold: Fuzzy matching threshold.
         :return: Filtered announcements dict.
         """
-        announcements = self.fetch_announcements(ticker, end_date=end_date, num_years=num_years)
+        announcements = self.fetch_announcements(
+            ticker, end_date=end_date, num_years=num_years
+        )
         return self.filter_useful_announcements(announcements, threshold=threshold)

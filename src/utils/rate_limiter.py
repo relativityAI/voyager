@@ -5,31 +5,32 @@ This module provides decorators and context managers for rate limiting
 HTTP requests to prevent overwhelming external APIs.
 """
 
-import time
 import threading
-from functools import wraps
+import time
 from collections import deque
-from typing import Optional, Callable, Any, Dict
+from functools import wraps
+from typing import Any, Callable, Dict, Optional
+
 from loguru import logger
 
 
 class RateLimiter:
     """
     A thread-safe rate limiter that restricts calls to a specified frequency.
-    
+
     Uses a sliding window approach to track calls per second.
     """
 
     def __init__(self, calls_per_second: float = 10.0):
         """
         Initialize the rate limiter.
-        
+
         Args:
             calls_per_second: Maximum number of calls allowed per second (default: 10)
         """
         if calls_per_second <= 0:
             raise ValueError("calls_per_second must be positive")
-        
+
         self.calls_per_second = calls_per_second
         self.min_interval = 1.0 / calls_per_second
         self.last_call_time = None
@@ -38,18 +39,18 @@ class RateLimiter:
     def wait(self) -> None:
         """
         Wait if necessary to maintain the rate limit.
-        
+
         This method should be called before making a request.
         """
         with self._lock:
             now = time.time()
-            
+
             if self.last_call_time is None:
                 self.last_call_time = now
                 return
-            
+
             time_since_last_call = now - self.last_call_time
-            
+
             if time_since_last_call < self.min_interval:
                 sleep_time = self.min_interval - time_since_last_call
                 logger.debug(
@@ -70,21 +71,21 @@ class RateLimiter:
 class SlidingWindowRateLimiter:
     """
     A more sophisticated rate limiter using a sliding window approach.
-    
+
     Tracks the exact time of each call and maintains a window of recent calls.
     """
 
     def __init__(self, calls_per_second: float = 10.0, window_size: int = 100):
         """
         Initialize the sliding window rate limiter.
-        
+
         Args:
             calls_per_second: Maximum number of calls allowed per second (default: 10)
             window_size: Maximum number of calls to track in the window
         """
         if calls_per_second <= 0:
             raise ValueError("calls_per_second must be positive")
-        
+
         self.calls_per_second = calls_per_second
         self.window_size = window_size
         self.call_times = deque(maxlen=window_size)
@@ -93,21 +94,21 @@ class SlidingWindowRateLimiter:
     def wait(self) -> None:
         """
         Wait if necessary to maintain the rate limit.
-        
+
         This method checks if we've exceeded the call frequency and sleeps if needed.
         """
         with self._lock:
             now = time.time()
-            
+
             # Remove calls older than 1 second
             while self.call_times and self.call_times[0] < now - 1.0:
                 self.call_times.popleft()
-            
+
             # If we've hit the limit, wait
             if len(self.call_times) >= self.calls_per_second:
                 oldest_call = self.call_times[0]
                 sleep_time = 1.0 - (now - oldest_call)
-                
+
                 if sleep_time > 0:
                     logger.debug(
                         f"Rate limit: {len(self.call_times)} calls in last second, "
@@ -115,7 +116,7 @@ class SlidingWindowRateLimiter:
                     )
                     time.sleep(sleep_time)
                     now = time.time()
-            
+
             self.call_times.append(now)
 
     def reset(self) -> None:
@@ -140,11 +141,14 @@ _rate_limiters_lock = threading.Lock()
 def get_rate_limiter(service_name: str, calls_per_second: float = 10.0) -> RateLimiter:
     """
     Get or create a rate limiter for a specific service.
-    
+
+    Once a limiter is created for a service, subsequent calls will return the same
+    instance regardless of the calls_per_second parameter (to prevent accidental changes).
+
     Args:
         service_name: Name of the service/website
         calls_per_second: Maximum calls per second (default: 10)
-        
+
     Returns:
         A RateLimiter instance for the service
     """
@@ -155,36 +159,38 @@ def get_rate_limiter(service_name: str, calls_per_second: float = 10.0) -> RateL
 
 
 def reset_rate_limiters() -> None:
-    """Reset all rate limiters."""
+    """Reset all rate limiters and clear the cache."""
     with _rate_limiters_lock:
         for limiter in _rate_limiters.values():
             limiter.reset()
+        _rate_limiters.clear()
 
 
 def rate_limit(calls_per_second: float = 10.0, service_name: Optional[str] = None):
     """
     Decorator to apply rate limiting to a function.
-    
+
     Args:
         calls_per_second: Maximum calls per second (default: 10)
         service_name: Name of the service (uses function name if not provided)
-    
+
     Example:
         @rate_limit(calls_per_second=5, service_name="screener_api")
         def fetch_data(symbol):
             return requests.get(f"https://api.screener.in/{symbol}").json()
     """
+
     def decorator(func: Callable) -> Callable:
         svc_name = service_name or func.__module__ + "." + func.__name__
-        
+
         @wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             limiter = get_rate_limiter(svc_name, calls_per_second)
             limiter.wait()
             return func(*args, **kwargs)
-        
+
         return wrapper
-    
+
     return decorator
 
 
@@ -196,17 +202,18 @@ class RateLimitedSession:
     def __init__(self, calls_per_second: float = 10.0, service_name: str = "api"):
         """
         Initialize the rate-limited session.
-        
+
         Args:
             calls_per_second: Maximum calls per second (default: 10)
             service_name: Name of the service
         """
         try:
             import requests
+
             self.session = requests.Session()
         except ImportError:
             raise ImportError("requests library is required for RateLimitedSession")
-        
+
         self.limiter = get_rate_limiter(service_name, calls_per_second)
         self.service_name = service_name
 

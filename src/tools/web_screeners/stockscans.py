@@ -1,14 +1,16 @@
 # Web Screeners
 import requests
 from loguru import logger
-from src.utils.web import generate_fake_headers
+
 from src.utils.rate_limiter import RateLimitedSession, get_rate_limiter
+from src.utils.web import generate_fake_headers
+
 
 class StockScans:
     def __init__(self, calls_per_second: float = 10.0):
         """
         Initialize StockScans with rate limiting.
-        
+
         Args:
             calls_per_second: Maximum API calls per second (default: 10)
         """

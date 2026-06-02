@@ -1,10 +1,14 @@
-from pypdf import PdfReader
-import requests
 import io
+
+import requests
+from pypdf import PdfReader
+
 
 def extract_text_from_pdf(response: requests.Response) -> str:
     if not response or response.status_code != 200:
-        raise Exception(f"Failed to download PDF: {getattr(response, 'status_code', 'No Response')}")
+        raise Exception(
+            f"Failed to download PDF: {getattr(response, 'status_code', 'No Response')}"
+        )
 
     try:
         pdf_stream = io.BytesIO(response.content)
@@ -21,4 +25,3 @@ def extract_text_from_pdf(response: requests.Response) -> str:
             continue
 
     return "\n\n".join(all_text).strip()
-

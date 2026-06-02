@@ -1,22 +1,24 @@
 # Web Screeners
-from src.utils.web import generate_fake_headers
-from src.utils.rate_limiter import RateLimitedSession, get_rate_limiter
-from bs4 import BeautifulSoup
-import requests
-import pandas as pd
-import numpy as np
-import re
-from datetime import datetime
 import calendar
+import re
 from collections import defaultdict
+from datetime import datetime
 from io import BytesIO
+
+import numpy as np
+import pandas as pd
+from bs4 import BeautifulSoup
 from loguru import logger
+
+from src.utils.rate_limiter import RateLimitedSession, get_rate_limiter
+from src.utils.web import generate_fake_headers
+
 
 class Screener:
     def __init__(self, calls_per_second: float = 10.0):
         """
         Initialize Screener with rate limiting.
-        
+
         Args:
             calls_per_second: Maximum API calls per second (default: 10)
         """
@@ -51,7 +53,9 @@ class Screener:
             if len(parts) == 2 and parts[0].isdigit():
                 day, month = parts
                 try:
-                    dt = datetime.strptime(f"{day} {month} {datetime.now().year}", "%d %b %Y")
+                    dt = datetime.strptime(
+                        f"{day} {month} {datetime.now().year}", "%d %b %Y"
+                    )
                     return dt.strftime("%Y-%m-%d")
                 except ValueError:
                     pass
@@ -80,35 +84,57 @@ class Screener:
         return re.sub(r"^[^A-Za-z0-9]+|[^A-Za-z0-9]+$", "", s).strip()
 
     def _parse_value(self, val):
-        if val is None: return None
-        if isinstance(val, (int, float)): return val
+        if val is None:
+            return None
+        if isinstance(val, (int, float)):
+            return val
         s = str(val).replace(",", "").replace("%", "").strip()
-        if not s or s == "-": return None
+        if not s or s == "-":
+            return None
         try:
-            if "." in s: return float(s)
+            if "." in s:
+                return float(s)
             return int(s)
         except:
             return val
 
-    def _calculate_growth(self, data_dict, period='QOQ'):
+    def _calculate_growth(self, data_dict, period="QOQ"):
         if not data_dict or not isinstance(data_dict, dict):
             return None
-        sorted_dates = sorted([d for d in data_dict.keys() if d and d != "TTM" and isinstance(d, str) and re.match(r'\d{4}-\d{2}-\d{2}', d)])
+        sorted_dates = sorted(
+            [
+                d
+                for d in data_dict.keys()
+                if d
+                and d != "TTM"
+                and isinstance(d, str)
+                and re.match(r"\d{4}-\d{2}-\d{2}", d)
+            ]
+        )
         if not sorted_dates:
             return None
-        
+
         current_date = sorted_dates[-1]
         current_val = self._parse_value(data_dict[current_date])
-        
-        if period == 'QOQ':
-            if len(sorted_dates) < 2: return None
+
+        if period == "QOQ":
+            if len(sorted_dates) < 2:
+                return None
             prev_val = self._parse_value(data_dict[sorted_dates[-2]])
-        elif period == 'YOY':
+        elif period == "YOY":
             try:
                 dt = datetime.strptime(current_date, "%Y-%m-%d")
                 target_year = dt.year - 1
                 target_month = dt.month
-                prev_date = next((d for d in sorted_dates if datetime.strptime(d, "%Y-%m-%d").year == target_year and datetime.strptime(d, "%Y-%m-%d").month == target_month), None)
+                prev_date = next(
+                    (
+                        d
+                        for d in sorted_dates
+                        if datetime.strptime(d, "%Y-%m-%d").year == target_year
+                        and datetime.strptime(d, "%Y-%m-%d").month == target_month
+                    ),
+                    None,
+                )
                 if prev_date:
                     prev_val = self._parse_value(data_dict[prev_date])
                 else:
@@ -117,28 +143,50 @@ class Screener:
                 return None
         else:
             return None
-            
+
         if current_val is not None and prev_val is not None and prev_val != 0:
             try:
-                return round(((float(current_val) - float(prev_val)) / abs(float(prev_val))) * 100, 2)
+                return round(
+                    ((float(current_val) - float(prev_val)) / abs(float(prev_val)))
+                    * 100,
+                    2,
+                )
             except:
                 return None
         return None
 
     def _flatten_data(self, items):
         flat_data = {}
-        
+
         def get_latest(d):
-            if not d or not isinstance(d, dict): return None
-            sorted_keys = sorted([k for k in d.keys() if k and k != "TTM" and isinstance(k, str) and re.match(r'\d{4}-\d{2}-\d{2}', k)])
+            if not d or not isinstance(d, dict):
+                return None
+            sorted_keys = sorted(
+                [
+                    k
+                    for k in d.keys()
+                    if k
+                    and k != "TTM"
+                    and isinstance(k, str)
+                    and re.match(r"\d{4}-\d{2}-\d{2}", k)
+                ]
+            )
             return d[sorted_keys[-1]] if sorted_keys else None
 
         # 1. Quarterly Growth
         q_res = items.get("quarterly-results", {})
-        flat_data["YOY Sales Growth %"] = self._calculate_growth(q_res.get("Sales", {}), 'YOY')
-        flat_data["QOQ Sales Growth %"] = self._calculate_growth(q_res.get("Sales", {}), 'QOQ')
-        flat_data["YOY Profit Growth %"] = self._calculate_growth(q_res.get("Net Profit", {}), 'YOY')
-        flat_data["QOQ Profit Growth %"] = self._calculate_growth(q_res.get("Net Profit", {}), 'QOQ')
+        flat_data["YOY Sales Growth %"] = self._calculate_growth(
+            q_res.get("Sales", {}), "YOY"
+        )
+        flat_data["QOQ Sales Growth %"] = self._calculate_growth(
+            q_res.get("Sales", {}), "QOQ"
+        )
+        flat_data["YOY Profit Growth %"] = self._calculate_growth(
+            q_res.get("Net Profit", {}), "YOY"
+        )
+        flat_data["QOQ Profit Growth %"] = self._calculate_growth(
+            q_res.get("Net Profit", {}), "QOQ"
+        )
 
         # 2. Latest values
         mappings = {
@@ -147,9 +195,9 @@ class Screener:
             "balance-sheet": "Balance Sheet ",
             "cash-flow": "Cash Flow ",
             "quarterly-shareholding": "Quarterly Shareholding ",
-            "annual-shareholding": "Annual Shareholding "
+            "annual-shareholding": "Annual Shareholding ",
         }
-        
+
         for section, prefix in mappings.items():
             section_data = items.get(section, {})
             if isinstance(section_data, dict):
@@ -158,7 +206,12 @@ class Screener:
                     flat_data[f"{prefix}{param}"] = self._parse_value(val)
 
         # 3. Growth Metrics
-        growth_metrics = ["sales-growth", "profit-growth", "price-cagr", "return-on-equity"]
+        growth_metrics = [
+            "sales-growth",
+            "profit-growth",
+            "price-cagr",
+            "return-on-equity",
+        ]
         for section in growth_metrics:
             section_data = items.get(section, {})
             if isinstance(section_data, dict):
@@ -166,7 +219,9 @@ class Screener:
                     if isinstance(periods, dict):
                         for period, val in periods.items():
                             clean_period = period.replace(":", "").strip()
-                            flat_data[f"{category} {clean_period}"] = self._parse_value(val)
+                            flat_data[f"{category} {clean_period}"] = self._parse_value(
+                                val
+                            )
 
         # 4. Ratios
         ratios = items.get("ratios", {})
@@ -185,12 +240,21 @@ class Screener:
         # Use rate-limited session for the request
         response = self.session.get(url, headers=self.headers, timeout=10)
         dfs = pd.read_html(BytesIO(response.content))
-        
+
         reference = {
-            0: "quarterly-results", 1: "annual-results", 2: "sales-growth",
-            3: "profit-growth", 4: "price-cagr", 5: "return-on-equity",
-            6: "balance-sheet", 7: "cash-flow", 8: "ratios", 9: "new-1",
-            10: "new-2", 11: "quarterly-shareholding", 12: "annual-shareholding",
+            0: "quarterly-results",
+            1: "annual-results",
+            2: "sales-growth",
+            3: "profit-growth",
+            4: "price-cagr",
+            5: "return-on-equity",
+            6: "balance-sheet",
+            7: "cash-flow",
+            8: "ratios",
+            9: "new-1",
+            10: "new-2",
+            11: "quarterly-shareholding",
+            12: "annual-shareholding",
         }
 
         items = defaultdict(dict)
@@ -201,28 +265,57 @@ class Screener:
             rows = self.clean(" ".join(list(map(str, df.index))).lower())
 
             month_counts = sum(int(x in cols) for x in ["dec", "mar", "jun", "sep"])
-            pnl_metrics_counts = sum(int(x in rows) for x in ["sales", "expenses", "profit", "eps"])
-            bs_metrics_counts = sum(int(x in rows) for x in ["assets", "equity", "borrowings", "liabilities"])
-            cf_metrics_counts = sum(int(x in rows) for x in ["activity", "cash", "cash flow", "operating"])
-            ratios_metrics_counts = sum(int(x in rows) for x in ["roce", "debtor days", "conversion cycle", "working capital days"])
-            holdings_count = sum(int(x in rows) for x in ["promoters", "fiis", "diis", "public"])
+            pnl_metrics_counts = sum(
+                int(x in rows) for x in ["sales", "expenses", "profit", "eps"]
+            )
+            bs_metrics_counts = sum(
+                int(x in rows)
+                for x in ["assets", "equity", "borrowings", "liabilities"]
+            )
+            cf_metrics_counts = sum(
+                int(x in rows) for x in ["activity", "cash", "cash flow", "operating"]
+            )
+            ratios_metrics_counts = sum(
+                int(x in rows)
+                for x in [
+                    "roce",
+                    "debtor days",
+                    "conversion cycle",
+                    "working capital days",
+                ]
+            )
+            holdings_count = sum(
+                int(x in rows) for x in ["promoters", "fiis", "diis", "public"]
+            )
 
             category = None
-            if month_counts >= 3 and pnl_metrics_counts >= 3: category = reference[0]
-            elif "compounded sales growth" in cols: category = reference[2]
-            elif "compounded profit growth" in cols: category = reference[3]
-            elif "stock price cagr" in cols: category = reference[4]
-            elif "return on equity" in cols: category = reference[5]
+            if month_counts >= 3 and pnl_metrics_counts >= 3:
+                category = reference[0]
+            elif "compounded sales growth" in cols:
+                category = reference[2]
+            elif "compounded profit growth" in cols:
+                category = reference[3]
+            elif "stock price cagr" in cols:
+                category = reference[4]
+            elif "return on equity" in cols:
+                category = reference[5]
             elif month_counts <= 2:
-                if pnl_metrics_counts >= 3: category = reference[1]
-                elif bs_metrics_counts >= 3: category = reference[6]
-                elif cf_metrics_counts >= 3: category = reference[7]
-                elif ratios_metrics_counts >= 3: category = reference[8]
-                elif holdings_count >= 3: category = reference[12]
+                if pnl_metrics_counts >= 3:
+                    category = reference[1]
+                elif bs_metrics_counts >= 3:
+                    category = reference[6]
+                elif cf_metrics_counts >= 3:
+                    category = reference[7]
+                elif ratios_metrics_counts >= 3:
+                    category = reference[8]
+                elif holdings_count >= 3:
+                    category = reference[12]
             elif holdings_count >= 3:
-                if month_counts >= 3: category = reference[11]
+                if month_counts >= 3:
+                    category = reference[11]
 
-            if not category: continue
+            if not category:
+                continue
 
             if category in [reference[2], reference[3], reference[4], reference[5]]:
                 data = df.to_dict()
@@ -230,11 +323,14 @@ class Screener:
                 items[category] = data
             else:
                 for i, row in df.iterrows():
-                    values = {self.process_date(date): val for date, val in row.to_dict().items()}
+                    values = {
+                        self.process_date(date): val
+                        for date, val in row.to_dict().items()
+                    }
                     items[category][self.clean(str(i))] = values
 
         soup = BeautifulSoup(response.content, "html.parser")
-        
+
         # Ratios
         ratios_div = soup.find("div", class_="company-ratios")
         if ratios_div:
@@ -242,8 +338,12 @@ class Screener:
             if ratios_ul:
                 company_ratios = ratios_ul.find_all("li")
                 items["ratios"] = {
-                    x.find("span", class_="name").get_text().strip(): 
-                    float(x.find("span", class_="value").find("span", class_="number").get_text().replace(",", ""))
+                    x.find("span", class_="name").get_text().strip(): float(
+                        x.find("span", class_="value")
+                        .find("span", class_="number")
+                        .get_text()
+                        .replace(",", "")
+                    )
                     for x in company_ratios
                 }
 
@@ -271,13 +371,18 @@ class Screener:
                     div_text = i.find("div").get_text()
                     if "from" in div_text:
                         date, org = div_text.split("from")
-                        ratings.append({"organization": org.strip(), "date": self.process_date(date), "url": i["href"]})
+                        ratings.append(
+                            {
+                                "organization": org.strip(),
+                                "date": self.process_date(date),
+                                "url": i["href"],
+                            }
+                        )
                 except:
                     pass
         items["credit-ratings"] = ratings
 
         return self._sanitize_data(self._flatten_data(items))
-
 
     def scrape_screen(self, base_url: str):
         """
@@ -285,78 +390,85 @@ class Screener:
         """
         all_data = []
         page = 1
-        
+
         # Strip existing page param if any
         if "page=" in base_url:
             import re
-            base_url = re.sub(r'([&?])page=\d+', r'\1', base_url).rstrip('?&')
+
+            base_url = re.sub(r"([&?])page=\d+", r"\1", base_url).rstrip("?&")
 
         while True:
             sep = "&" if "?" in base_url else "?"
             url = f"{base_url}{sep}page={page}"
-            
+
             logger.info(f"Scraping Screen Page {page}: {url}")
             try:
                 # Use rate-limited session for the request
                 response = self.session.get(url, headers=self.headers, timeout=10)
                 response.raise_for_status()
-                
+
                 # Use BeautifulSoup to find the table first - more robust than pd.read_html alone
-                soup = BeautifulSoup(response.text, 'html.parser')
-                table_tags = soup.find_all('table')
-                
+                soup = BeautifulSoup(response.text, "html.parser")
+                table_tags = soup.find_all("table")
+
                 if not table_tags:
-                    title = soup.find('title').text if soup.find('title') else "No title"
-                    logger.error(f"No <table> tags found on page {page}. Page title: '{title}'. Length: {len(response.text)}")
+                    title = (
+                        soup.find("title").text if soup.find("title") else "No title"
+                    )
+                    logger.error(
+                        f"No <table> tags found on page {page}. Page title: '{title}'. Length: {len(response.text)}"
+                    )
                     if "Login" in title or "Sign in" in title:
-                        logger.error("It seems Screener is redirecting to a login page. This screen might be private.")
+                        logger.error(
+                            "It seems Screener is redirecting to a login page. This screen might be private."
+                        )
                     break
 
                 logger.info(f"Found {len(table_tags)} table tags on page {page}")
-                
+
                 data_df = None
                 for table_tag in table_tags:
                     # Pass the HTML of the single table to pandas
                     # Wrap in StringIO to avoid warnings/errors
                     from io import StringIO
+
                     df_list = pd.read_html(StringIO(str(table_tag)))
                     if not df_list:
                         continue
                     df = df_list[0]
-                    
+
                     cols = [str(c).lower() for c in df.columns]
-                    if any(x in cols for x in ['name', 's.no.', 's.no']):
+                    if any(x in cols for x in ["name", "s.no.", "s.no"]):
                         data_df = df
                         break
-                
+
                 if data_df is None or data_df.empty:
-                    logger.warning(f"Could not identify the main data table among {len(table_tags)} total tables on page {page}.")
+                    logger.warning(
+                        f"Could not identify the main data table among {len(table_tags)} total tables on page {page}."
+                    )
                     break
 
-
-                
                 if data_df is None or data_df.empty:
                     logger.info("No more data tables found. Stopping.")
                     break
-                
+
                 # Clean up DataFrame (remove NaN)
                 data_df = data_df.replace(np.nan, None)
                 all_data.extend(data_df.to_dict(orient="records"))
-                
+
                 # Check for pagination 'Next' link to decide if we continue
-                soup = BeautifulSoup(response.content, 'html.parser')
-                next_btn = soup.find('a', string=lambda t: t and 'Next' in t)
+                soup = BeautifulSoup(response.content, "html.parser")
+                next_btn = soup.find("a", string=lambda t: t and "Next" in t)
                 if not next_btn:
                     logger.info("No 'Next' button found. End of results.")
                     break
-                
+
                 page += 1
-                if page > 50: # Safety break
+                if page > 50:  # Safety break
                     break
-                    
+
             except Exception as e:
                 logger.error(f"Error scraping screen page {page}: {e}")
                 break
-        
-        return self._sanitize_data(all_data)
 
+        return self._sanitize_data(all_data)
