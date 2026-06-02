@@ -1,5 +1,5 @@
 import typer
-from src.tools.nse import NSEIndia
+from src.tools.exchange.nse import NSEIndia
 from src.utils import (
     read_pdf,
     write_json
@@ -11,9 +11,9 @@ from loguru import logger
 from __version__ import __version__
 from pprint import pprint
 
-from src.tools.screener import Screener
-from src.tools.trendlyne import Trendlyne
-from src.tools.tijori import Tijori
+from src.tools.web_screeners.screener import Screener
+from src.tools.web_screeners.trendlyne import Trendlyne
+from src.tools.web_screeners.tijori import Tijori
 from src.core import (
     fetch_screener_data,
     fetch_screener_screen,
@@ -129,7 +129,7 @@ app.add_typer(stockscans_app, name="stockscans")
 def stockscans_scan(url: str, payload_str: str = typer.Option("{}", "--payload", help="JSON string for request payload")):
     import json
     import ast
-    from src.tools.stockscans import StockScans
+    from src.tools.web_screeners.stockscans import StockScans
     
     try:
         try:

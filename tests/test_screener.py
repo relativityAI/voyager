@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock, patch
-from src.tools.screener import Screener
+from src.tools.web_screeners.screener import Screener
 from datetime import datetime
 import pandas as pd
 

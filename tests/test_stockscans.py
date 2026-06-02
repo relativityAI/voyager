@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import patch, MagicMock
-from src.tools.stockscans import StockScans
+from src.tools.web_screeners.stockscans import StockScans
 
 @pytest.fixture
 def mock_response():

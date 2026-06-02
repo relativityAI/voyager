@@ -1,0 +1,2 @@
+# Blog
+# https://longtermpick.com/
