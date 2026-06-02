@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import patch, MagicMock
 from src.tools.web_screeners.stockscans import StockScans
+from src.utils.rate_limiter import get_rate_limiter, reset_rate_limiters
 
 @pytest.fixture
 def mock_response():
@@ -62,3 +63,46 @@ def test_fetch_scan_json_decode_error(mock_post):
     
     result = scanner.fetch_scan("http://url", {})
     assert result == {}
+
+
+class TestStockScansRateLimiter:
+    """Test rate limiter integration with StockScans."""
+
+    def test_stockscans_initialization_with_rate_limit(self):
+        """Test StockScans initializes with configurable rate limit."""
+        scanner = StockScans(calls_per_second=5)
+        assert scanner.rate_limiter is not None
+        assert scanner.rate_limiter.calls_per_second == 5
+
+    def test_stockscans_default_rate_limit(self):
+        """Test StockScans uses default rate limit of 10 calls per second."""
+        reset_rate_limiters()
+        scanner = StockScans()
+        assert scanner.rate_limiter.calls_per_second == 10
+
+    def test_stockscans_has_rate_limited_session(self):
+        """Test StockScans has a rate-limited session."""
+        scanner = StockScans(calls_per_second=10)
+        assert scanner.session is not None
+
+    def test_multiple_stockscans_instances_share_rate_limiter(self):
+        """Test multiple StockScans instances share the same rate limiter."""
+        reset_rate_limiters()
+        scanner1 = StockScans(calls_per_second=10)
+        scanner2 = StockScans(calls_per_second=10)
+        
+        # They should share the same rate limiter instance
+        assert scanner1.rate_limiter is scanner2.rate_limiter
+
+    @patch("src.tools.web_screeners.stockscans.RateLimitedSession.post")
+    def test_fetch_scan_uses_rate_limited_session(self, mock_session_post):
+        """Test that fetch_scan method uses the rate-limited session."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"table": []}
+        mock_session_post.return_value = mock_response
+        
+        scanner = StockScans()
+        scanner.fetch_scan("http://example.com", {"key": "value"})
+        
+        # Verify the rate-limited session was used
+        assert mock_session_post.called

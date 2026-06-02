@@ -1,5 +1,6 @@
 # Web Screeners
 from src.utils.web import generate_fake_headers
+from src.utils.rate_limiter import RateLimitedSession, get_rate_limiter
 from bs4 import BeautifulSoup
 import requests
 import pandas as pd
@@ -12,8 +13,16 @@ from io import BytesIO
 from loguru import logger
 
 class Screener:
-    def __init__(self):
+    def __init__(self, calls_per_second: float = 10.0):
+        """
+        Initialize Screener with rate limiting.
+        
+        Args:
+            calls_per_second: Maximum API calls per second (default: 10)
+        """
         self.headers = generate_fake_headers()
+        self.rate_limiter = get_rate_limiter("screener_in", calls_per_second)
+        self.session = RateLimitedSession(calls_per_second, "screener_in")
 
     def _sanitize_data(self, data):
         """Recursively convert non-JSON compliant floats (NaN, Inf) to None."""
@@ -173,7 +182,8 @@ class Screener:
 
     def scrape(self, symbol: str):
         url = self.generate_url(symbol)
-        response = requests.get(url, headers=self.headers, timeout=10)
+        # Use rate-limited session for the request
+        response = self.session.get(url, headers=self.headers, timeout=10)
         dfs = pd.read_html(BytesIO(response.content))
         
         reference = {
@@ -287,7 +297,8 @@ class Screener:
             
             logger.info(f"Scraping Screen Page {page}: {url}")
             try:
-                response = requests.get(url, headers=self.headers, timeout=10)
+                # Use rate-limited session for the request
+                response = self.session.get(url, headers=self.headers, timeout=10)
                 response.raise_for_status()
                 
                 # Use BeautifulSoup to find the table first - more robust than pd.read_html alone

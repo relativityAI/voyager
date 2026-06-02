@@ -1,5 +1,6 @@
 # Web Screeners
 from src.utils.web import generate_fake_headers
+from src.utils.rate_limiter import RateLimitedSession, get_rate_limiter
 import requests
 from collections import defaultdict
 from pprint import pprint
@@ -8,8 +9,16 @@ from bs4 import BeautifulSoup
 import json
 
 class Trendlyne(object):
-    def __init__(self):
+    def __init__(self, calls_per_second: float = 10.0):
+        """
+        Initialize Trendlyne with rate limiting.
+        
+        Args:
+            calls_per_second: Maximum API calls per second (default: 10)
+        """
         self.url_format = "https://trendlyne.com/equity/{symbol}/stock-page/"
+        self.rate_limiter = get_rate_limiter("trendlyne", calls_per_second)
+        self.session = RateLimitedSession(calls_per_second, "trendlyne")
     
     def _parse_value(self, val):
         if val is None: return None
@@ -63,7 +72,8 @@ class Trendlyne(object):
     def fetch(self, symbol = "KEI"):
         url = self.url_format.format(symbol=symbol)
         # logger.info(f"Endpoint : {url}")
-        response = requests.get(url, headers=generate_fake_headers(), allow_redirects=True)
+        # Use rate-limited session for the request
+        response = self.session.get(url, headers=generate_fake_headers(), allow_redirects=True)
         assert response.status_code == 200
 
         encoded_url = response.url.split('/')
@@ -119,7 +129,8 @@ class Trendlyne(object):
 
         technicals_url = f"https://trendlyne.com/equity/technical-analysis/{symbol}/{code}/{slug}/"
         technicals_api_url = f"https://trendlyne.com/equity/api/stock/adv-technical-analysis/{code}/24/?format=json"
-        r = requests.get(technicals_api_url, headers=generate_fake_headers()).json()
+        # Use rate-limited session for the request
+        r = self.session.get(technicals_api_url, headers=generate_fake_headers()).json()
         data['technicals'] = r
         
 

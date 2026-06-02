@@ -3,14 +3,22 @@ import requests
 from loguru import logger
 from datetime import datetime
 from src.utils.web import generate_fake_headers
+from src.utils.rate_limiter import RateLimitedSession, get_rate_limiter
 
 class MarketSmithIndia:
     """Scraper for MarketSmith India using their dynamic JSON APIs."""
     
-    def __init__(self):
+    def __init__(self, calls_per_second: float = 10.0):
+        """
+        Initialize MarketSmith India scraper with rate limiting.
+        
+        Args:
+            calls_per_second: Maximum API calls per second (default: 10)
+        """
         self.base_url = "https://marketsmithindia.com"
-        self.session = requests.Session()
-        self.session.headers.update(generate_fake_headers())
+        self.session = RateLimitedSession(calls_per_second, "marketsmithindia")
+        self.rate_limiter = get_rate_limiter("marketsmithindia", calls_per_second)
+        self.session.session.headers.update(generate_fake_headers())
 
     def fetch(self, symbol: str):
         """
@@ -21,7 +29,7 @@ class MarketSmithIndia:
         # Step 1: Initialize session and get MSSESSIONID cookie
         eval_url = f"{self.base_url}/mstool/eval/{symbol}/evaluation.jsp#/"
         response = self.session.get(eval_url)
-        mssessionid = self.session.cookies.get("MSSESSIONID")
+        mssessionid = self.session.session.cookies.get("MSSESSIONID")
         
         if not mssessionid:
             logger.error("Failed to obtain MSSESSIONID from MarketSmith India.")

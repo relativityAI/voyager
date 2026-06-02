@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 from src.tools.web_screeners.screener import Screener
+from src.utils.rate_limiter import get_rate_limiter, reset_rate_limiters
 from datetime import datetime
 import pandas as pd
 
@@ -56,3 +57,46 @@ def test_scrape_mock(mock_bs, mock_read_html, mock_get, screener):
     assert isinstance(result, dict)
     assert "ratios" in result
     assert "about" in result
+
+
+class TestScreenerRateLimiter:
+    """Test rate limiter integration with Screener."""
+
+    def test_screener_initialization_with_rate_limit(self):
+        """Test Screener initializes with configurable rate limit."""
+        screener = Screener(calls_per_second=5)
+        assert screener.rate_limiter is not None
+        assert screener.rate_limiter.calls_per_second == 5
+
+    def test_screener_default_rate_limit(self):
+        """Test Screener uses default rate limit of 10 calls per second."""
+        reset_rate_limiters()
+        screener = Screener()
+        assert screener.rate_limiter.calls_per_second == 10
+
+    def test_screener_has_rate_limited_session(self):
+        """Test Screener has a rate-limited session."""
+        screener = Screener(calls_per_second=10)
+        assert screener.session is not None
+
+    def test_multiple_screener_instances_share_rate_limiter(self):
+        """Test multiple Screener instances share the same rate limiter."""
+        reset_rate_limiters()
+        screener1 = Screener(calls_per_second=10)
+        screener2 = Screener(calls_per_second=10)
+        
+        # They should share the same rate limiter instance
+        assert screener1.rate_limiter is screener2.rate_limiter
+
+    @patch("src.tools.web_screeners.screener.RateLimitedSession.get")
+    def test_scrape_uses_rate_limited_session(self, mock_session_get):
+        """Test that scrape method uses the rate-limited session."""
+        mock_response = MagicMock()
+        mock_response.text = "<html></html>"
+        mock_session_get.return_value = mock_response
+        
+        screener = Screener()
+        screener.scrape("RELIANCE")
+        
+        # Verify the rate-limited session was used
+        assert mock_session_get.called
