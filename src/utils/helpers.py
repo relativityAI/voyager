@@ -1,25 +1,17 @@
 # from pypdf import PdfReader
-import pandas as pd
-import numpy as np
-import requests
+import hashlib
 import json
 import os
-import io
-
-from datetime import datetime, timedelta, date
+from datetime import date, datetime, timedelta
+from io import BytesIO
+from typing import Any, Dict
 from urllib.parse import urlparse
-from typing import Dict, Any
-import hashlib
 
+import requests
+from pypdf import PdfReader
 from rich.console import Console
-from rich.progress import track
 
 from src.utils.web import generate_fake_headers
-from urllib.parse import urlparse
-from pypdf import PdfReader
-from io import BytesIO
-import requests
-
 
 console = Console()
 
@@ -57,6 +49,7 @@ def load_pdf(file_path: str) -> PdfReader:
         pdf_path = file_path
         reader = PdfReader(pdf_path)
         return reader
+
 
 def read_pdf(path_or_url: str, start: int = None, end: int = None):
 

@@ -22,8 +22,9 @@ line-length = 88
 # I: Isort (clean, sorted import statements)
 select = ["E", "W", "F", "I"]
 
-# Ignore rules that conflict with modern code formatting tools
-ignore = ["E203"]
+# E203: Ignore rules that conflict with modern code formatting tools
+# E501: Ignores long code lines
+ignore = ["E203", "E501"]
 
 [tool.ruff.lint.mccabe]
 # Flag complex code logic (cyclomatic complexity)
