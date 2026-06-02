@@ -3,6 +3,7 @@
 # https://forum.valuepickr.com/search?q=genus+power
 
 from src.utils.web import generate_fake_headers
+from src.utils.rate_limiter import get_rate_limiter
 from requests.utils import requote_uri
 import requests
 import sys
@@ -12,9 +13,15 @@ from bs4 import BeautifulSoup
 
 from pprint import pprint
 
+# Rate limiter for ValuePickr API
+_valuepickr_rate_limiter = get_rate_limiter("valuepickr", calls_per_second=10)
+
 
 def search_forum(query: str):
     url = requote_uri(f"https://forum.valuepickr.com/search.json?q={query}")
+    
+    # Apply rate limiting before making the request
+    _valuepickr_rate_limiter.wait()
     response = requests.get(url, headers=generate_fake_headers(), timeout=10).json()
 
     # pprint(response['grouped_search_result'])
@@ -66,6 +73,8 @@ def scrape_thread():
 
     url = "https://forum.valuepickr.com/t/action-construction-equipment-ltd/397.json"
 
+    # Apply rate limiting before making the request
+    _valuepickr_rate_limiter.wait()
     data = requests.get(url, headers=generate_fake_headers(), timeout=10).json()
 
     soup = BeautifulSoup(data["post_stream"]["posts"][0]["cooked"], 'html.parser')

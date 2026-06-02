@@ -2,11 +2,15 @@
 # https://archives.ndtv.com/
 
 from src.utils.web import generate_fake_headers
+from src.utils.rate_limiter import get_rate_limiter
 from bs4 import BeautifulSoup
 import requests
 from pprint import pprint
 import sys
 from datetime import datetime
+
+# Rate limiter for NDTV API
+_ndtv_rate_limiter = get_rate_limiter("ndtv", calls_per_second=10)
 
 def generate_archive_url( year = 2025, month = 11 ):
     return f"https://archives.ndtv.com/articles/{year}-{month}.html"
@@ -26,9 +30,11 @@ def scrape_news(
 
     items = []
 
-
     url = generate_archive_url()
     headers = generate_fake_headers()
+    
+    # Apply rate limiting before making the request
+    _ndtv_rate_limiter.wait()
     response = requests.get(url, headers = headers, timeout=10)
 
     status_code = response.status_code

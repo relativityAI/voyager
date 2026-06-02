@@ -69,6 +69,7 @@ tags = [
             """
 
 from src.utils.web import generate_fake_headers
+from src.utils.rate_limiter import RateLimitedSession, get_rate_limiter
 import random
 import logging
 import requests
@@ -113,8 +114,13 @@ shareholding_context_ref_types=[
     ]
 
 class NSEIndia:
-    def __init__(self):
-
+    def __init__(self, calls_per_second: float = 10.0):
+        """
+        Initialize NSE India scraper with rate limiting.
+        
+        Args:
+            calls_per_second: Maximum API calls per second (default: 10)
+        """
         self.exchange = "nse"
         self.base = "https://www.nseindia.com"
         self.share_url_format = "https://www.nseindia.com/get-quotes/equity?symbol={symbol}"
@@ -123,7 +129,12 @@ class NSEIndia:
         self.annual_context_ref_types = annual_context_ref_types
         self.shareholding_context_ref_types = shareholding_context_ref_types
 
-        self.session = requests.Session()
+        # Use rate-limited session for API calls
+        self.session = RateLimitedSession(
+            calls_per_second=calls_per_second,
+            service_name="nse_india"
+        )
+        self.rate_limiter = get_rate_limiter("nse_india", calls_per_second)
         self.headers = generate_fake_headers()
         self.logger = logging.getLogger(__name__)
 

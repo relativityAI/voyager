@@ -2,10 +2,19 @@
 import requests
 from loguru import logger
 from src.utils.web import generate_fake_headers
+from src.utils.rate_limiter import RateLimitedSession, get_rate_limiter
 
 class StockScans:
-    def __init__(self):
+    def __init__(self, calls_per_second: float = 10.0):
+        """
+        Initialize StockScans with rate limiting.
+        
+        Args:
+            calls_per_second: Maximum API calls per second (default: 10)
+        """
         self.headers = generate_fake_headers()
+        self.rate_limiter = get_rate_limiter("stockscans", calls_per_second)
+        self.session = RateLimitedSession(calls_per_second, "stockscans")
 
     def fetch_scan(self, url: str, payload: dict) -> dict:
         """
@@ -13,7 +22,8 @@ class StockScans:
         """
         logger.info(f"Fetching scan data from {url}")
         try:
-            response = requests.post(url, headers=self.headers, json=payload)
+            # Use rate-limited session for the request
+            response = self.session.post(url, headers=self.headers, json=payload)
             response.raise_for_status()
             data = response.json()
             logger.success(f"Successfully fetched data from {url}")
