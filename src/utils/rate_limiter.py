@@ -141,6 +141,9 @@ def get_rate_limiter(service_name: str, calls_per_second: float = 10.0) -> RateL
     """
     Get or create a rate limiter for a specific service.
     
+    Once a limiter is created for a service, subsequent calls will return the same
+    instance regardless of the calls_per_second parameter (to prevent accidental changes).
+    
     Args:
         service_name: Name of the service/website
         calls_per_second: Maximum calls per second (default: 10)
@@ -155,10 +158,11 @@ def get_rate_limiter(service_name: str, calls_per_second: float = 10.0) -> RateL
 
 
 def reset_rate_limiters() -> None:
-    """Reset all rate limiters."""
+    """Reset all rate limiters and clear the cache."""
     with _rate_limiters_lock:
         for limiter in _rate_limiters.values():
             limiter.reset()
+        _rate_limiters.clear()
 
 
 def rate_limit(calls_per_second: float = 10.0, service_name: Optional[str] = None):

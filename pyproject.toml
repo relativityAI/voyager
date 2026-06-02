@@ -1,0 +1,30 @@
+[tool.ruff]
+# Target Python version matching your environment
+target-version = "py312"
+
+# Exclude common automated directories
+exclude = [
+    ".git",
+    ".pytest_cache",
+    ".venv",
+    "venv",
+    "build",
+    "dist",
+]
+
+# Match modern line-length standards
+line-length = 88
+
+[tool.ruff.lint]
+# Select rules to run
+# E/W: Pycodestyle errors/warnings
+# F: Pyflakes (syntax and bugs)
+# I: Isort (clean, sorted import statements)
+select = ["E", "W", "F", "I"]
+
+# Ignore rules that conflict with modern code formatting tools
+ignore = ["E203"]
+
+[tool.ruff.lint.mccabe]
+# Flag complex code logic (cyclomatic complexity)
+max-complexity = 10

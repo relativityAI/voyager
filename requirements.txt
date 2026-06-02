@@ -22,5 +22,3 @@ pydantic
 beanie
 motor==3.3.2
 loguru
-pytest
-pytest-mock
