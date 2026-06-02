@@ -1,8 +1,8 @@
-from src.tools.screener import Screener
-from src.tools.trendlyne import Trendlyne
-from src.tools.stockscans import StockScans
-from src.tools.nse import NSEIndia
-from src.tools.marketsmithindia import MarketSmithIndia
+from src.tools.web_screeners.screener import Screener
+from src.tools.web_screeners.trendlyne import Trendlyne
+from src.tools.web_screeners.stockscans import StockScans
+from src.tools.exchange.nse import NSEIndia
+from src.tools.news.marketsmithindia import MarketSmithIndia
 from datetime import datetime
 from loguru import logger
 from typing import List, Dict, Any, Optional
