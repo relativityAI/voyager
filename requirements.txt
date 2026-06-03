@@ -4,6 +4,7 @@ uvicorn
 requests
 pandas
 python-dotenv
+html5lib
 
 
 fake-useragent
