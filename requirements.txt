@@ -1,3 +1,4 @@
+# to do, fix the versioning of these dependencies
 typer
 fastapi
 uvicorn
@@ -11,11 +12,6 @@ fake-useragent
 beautifulsoup4
 pypdf
 lxml
-# youtube-search
-# youtube-transcript-api
-# pdf2image
-# pytesseract
-
 # google-genai
 
 pymongo<4.9.0
@@ -23,3 +19,11 @@ pydantic
 beanie
 motor==3.3.2
 loguru
+
+# ── parse2text file parsers ──────────────────────────────────────────────────
+pdfplumber              # PDF text + image extraction
+python-pptx             # PPTX/PPSX text extraction
+Pillow                  # Image handling (PDF page images, PPT slide thumbnails)
+openai-whisper          # Local audio transcription (requires system ffmpeg)
+yt-dlp                  # YouTube audio download (Whisper fallback)
+youtube-transcript-api  # YouTube caption/transcript fetching (primary strategy)
