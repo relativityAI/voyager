@@ -217,6 +217,11 @@ class RateLimitedSession:
         self.limiter = get_rate_limiter(service_name, calls_per_second)
         self.service_name = service_name
 
+    @property
+    def cookies(self):
+        """Property proxy to internal session cookies"""
+        return self.session.cookies
+
     def _rate_limited_request(self, method: str, *args: Any, **kwargs: Any) -> Any:
         """Make a rate-limited request."""
         self.limiter.wait()
