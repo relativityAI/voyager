@@ -156,14 +156,8 @@ shareholding_context_ref_types = [
 ]
 
 
-class NSEIndia:
+class NSEApiClient:
     def __init__(self, calls_per_second: float = 10.0):
-        """
-        Initialize NSE India scraper with rate limiting.
-
-        Args:
-            calls_per_second: Maximum API calls per second (default: 10)
-        """
         self.exchange = "nse"
         self.base = "https://www.nseindia.com"
         self.share_url_format = (
@@ -200,117 +194,135 @@ class NSEIndia:
                 response = self.session.get(url, headers=self.headers, timeout=timeout)
                 if response.status_code == 200:
                     return response
-            except:
-                pass
+                else:
+                    self.logger.warning(f"Got {response.status_code} from {url}, resetting cookies")
+                    self.session.cookies.clear()
+                    self._set_cookies(symbol)
+            except Exception as e:
+                self.logger.error(f"Request failed: {e}")
+                self.session.cookies.clear()
                 self._set_cookies(symbol)
         return None
 
-    def extract(self, url, symbol):
-        if not url or url in (
-            "-",
-            "null",
-            "https://nsearchives.nseindia.com/corporate/xbrl/-",
-        ):
+    def fetch_xbrl_content(self, url, symbol):
+        if not url or url in ("-", "null", "https://nsearchives.nseindia.com/corporate/xbrl/-"):
             return None
-        extension = url.split(".")[-1]
+        response = self._call(url, symbol=symbol)
+        if response and response.status_code == 200:
+            return response.content
+        return None
 
+    # API wrappers
+    def _safe_json(self, res):
+        if not res:
+            return {}
         try:
-            response = self._call(url, symbol=symbol)
-            content = None
-            if response and response.status_code == 200:
-                content = BytesIO(response.content)
+            return res.json()
+        except Exception as e:
+            self.logger.error(f"JSON decode error: {e}")
+            return {}
 
-            if not content:
-                self.logger.error(f"Could not fetch xbrl : {url}")
-                return
+    def announcements_xbrls(self, symbol):
+        res = self._call(self.endpoints["announcements-equity"].format(symbol=symbol.upper()))
+        return self._safe_json(res)
 
-            if extension == "xml":
-                tree = etree.parse(content)
-                root = tree.getroot()
+    def annual_results_xbrls(self, symbol):
+        res = self._call(self.endpoints["integrated-filing"].format(symbol=symbol.upper()))
+        return self._safe_json(res)
 
-                nsmap = root.nsmap.copy()
-                if None in nsmap:
-                    nsmap["default"] = nsmap.pop(None)
+    def quarterly_results_xbrls(self, symbol):
+        res = self._call(self.endpoints["quarterly-results"].format(symbol=symbol.upper()))
+        return self._safe_json(res)
 
-                rows = []
-                date = None
-                for elem in root.iter():
-                    tag = etree.QName(elem.tag).localname
-                    ns = etree.QName(elem.tag).namespace
-                    if tag in ("context", "unit", "xbrl"):
-                        continue
-                    text = elem.text.strip() if elem.text else None
+    def integrated_filing_xbrls(self, symbol):
+        res = self._call(self.endpoints["integrated-filing"].format(symbol=symbol.upper()))
+        return self._safe_json(res)
 
-                    if tag == "endDate":
-                        date = text
+    def shareholding_xbrls(self, symbol):
+        res = self._call(self.endpoints["shareholding-pattern"].format(symbol=symbol.upper()))
+        return self._safe_json(res)
 
-                    if ns and text:
-                        rows.append(
-                            {
-                                # 'namespace': ns,
-                                "tag": tag,
-                                "value": text,
-                                "contextRef": elem.get("contextRef"),
-                                # 'unitRef': elem.get('unitRef'),
-                                # 'decimals': elem.get('decimals')
-                            }
-                        )
+    def annual_reports_xbrls(self, symbol):
+        res = self._call(self.endpoints["annual-reports"].format(symbol=symbol.upper()))
+        return self._safe_json(res)
 
-                # for row in rows:
-                #     row['date'] = date
-                #     row['symbol'] = symbol
 
-                data = {"symbol": symbol, "date": date, "financials": rows}
+class NSEDataParser:
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
 
-                return data
+    def extract_xml(self, content: bytes, symbol: str):
+        try:
+            tree = etree.parse(BytesIO(content))
+            root = tree.getroot()
 
-            elif extension == "html":
-                logging.error("HTML data extraction yet to be implemented")
-            elif extension == "pdf":
-                logging.error("PDF data extraction yet to be implemented")
+            nsmap = root.nsmap.copy()
+            if None in nsmap:
+                nsmap["default"] = nsmap.pop(None)
 
-            return item
+            rows = []
+            date = None
+            for elem in root.iter():
+                tag = etree.QName(elem.tag).localname
+                ns = etree.QName(elem.tag).namespace
+                if tag in ("context", "unit", "xbrl"):
+                    continue
+                text = elem.text.strip() if elem.text else None
+
+                if tag == "endDate":
+                    date = text
+
+                if ns and text:
+                    rows.append(
+                        {
+                            "tag": tag,
+                            "value": text,
+                            "contextRef": elem.get("contextRef"),
+                        }
+                    )
+
+            data = {"symbol": symbol, "date": date, "financials": rows}
+            return data
         except Exception as e:
             self.logger.error(f"Extraction error: {e}")
             return None
 
-    # High-level methods moved from CLI
-    async def download_financials(self, symbol: str):
-        self.logger.info(f"Downloading financials for {symbol}")
-        integrated = self.integrated_filing_xbrls(symbol)
-        if integrated and "data" in integrated:
-            for x in integrated["data"]:
-                await self._process_xbrl(x, symbol, "integrated")
 
-        quarterly = self.quarterly_results_xbrls(symbol)
-        if quarterly:
-            for x in quarterly:
-                await self._process_xbrl(x, symbol, "quarterly")
+class NSEIndia:
+    def __init__(self, calls_per_second: float = 10.0):
+        self.api = NSEApiClient(calls_per_second)
+        self.parser = NSEDataParser()
+        self.logger = logging.getLogger(__name__)
 
-    async def _process_xbrl(self, x, symbol, category):
-        xbrl_url = x.get("xbrl") or x.get("broadCastDate")  # fallback
-        if not xbrl_url or xbrl_url in ("-", "null"):
-            return
+    def process_xbrl(self, x, symbol, category):
+        try:
+            xbrl_url = x.get("xbrl") or x.get("broadCastDate")  # fallback
+            if not xbrl_url or xbrl_url in ("-", "null"):
+                return None
 
-        date_str = x.get("broadcast_Date") or x.get("broadCastDate")
-        data = self.extract(xbrl_url, symbol)
-        if data:
-            doc = await NSEFinancials.find_one(
-                NSEFinancials.symbol == symbol.upper(),
-                NSEFinancials.date == data["date"],
-                NSEFinancials.consolidated == x.get("consolidated", "Consolidated"),
-            )
-            if doc:
-                doc.financials = data["financials"]
-                await doc.save()
-            else:
-                await NSEFinancials(
-                    symbol=symbol.upper(),
-                    date=data["date"],
-                    consolidated=x.get("consolidated", "Consolidated"),
-                    financials=data["financials"],
-                    broadcast_date=date_str,
-                ).insert()
+            date_str = x.get("broadcast_Date") or x.get("broadCastDate")
+            
+            extension = xbrl_url.split(".")[-1]
+            if extension == "xml":
+                content = self.api.fetch_xbrl_content(xbrl_url, symbol)
+                if content:
+                    data = self.parser.extract_xml(content, symbol)
+                    if data and data.get("date"):
+                        return {
+                            "symbol": symbol.upper(),
+                            "date": data["date"],
+                            "consolidated": x.get("consolidated", "Consolidated"),
+                            "financials": data["financials"],
+                            "broadcast_date": date_str,
+                        }
+            elif extension == "html":
+                self.logger.error("HTML data extraction yet to be implemented")
+            elif extension == "pdf":
+                self.logger.error("PDF data extraction yet to be implemented")
+
+        except Exception as e:
+            self.logger.error(f"Error processing XBRL: {e}")
+        return None
 
     async def download_announcements(self, symbol: str):
         # Implementation...
@@ -319,34 +331,3 @@ class NSEIndia:
     async def download_shareholdings(self, symbol: str):
         # Implementation...
         pass
-
-    # API wrappers
-    def announcements_xbrls(self, symbol):
-        return self._call(
-            self.endpoints["announcements-equity"].format(symbol=symbol.upper())
-        ).json()
-
-    def annual_results_xbrls(self, symbol):
-        return self._call(
-            self.endpoints["integrated-filing"].format(symbol=symbol.upper())
-        ).json()
-
-    def quarterly_results_xbrls(self, symbol):
-        return self._call(
-            self.endpoints["quarterly-results"].format(symbol=symbol.upper())
-        ).json()
-
-    def integrated_filing_xbrls(self, symbol):
-        return self._call(
-            self.endpoints["integrated-filing"].format(symbol=symbol.upper())
-        ).json()
-
-    def shareholding_xbrls(self, symbol):
-        return self._call(
-            self.endpoints["shareholding-pattern"].format(symbol=symbol.upper())
-        ).json()
-
-    def annual_reports_xbrls(self, symbol):
-        return self._call(
-            self.endpoints["annual-reports"].format(symbol=symbol.upper())
-        ).json()
