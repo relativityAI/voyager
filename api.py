@@ -264,6 +264,15 @@ async def get_stock_data(symbol: str, source: str = "NSE"):
     raise HTTPException(status_code=501, detail=f"Source '{source}' is not yet supported")
 
 
+@app.get("/available-metrics")
+async def available_metrics(source: str = "NSE"):
+    from src.ratios.nse import get_metrics_catalog
+    return {
+        "source": source.upper(),
+        "categories": get_metrics_catalog(),
+    }
+
+
 @app.get("/financial-ratios")
 async def financial_ratios(symbol: str, source: str = "NSE", consolidated: str = "Consolidated"):
     symbol = symbol.upper()
