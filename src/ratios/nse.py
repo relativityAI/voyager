@@ -358,6 +358,142 @@ def flatten_financials(financials_list: List[Dict[str, Any]]) -> Dict[str, Any]:
     return result
 
 
+FinancialField = Dict[str, str]
+
+FINANCIAL_FIELDS: List[FinancialField] = [
+    {"id": "Symbol", "name": "Symbol", "type": "text", "category": "metadata"},
+    {"id": "toDate", "name": "Period End Date", "type": "date", "category": "metadata"},
+    {"id": "RevenueFromOperations", "name": "Revenue from Operations", "type": "currency", "category": "income_statement"},
+    {"id": "OtherIncome", "name": "Other Income", "type": "currency", "category": "income_statement"},
+    {"id": "Income", "name": "Total Income", "type": "currency", "category": "income_statement"},
+    {"id": "FinanceCosts", "name": "Finance Costs", "type": "currency", "category": "income_statement"},
+    {"id": "OtherExpenses", "name": "Other Expenses", "type": "currency", "category": "income_statement"},
+    {"id": "Expenses", "name": "Total Expenses", "type": "currency", "category": "income_statement"},
+    {"id": "ProfitBeforeExceptionalItemsAndTax", "name": "Profit Before Exceptional Items & Tax", "type": "currency", "category": "income_statement"},
+    {"id": "ExceptionalItemsBeforeTax", "name": "Exceptional Items Before Tax", "type": "currency", "category": "income_statement"},
+    {"id": "ProfitBeforeTax", "name": "Profit Before Tax (PBT)", "type": "currency", "category": "income_statement"},
+    {"id": "CurrentTax", "name": "Current Tax", "type": "currency", "category": "income_statement"},
+    {"id": "DeferredTax", "name": "Deferred Tax", "type": "currency", "category": "income_statement"},
+    {"id": "TaxExpense", "name": "Total Tax Expense", "type": "currency", "category": "income_statement"},
+    {"id": "ProfitLossForPeriodFromContinuingOperations", "name": "Profit/Loss from Continuing Operations", "type": "currency", "category": "income_statement"},
+    {"id": "ProfitLossFromDiscontinuedOperationsBeforeTax", "name": "Profit/Loss from Discontinued Ops (Before Tax)", "type": "currency", "category": "income_statement"},
+    {"id": "TaxExpenseOfDiscontinuedOperations", "name": "Tax on Discontinued Operations", "type": "currency", "category": "income_statement"},
+    {"id": "ProfitLossFromDiscontinuedOperationsAfterTax", "name": "Profit/Loss from Discontinued Ops (After Tax)", "type": "currency", "category": "income_statement"},
+    {"id": "ProfitLossForPeriod", "name": "Net Profit / Loss for Period", "type": "currency", "category": "income_statement"},
+    {"id": "ProfitOrLossAttributableToOwnersOfParent", "name": "Profit/Loss Attributable to Owners", "type": "currency", "category": "income_statement"},
+    {"id": "ComprehensiveIncomeForThePeriod", "name": "Comprehensive Income for Period", "type": "currency", "category": "income_statement"},
+    {"id": "PaidUpValueOfEquityShareCapital", "name": "Paid-up Equity Share Capital", "type": "currency", "category": "balance_sheet"},
+    {"id": "FaceValueOfEquityShareCapital", "name": "Face Value per Share", "type": "currency", "category": "balance_sheet"},
+    {"id": "EquityShareCapital", "name": "Equity Share Capital", "type": "currency", "category": "balance_sheet"},
+    {"id": "OtherEquity", "name": "Other Equity (Reserves & Surplus)", "type": "currency", "category": "balance_sheet"},
+    {"id": "DebtEquityRatio", "name": "Debt-to-Equity Ratio", "type": "ratio", "category": "balance_sheet"},
+    {"id": "NoncurrentLiabilities", "name": "Non-current Liabilities", "type": "currency", "category": "balance_sheet"},
+    {"id": "BorrowingsCurrent", "name": "Current Borrowings", "type": "currency", "category": "balance_sheet"},
+    {"id": "NoncurrentInvestments", "name": "Non-current Investments", "type": "currency", "category": "balance_sheet"},
+    {"id": "TradeReceivablesNoncurrent", "name": "Non-current Trade Receivables", "type": "currency", "category": "balance_sheet"},
+    {"id": "LoansNoncurrent", "name": "Non-current Loans", "type": "currency", "category": "balance_sheet"},
+    {"id": "OtherNoncurrentFinancialAssets", "name": "Other Non-current Financial Assets", "type": "currency", "category": "balance_sheet"},
+    {"id": "NoncurrentFinancialAssets", "name": "Non-current Financial Assets", "type": "currency", "category": "balance_sheet"},
+    {"id": "DeferredTaxAssetsNet", "name": "Deferred Tax Assets (Net)", "type": "currency", "category": "balance_sheet"},
+    {"id": "OtherNoncurrentAssets", "name": "Other Non-current Assets", "type": "currency", "category": "balance_sheet"},
+    {"id": "NoncurrentAssets", "name": "Total Non-current Assets", "type": "currency", "category": "balance_sheet"},
+    {"id": "CapitalWorkInProgress", "name": "Capital Work in Progress (CWIP)", "type": "currency", "category": "balance_sheet"},
+    {"id": "InvestmentProperty", "name": "Investment Property", "type": "currency", "category": "balance_sheet"},
+    {"id": "Goodwill", "name": "Goodwill", "type": "currency", "category": "balance_sheet"},
+    {"id": "OtherIntangibleAssets", "name": "Other Intangible Assets", "type": "currency", "category": "balance_sheet"},
+    {"id": "Assets", "name": "Total Assets", "type": "currency", "category": "balance_sheet"},
+    {"id": "CashAndCashEquivalents", "name": "Cash & Cash Equivalents", "type": "currency", "category": "balance_sheet"},
+    {"id": "BankBalanceOtherThanCashAndCashEquivalents", "name": "Bank Balance (Other than Cash)", "type": "currency", "category": "balance_sheet"},
+    {"id": "CashFlowsFromUsedInOperations", "name": "Cash Flow from Operations", "type": "currency", "category": "cash_flow"},
+    {"id": "CashFlowsFromUsedInOperatingActivities", "name": "Cash Flow from Operating Activities", "type": "currency", "category": "cash_flow"},
+    {"id": "SegmentRevenueFromOperations", "name": "Segment Revenue from Operations", "type": "currency", "category": "segment"},
+    {"id": "SegmentProfitLossBeforeTaxAndFinanceCosts", "name": "Segment PBT before Finance Costs", "type": "currency", "category": "segment"},
+    {"id": "SegmentFinanceCosts", "name": "Segment Finance Costs", "type": "currency", "category": "segment"},
+    {"id": "SegmentRevenue", "name": "Segment Revenue", "type": "currency", "category": "segment"},
+    {"id": "InterSegmentRevenue", "name": "Inter-Segment Revenue", "type": "currency", "category": "segment"},
+    {"id": "SegmentProfitBeforeTax", "name": "Segment Profit Before Tax", "type": "currency", "category": "segment"},
+    {"id": "SegmentAssets", "name": "Segment Assets", "type": "currency", "category": "segment"},
+    {"id": "UnAllocableAssets", "name": "Unallocable Assets", "type": "currency", "category": "segment"},
+    {"id": "NetSegmentAssets", "name": "Net Segment Assets", "type": "currency", "category": "segment"},
+    {"id": "SegmentLiabilities", "name": "Segment Liabilities", "type": "currency", "category": "segment"},
+    {"id": "UnAllocableLiabilities", "name": "Unallocable Liabilities", "type": "currency", "category": "segment"},
+    {"id": "NetSegmentLiabilities", "name": "Net Segment Liabilities", "type": "currency", "category": "segment"},
+    {"id": "BasicEarningsLossPerShareFromContinuingOperations", "name": "Basic EPS from Continuing Operations", "type": "currency", "category": "per_share"},
+    {"id": "DilutedEarningsLossPerShareFromContinuingOperations", "name": "Diluted EPS from Continuing Operations", "type": "currency", "category": "per_share"},
+    {"id": "BasicEarningsLossPerShareFromDiscontinuedOperations", "name": "Basic EPS from Discontinued Operations", "type": "currency", "category": "per_share"},
+    {"id": "DilutedEarningsLossPerShareFromDiscontinuedOperations", "name": "Diluted EPS from Discontinued Operations", "type": "currency", "category": "per_share"},
+    {"id": "BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations", "name": "Basic EPS (Continuing + Discontinued)", "type": "currency", "category": "per_share"},
+    {"id": "DilutedEarningsLossPerShareFromContinuingAndDiscontinuedOperations", "name": "Diluted EPS (Continuing + Discontinued)", "type": "currency", "category": "per_share"},
+]
+
+FINANCIAL_FIELD_MAP: Dict[str, FinancialField] = {f["id"]: f for f in FINANCIAL_FIELDS}
+
+FINANCIAL_CATEGORIES: List[Dict[str, Any]] = [
+    {"id": "metadata", "name": "Metadata", "type": "raw"},
+    {"id": "income_statement", "name": "Income Statement", "type": "raw"},
+    {"id": "balance_sheet", "name": "Balance Sheet", "type": "raw"},
+    {"id": "cash_flow", "name": "Cash Flow", "type": "raw"},
+    {"id": "per_share", "name": "Per Share Data", "type": "raw"},
+    {"id": "segment", "name": "Segment Data", "type": "raw"},
+]
+
+RATIO_CATEGORIES: List[Dict[str, Any]] = [
+    {"id": "profitability", "name": "Profitability Ratios", "type": "ratio"},
+    {"id": "return", "name": "Return Ratios", "type": "ratio"},
+    {"id": "capital_structure", "name": "Capital Structure Ratios", "type": "ratio"},
+    {"id": "liquidity", "name": "Liquidity Ratios", "type": "ratio"},
+    {"id": "cash_flow", "name": "Cash Flow Ratios", "type": "ratio"},
+    {"id": "earnings_quality", "name": "Earnings Quality Ratios", "type": "ratio"},
+    {"id": "asset_composition", "name": "Asset Composition Ratios", "type": "ratio"},
+    {"id": "segment", "name": "Segment Ratios", "type": "ratio"},
+]
+
+RATIO_CATEGORY_MAP: Dict[str, Dict[str, Any]] = {c["id"]: c for c in RATIO_CATEGORIES}
+
+
+def get_metrics_catalog() -> List[Dict[str, Any]]:
+    catalog: List[Dict[str, Any]] = []
+
+    for cat in FINANCIAL_CATEGORIES:
+        metrics = [f for f in FINANCIAL_FIELDS if f["category"] == cat["id"]]
+        if metrics:
+            catalog.append({
+                "id": f"raw_{cat['id']}",
+                "name": cat["name"],
+                "type": "raw",
+                "metrics": [
+                    {"id": m["id"], "name": m["name"], "type": m["type"]}
+                    for m in metrics
+                ],
+            })
+
+    for cat_id, (_, ratios) in enumerate(ALL_CATEGORIES):
+        cat_info = next((c for c in RATIO_CATEGORIES if c["id"] == ALL_CATEGORIES[cat_id][0]), None)
+        if not cat_info:
+            continue
+        catalog.append({
+            "id": f"ratio_{cat_info['id']}",
+            "name": cat_info["name"],
+            "type": "ratio",
+            "metrics": [
+                {"id": r["id"], "name": r["name"], "type": "percentage" if r["id"] not in ("debt_to_equity", "financial_leverage", "segment_asset_turnover", "cash_ratio", "cash_bank_ratio", "operating_cash_flow_ratio", "ocf_to_net_income", "cash_conversion_of_earnings", "eps_yield_on_equity_capital", "comprehensive_income_conversion") else "multiple"}
+                for r in ratios
+            ],
+        })
+
+    catalog.append({
+        "id": "ratio_growth",
+        "name": "Growth Metrics",
+        "type": "ratio",
+        "metrics": [
+            {"id": r["id"], "name": r["name"], "type": "percentage"}
+            for r in Growth
+        ],
+    })
+
+    return catalog
+
+
 ALL_CATEGORIES = [
     ("profitability", Profitability),
     ("return", ReturnRatios),
