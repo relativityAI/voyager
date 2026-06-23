@@ -1,0 +1,3 @@
+id,name,type,source,url_format
+screener,Screener,screener,NSE,https://www.screener.in/company/{symbol}/consolidated/
+trendlyne,Trendlyne,screener,NSE,https://trendlyne.com/equity/{symbol}/stock-page/
