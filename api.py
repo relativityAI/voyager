@@ -1,14 +1,16 @@
 import asyncio
+import csv
 import hashlib
 import json
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
+import requests
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from loguru import logger
 from pydantic import BaseModel
 
@@ -28,6 +30,24 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Voyager", version=__version__, lifespan=lifespan)
+
+ASSETS_DIR = os.path.join(os.path.dirname(__file__), "src", "assets")
+WEB_SOURCES_CSV = os.path.join(ASSETS_DIR, "web_sources.csv")
+
+
+def load_web_sources(source: Optional[str] = None) -> list[dict]:
+    sources = []
+    with open(WEB_SOURCES_CSV, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if source and row["source"].strip().upper() != source.upper():
+                continue
+            sources.append({
+                "id": row["id"].strip(),
+                "name": row["name"].strip(),
+                "type": row["type"].strip(),
+            })
+    return sources
 
 
 @app.get("/")
@@ -236,7 +256,7 @@ async def stock_data_status(symbol: str, source: str = "NSE"):
 
 
 @app.get("/stock-data")
-async def get_stock_data(symbol: str, source: str = "NSE"):
+async def get_stock_data(symbol: str, source: str = "NSE", collections: list[str] = Query(None)):
     symbol = symbol.upper()
     source = source.upper()
 
@@ -244,7 +264,10 @@ async def get_stock_data(symbol: str, source: str = "NSE"):
         database = get_database()
         result: Dict[str, Any] = {}
         total = 0
-        for label, coll_name in ALL_NSE_COLLECTIONS.items():
+
+        target = {k: v for k, v in ALL_NSE_COLLECTIONS.items() if not collections or k in collections}
+
+        for label, coll_name in target.items():
             coll = database[coll_name]
             try:
                 cursor = coll.find({"symbol": symbol}, {"_id": 0}).sort("pulled_at", -1)
@@ -257,6 +280,7 @@ async def get_stock_data(symbol: str, source: str = "NSE"):
         return {
             "symbol": symbol,
             "source": source,
+            "collections_requested": collections or list(ALL_NSE_COLLECTIONS.keys()),
             "total_records": total,
             "data": result,
         }
@@ -327,6 +351,39 @@ async def financial_ratios(symbol: str, source: str = "NSE", consolidated: str =
         }
 
     raise HTTPException(status_code=501, detail=f"Source '{source}' is not yet supported")
+
+
+@app.get("/available-web-sources")
+def available_web_sources(source: Optional[str] = None):
+    return {"sources": load_web_sources(source)}
+
+
+@app.get("/web-source")
+def web_source(id: str, symbol: str, source: str = "NSE"):
+    with open(WEB_SOURCES_CSV, newline="") as f:
+        reader = csv.DictReader(f)
+        url_format = None
+        for row in reader:
+            if row["id"].strip() == id and row["source"].strip().upper() == source.upper():
+                url_format = row["url_format"].strip()
+                break
+
+    if not url_format:
+        raise HTTPException(status_code=404, detail=f"Web source '{id}' not found for source '{source}'")
+
+    url = url_format.format(symbol=symbol.upper())
+    try:
+        resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        return {
+            "id": id,
+            "source": source.upper(),
+            "symbol": symbol.upper(),
+            "url": url,
+            "content": resp.text,
+        }
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch {url}: {e}")
 
 
 if __name__ == "__main__":
