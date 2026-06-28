@@ -69,10 +69,13 @@ tags = [
 """
 
 import logging
+import os
 import random
 from io import BytesIO
+from urllib.parse import urlparse
 
 from lxml import etree
+from pypdf import PdfReader
 
 from src.utils.rate_limiter import RateLimitedSession, get_rate_limiter
 from src.utils.web import generate_fake_headers
@@ -184,14 +187,17 @@ class NSEApiClient:
         except Exception as e:
             self.logger.error(f"Failed to set cookies: {e}")
 
-    def _call(self, url, symbol=None, max_call_attempts=3, timeout=10):
+    def _call(self, url, symbol=None, max_call_attempts=3, timeout=10, referer=None):
         if not symbol:
             symbol = get_random_symbol()
+        headers = self.headers.copy()
+        if referer:
+            headers["Referer"] = referer
         for _ in range(max_call_attempts):
             if not self.session.cookies:
                 self._set_cookies(symbol)
             try:
-                response = self.session.get(url, headers=self.headers, timeout=timeout)
+                response = self.session.get(url, headers=headers, timeout=timeout)
                 if response.status_code == 200:
                     return response
                 else:
@@ -245,6 +251,14 @@ class NSEApiClient:
     def annual_reports_xbrls(self, symbol):
         res = self._call(self.endpoints["annual-reports"].format(symbol=symbol.upper()))
         return self._safe_json(res)
+
+    def fetch_url_content(self, url, symbol=None, referer=None):
+        if not url:
+            return None
+        response = self._call(url, symbol=symbol, referer=referer)
+        if response and response.status_code == 200:
+            return response.content
+        return None
 
 
 class NSEDataParser:
@@ -301,17 +315,38 @@ class NSEIndia:
                 return None
 
             date_str = x.get("broadcast_Date") or x.get("broadCastDate")
-            
+
             extension = xbrl_url.split(".")[-1]
             if extension == "xml":
                 content = self.api.fetch_xbrl_content(xbrl_url, symbol)
                 if content:
                     data = self.parser.extract_xml(content, symbol)
                     if data and data.get("date"):
+                        if category in ("integrated-filing", "quarterly-results", "integrated"):
+                            data["financials"] = [
+                                f for f in data["financials"]
+                                if not f.get("contextRef") or any(ref in (f.get("contextRef") or "") for ref in self.api.quarterly_context_ref_types)
+                            ]
+                        elif category == "annual-results":
+                            data["financials"] = [
+                                f for f in data["financials"]
+                                if not f.get("contextRef") or any(ref in (f.get("contextRef") or "") for ref in self.api.annual_context_ref_types)
+                            ]
+                        elif category == "shareholding-pattern":
+                            data["financials"] = [
+                                f for f in data["financials"]
+                                if not f.get("contextRef") or any(ref in (f.get("contextRef") or "") for ref in self.api.shareholding_context_ref_types)
+                            ]
+
+                        if not any(f.get("contextRef") for f in data["financials"]):
+                            self.logger.warning(f"No matching facts found in XBRL for {symbol} (category={category}), skipping")
+                            return None
+
+                        default_consolidated = "Shareholding" if category == "shareholding-pattern" else "Consolidated"
                         return {
                             "symbol": symbol.upper(),
                             "date": data["date"],
-                            "consolidated": x.get("consolidated", "Consolidated"),
+                            "consolidated": x.get("consolidated", default_consolidated),
                             "financials": data["financials"],
                             "broadcast_date": date_str,
                         }
@@ -324,10 +359,32 @@ class NSEIndia:
             self.logger.error(f"Error processing XBRL: {e}")
         return None
 
+    def read_nse_document(self, url: str, symbol: str = None) -> str:
+        if not url:
+            return None
+        parsed = urlparse(url)
+        _, ext = os.path.splitext(parsed.path)
+        if ext.lower() != ".pdf":
+            self.logger.error(f"Unsupported document type: {ext}")
+            return None
+        content = self.api.fetch_url_content(url, symbol=symbol, referer="https://www.nseindia.com/")
+        if not content:
+            self.logger.error(f"Failed to fetch document: {url}")
+            return None
+        try:
+            reader = PdfReader(BytesIO(content))
+            pages = []
+            for page in reader.pages:
+                text = page.extract_text()
+                if text:
+                    pages.append(text)
+            return "\n\n".join(pages)
+        except Exception as e:
+            self.logger.error(f"Error reading PDF: {e}")
+            return None
+
     async def download_announcements(self, symbol: str):
-        # Implementation...
         pass
 
     async def download_shareholdings(self, symbol: str):
-        # Implementation...
         pass
