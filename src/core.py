@@ -67,18 +67,9 @@ def fetch_nse_financials(symbol: str) -> List[Dict[str, Any]]:
     try:
         integrated_data = nseindia.integrated_filing_xbrls(symbol).get("data", [])
         for x in integrated_data:
-            xbrl = x.get("xbrl")
-            if not xbrl or xbrl in (
-                "-",
-                "null",
-                "https://nsearchives.nseindia.com/corporate/xbrl/-",
-            ):
-                continue
-
-            data = nseindia.extract(xbrl, symbol)
+            data = nseindia.process_xbrl(x, symbol, "integrated-filing")
             if data:
-                data["consolidated"] = x.get("consolidated")
-                data["xbrl"] = xbrl
+                data["xbrl"] = x.get("xbrl")
                 data["broadcast_date"] = _format_date(x.get("broadcast_Date"))
                 results.append(data)
     except Exception as e:
@@ -88,18 +79,9 @@ def fetch_nse_financials(symbol: str) -> List[Dict[str, Any]]:
     try:
         quarterly_data = nseindia.quarterly_results_xbrls(symbol)
         for x in quarterly_data:
-            xbrl = x.get("xbrl")
-            if not xbrl or xbrl in (
-                "-",
-                "null",
-                "https://nsearchives.nseindia.com/corporate/xbrl/-",
-            ):
-                continue
-
-            data = nseindia.extract(xbrl, symbol)
+            data = nseindia.process_xbrl(x, symbol, "quarterly-results")
             if data:
-                data["consolidated"] = x.get("consolidated")
-                data["xbrl"] = xbrl
+                data["xbrl"] = x.get("xbrl")
                 data["broadcast_date"] = _format_date(x.get("broadCastDate"))
                 results.append(data)
     except Exception as e:
@@ -128,16 +110,10 @@ def fetch_nse_shareholdings(symbol: str) -> List[Dict[str, Any]]:
     try:
         holdings = nseindia.shareholding_xbrls(symbol)
         for x in holdings:
-            xbrl = x.get("xbrl")
-            if not xbrl or xbrl in ("-", "null"):
-                continue
-
-            data = nseindia.extract(xbrl, symbol)
+            data = nseindia.process_xbrl(x, symbol, "shareholding-pattern")
             if data:
-                data["xbrl"] = xbrl
-                data["broadcast_date"] = x.get(
-                    "broadcastDate"
-                )  # Could format if needed
+                data["xbrl"] = x.get("xbrl")
+                data["broadcast_date"] = x.get("broadcastDate")
                 results.append(data)
     except Exception as e:
         logger.error(f"Error fetching shareholdings: {e}")

@@ -69,6 +69,7 @@ NSE_RAW_COLLECTIONS = {key: f"nse_{key.replace('-', '_')}" for key in ENDPOINTS}
 NSE_PARSED_COLLECTIONS: Dict[str, str] = {
     "quarterly-financials": "nse_quarterly_financials",
     "annual-financials": "nse_annual_financials",
+    "shareholding-financials": "nse_shareholding_financials",
 }
 
 ALL_NSE_COLLECTIONS: Dict[str, str] = {**NSE_RAW_COLLECTIONS, **NSE_PARSED_COLLECTIONS}
@@ -77,6 +78,7 @@ XBRL_PARSE_MAP: Dict[str, str] = {
     "integrated-filing": "nse_quarterly_financials",
     "quarterly-results": "nse_quarterly_financials",
     "annual-results": "nse_annual_financials",
+    "shareholding-pattern": "nse_shareholding_financials",
 }
 
 
@@ -141,6 +143,9 @@ async def pull_nse_data(symbol: str) -> Dict[str, Any]:
         if not isinstance(records, list) or not records:
             logger.info(f"No records to parse for {ep_key} ({symbol})")
             continue
+
+        if ep_key == "integrated-filing":
+            records = sorted(records, key=lambda r: 1 if r.get("type_Sub") == "Revision" else 0)
 
         target_coll = database[target_coll_name]
         parsed_count = 0
@@ -241,6 +246,58 @@ async def stock_data_status(symbol: str, source: str = "NSE"):
             except Exception as e:
                 record_counts[label] = str(e)
 
+        # Detailed breakdown for parsed financial collections
+        financial_breakdown: Dict[str, Any] = {}
+        available_metrics: Dict[str, Any] = {}
+        for coll_name in ("nse_quarterly_financials", "nse_annual_financials", "nse_shareholding_financials"):
+            coll = database[coll_name]
+            breakdown_pipeline = [
+                {"$match": {"symbol": symbol}},
+                {"$group": {
+                    "_id": "$consolidated",
+                    "count": {"$sum": 1},
+                    "quarters": {"$addToSet": "$date"},
+                    "min_date": {"$min": "$date"},
+                    "max_date": {"$max": "$date"},
+                }},
+            ]
+            try:
+                cursor = coll.aggregate(breakdown_pipeline)
+                groups = await cursor.to_list(length=10)
+                if groups:
+                    breakdown = {}
+                    for g in groups:
+                        cons_type = g["_id"] or "unknown"
+                        breakdown[cons_type] = {
+                            "count": g["count"],
+                            "quarters": len(g["quarters"]),
+                            "date_range": f"{g['min_date']} to {g['max_date']}",
+                        }
+                    financial_breakdown[coll_name] = breakdown
+            except Exception as e:
+                financial_breakdown[coll_name] = str(e)
+
+            # Unique metric tags available in this collection for this symbol
+            try:
+                tag_pipeline = [
+                    {"$match": {"symbol": symbol}},
+                    {"$unwind": "$financials"},
+                    {"$group": {"_id": "$financials.tag"}},
+                    {"$sort": {"_id": 1}},
+                ]
+                tag_cursor = coll.aggregate(tag_pipeline)
+                tags = await tag_cursor.to_list(length=200)
+                available_metrics[coll_name] = [t["_id"] for t in tags if t["_id"]]
+            except Exception as e:
+                available_metrics[coll_name] = str(e)
+
+        # Static metric catalog from the financial fields definition
+        from src.ratios.nse import FINANCIAL_FIELD_MAP
+        metrics_catalog = [
+            {"id": f["id"], "name": f["name"], "type": f["type"], "category": f["category"]}
+            for f in FINANCIAL_FIELD_MAP.values()
+        ]
+
         return {
             "symbol": meta.symbol,
             "source": meta.source,
@@ -248,6 +305,9 @@ async def stock_data_status(symbol: str, source: str = "NSE"):
             "total_pulls": len(meta.previous_pulls) + (1 if meta.last_pull else 0),
             "previous_pulls": meta.previous_pulls,
             "record_counts": record_counts,
+            "financial_breakdown": financial_breakdown,
+            "available_metrics": available_metrics,
+            "metrics_catalog": metrics_catalog,
             "created_at": meta.created_at,
             "updated_at": meta.updated_at,
         }
@@ -256,7 +316,13 @@ async def stock_data_status(symbol: str, source: str = "NSE"):
 
 
 @app.get("/stock-data")
-async def get_stock_data(symbol: str, source: str = "NSE", collections: list[str] = Query(None)):
+async def get_stock_data(
+    symbol: str,
+    source: str = "NSE",
+    collections: list[str] = Query(None),
+    metrics: list[str] = Query(None),
+    limit: int = Query(0, ge=0),
+):
     symbol = symbol.upper()
     source = source.upper()
 
@@ -266,12 +332,26 @@ async def get_stock_data(symbol: str, source: str = "NSE", collections: list[str
         total = 0
 
         target = {k: v for k, v in ALL_NSE_COLLECTIONS.items() if not collections or k in collections}
+        parsed_colls = set(NSE_PARSED_COLLECTIONS.values())
 
         for label, coll_name in target.items():
             coll = database[coll_name]
             try:
                 cursor = coll.find({"symbol": symbol}, {"_id": 0}).sort("pulled_at", -1)
-                records = await cursor.to_list(length=10000)
+                if limit > 0:
+                    cursor = cursor.limit(limit)
+                records = await cursor.to_list(length=limit if limit > 0 else 10000)
+
+                if metrics and coll_name in parsed_colls:
+                    metrics_set = set(metrics)
+                    filtered = []
+                    for rec in records:
+                        fin = rec.get("financials", [])
+                        rec["financials"] = [f for f in fin if f.get("tag") in metrics_set]
+                        if rec["financials"]:
+                            filtered.append(rec)
+                    records = filtered
+
                 result[label] = records
                 total += len(records)
             except Exception as e:
@@ -291,9 +371,16 @@ async def get_stock_data(symbol: str, source: str = "NSE", collections: list[str
 @app.get("/available-metrics")
 async def available_metrics(source: str = "NSE"):
     from src.ratios.nse import get_metrics_catalog
+    from src.ratios.technicals import get_technicals_catalog
+    from src.ratios.valuation import get_valuation_catalog
+
+    categories = get_metrics_catalog()
+    categories.append(get_valuation_catalog())
+    categories.append(get_technicals_catalog())
+
     return {
         "source": source.upper(),
-        "categories": get_metrics_catalog(),
+        "categories": categories,
     }
 
 
@@ -304,11 +391,13 @@ async def financial_ratios(symbol: str, source: str = "NSE", consolidated: str =
 
     if source == "NSE":
         from src.ratios.nse import (
-            ALL_CATEGORIES,
             compute_growth,
             compute_static,
+            extract_quarterly_value,
             flatten_financials,
         )
+        from src.ratios.technicals import fetch_price_info, fetch_technicals
+        from src.ratios.valuation import compute_valuation, to_float
 
         database = get_database()
         records: list = []
@@ -325,10 +414,109 @@ async def financial_ratios(symbol: str, source: str = "NSE", consolidated: str =
         if not records:
             raise HTTPException(status_code=404, detail=f"No financial data found for {symbol} ({consolidated})")
 
+        price_info = await asyncio.to_thread(fetch_price_info, symbol, source)
+        current_price = price_info.get("current_price")
+        shares_outstanding = price_info.get("shares_outstanding")
+
+        # Pre-compute EPS and Revenue for TTM and CAGR (quarterly context only)
+        eps_list = []
+        rev_list = []
+        for rec in records:
+            fin = rec.get("financials", [])
+            eps_list.append(to_float(extract_quarterly_value(fin, "BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations")))
+            rev_list.append(to_float(extract_quarterly_value(fin, "RevenueFromOperations")))
+
+        # Valuation uses latest record's financials + today's price
+        latest_data = flatten_financials(records[0].get("financials", [])) if records else {}
+        latest_fin = records[0].get("financials", []) if records else []
+        latest_eps = to_float(extract_quarterly_value(latest_fin, "BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations"))
+
+        # TTM EPS = sum of last 4 quarters
+        ttm_eps = None
+        if len(eps_list) >= 4:
+            vals = [eps_list[j] for j in range(4)]
+            if all(v is not None for v in vals):
+                ttm_eps = sum(vals)
+
+        # TTM Revenue = sum of last 4 quarters
+        ttm_revenue = None
+        if len(rev_list) >= 4:
+            vals = [rev_list[j] for j in range(4)]
+            if all(v is not None for v in vals):
+                ttm_revenue = sum(vals)
+
+        def _find_financials(ref_date: str, offset_months: int) -> Optional[list]:
+            try:
+                ref = datetime.strptime(ref_date, "%Y-%m-%d")
+                total = ref.month - offset_months
+                ty = ref.year
+                tm = total
+                if total <= 0:
+                    tm = total + 12
+                    ty -= 1
+                elif total > 12:
+                    tm = total - 12
+                    ty += 1
+                for r in records:
+                    rd = r.get("date")
+                    if not rd:
+                        continue
+                    try:
+                        od = datetime.strptime(rd, "%Y-%m-%d")
+                        if od.year == ty and od.month == tm:
+                            return r.get("financials", [])
+                    except ValueError:
+                        pass
+            except ValueError:
+                pass
+            return None
+
+        # EPS growth for PEG: prefer YoY, fall back to QoQ
+        eps_qoq = None
+        eps_yoy = None
+        latest_date = records[0].get("date") if records else None
+        if latest_date:
+            qoq_fin = _find_financials(latest_date, 3)
+            if qoq_fin is not None:
+                qoq_g = compute_growth(latest_data, flatten_financials(qoq_fin))
+                eps_qoq = qoq_g.get("eps_growth")
+            yoy_fin = _find_financials(latest_date, 12)
+            if yoy_fin is not None:
+                yoy_g = compute_growth(latest_data, flatten_financials(yoy_fin))
+                eps_yoy = yoy_g.get("eps_growth")
+
+        # 3-year CAGR for PEG
+        cagr = None
+        if len(eps_list) >= 13:
+            now = eps_list[0]
+            old = eps_list[12]
+            if now is not None and old is not None and now > 0 and old > 0:
+                cagr = ((now / old) ** (1.0 / 3) - 1) * 100
+
+        peg_growth = cagr if cagr is not None else (eps_yoy or eps_qoq)
+
+        valuation = compute_valuation(latest_data, current_price, shares_outstanding, peg_growth, ttm_eps, latest_eps, ttm_revenue)
+
         result: list = []
-        for i, rec in enumerate(records):
+        for rec in records:
             data = flatten_financials(rec.get("financials", []))
             static = compute_static(data)
+            growth: dict = {}
+            rec_date = rec.get("date")
+
+            if rec_date:
+                qoq_fin = _find_financials(rec_date, 3)
+                if qoq_fin is not None:
+                    qoq = compute_growth(data, flatten_financials(qoq_fin))
+                    for k, v in qoq.items():
+                        growth[f"{k}_qoq"] = v
+
+                yoy_fin = _find_financials(rec_date, 12)
+                if yoy_fin is not None:
+                    yoy = compute_growth(data, flatten_financials(yoy_fin))
+                    for k, v in yoy.items():
+                        growth[f"{k}_yoy"] = v
+
             entry = {
                 "date": rec.get("date"),
                 "consolidated": rec.get("consolidated"),
@@ -337,20 +525,32 @@ async def financial_ratios(symbol: str, source: str = "NSE", consolidated: str =
                 "ratios": static,
             }
 
-            if i < len(records) - 1:
-                prev_data = flatten_financials(records[i + 1].get("financials", []))
-                entry["growth"] = compute_growth(data, prev_data)
+            if growth:
+                entry["ratios"]["growth"] = growth
 
             result.append(entry)
+
+        technicals = await asyncio.to_thread(fetch_technicals, symbol, source)
 
         return {
             "symbol": symbol,
             "source": source,
             "consolidated": consolidated,
+            "current_price": current_price,
+            "valuation": valuation,
             "records": result,
+            "technicals": technicals,
         }
 
     raise HTTPException(status_code=501, detail=f"Source '{source}' is not yet supported")
+
+
+@app.get("/read-nse-document")
+def read_nse_document(url: str, symbol: str = None):
+    content = nse_scraper.read_nse_document(url, symbol=symbol)
+    if content is None:
+        raise HTTPException(status_code=502, detail="Failed to fetch or parse PDF from NSE")
+    return {"url": url, "content": content}
 
 
 @app.get("/available-web-sources")

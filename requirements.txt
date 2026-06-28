@@ -6,20 +6,17 @@ pandas
 python-dotenv
 html5lib
 
-
 fake-useragent
 beautifulsoup4
 pypdf
 lxml
-# youtube-search
-# youtube-transcript-api
-# pdf2image
-# pytesseract
-
-# google-genai
 
 pymongo<4.9.0
 pydantic
 beanie
 motor==3.3.2
 loguru
+
+yfinance
+pandas-ta
+numpy
