@@ -102,13 +102,6 @@ def _is_valid_positive(v: Any) -> bool:
     if not _is_valid_number(v):
         return False
     return float(v) != 0
-    if v is None:
-        return False
-    try:
-        f = float(v)
-        return not (math.isnan(f) or math.isinf(f))
-    except (ValueError, TypeError):
-        return False
 
 
 VALUATION_METRICS: List[Dict[str, Any]] = [

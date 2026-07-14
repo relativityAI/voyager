@@ -53,6 +53,15 @@ def _compute_roce(d: Dict[str, Any]) -> Optional[float]:
     return pct(safe_div(ebit, capital_employed))
 
 
+def _compute_debt_to_equity(d: Dict[str, Any]) -> Optional[float]:
+    direct = to_float(d.get("DebtEquityRatio"))
+    if direct is not None and direct != 0:
+        return direct
+    debt = (to_float(d.get("BorrowingsCurrent")) or 0) + (to_float(d.get("BorrowingsNoncurrent")) or 0)
+    equity = (to_float(d.get("EquityShareCapital")) or 0) + (to_float(d.get("OtherEquity")) or 0)
+    return safe_div(debt, equity)
+
+
 Profitability: List[RatioDef] = [
     {
         "id": "net_profit_margin",
@@ -113,7 +122,7 @@ CapitalStructure: List[RatioDef] = [
     {
         "id": "debt_to_equity",
         "name": "Debt-to-Equity",
-        "compute": lambda d: to_float(d.get("DebtEquityRatio")),
+        "compute": lambda d: _compute_debt_to_equity(d),
     },
     {
         "id": "equity_ratio",

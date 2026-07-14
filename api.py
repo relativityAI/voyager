@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from __version__ import __version__
 from src.db.connection import get_database, init_db
 from src.db.models import NSEStockMetadata
-from src.tools.exchange.nse import ENDPOINTS, NSEIndia
+from src.tools.nse.client import ENDPOINTS, NSEIndia
 
 load_dotenv()
 
@@ -33,6 +33,16 @@ app = FastAPI(title="Voyager", version=__version__, lifespan=lifespan)
 
 ASSETS_DIR = os.path.join(os.path.dirname(__file__), "src", "assets")
 WEB_SOURCES_CSV = os.path.join(ASSETS_DIR, "web_sources.csv")
+SOURCES_CSV = os.path.join(ASSETS_DIR, "sources.csv")
+COUNTRIES_CSV = os.path.join(ASSETS_DIR, "countries.csv")
+
+
+def _load_csv(path: str) -> list[dict]:
+    rows = []
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            rows.append({k: v.strip() for k, v in row.items()})
+    return rows
 
 
 def load_web_sources(source: Optional[str] = None) -> list[dict]:
@@ -50,9 +60,22 @@ def load_web_sources(source: Optional[str] = None) -> list[dict]:
     return sources
 
 
-@app.get("/")
+@app.get("/", summary="Health check")
 def ping():
+    """Returns ok=1 if the server is alive."""
     return {"ok": 1}
+
+
+@app.get("/equity/sources", summary="List available data sources")
+def equity_sources():
+    """Returns a list of available data sources (e.g. NSE, SEC) with their IDs and names."""
+    return {"sources": _load_csv(SOURCES_CSV)}
+
+
+@app.get("/equity/countries", summary="List supported countries")
+def equity_countries():
+    """Returns a list of supported countries with their codes and names."""
+    return {"countries": _load_csv(COUNTRIES_CSV)}
 
 
 # --- NSE Stock Data Pull ---
@@ -218,22 +241,77 @@ async def pull_nse_data(symbol: str) -> Dict[str, Any]:
     }
 
 
-@app.post("/pull-stock-data")
-async def pull_stock_data(request: PullStockDataRequest):
-    source = request.source.upper()
-    symbol = request.symbol.upper()
+# ============================================================
+# Equity Endpoints
+# ============================================================
 
-    if source == "NSE":
-        return await pull_nse_data(symbol)
-    raise HTTPException(status_code=501, detail=f"Source '{source}' is not yet supported")
+AVAILABLE_DATA_TYPES = list(ENDPOINTS.keys())
 
 
-@app.get("/stock-data-status")
-async def stock_data_status(symbol: str, source: str = "NSE"):
+@app.get("/equity/data", summary="Fetch specific raw data types for a stock from the exchange")
+async def equity_data(
+    symbol: str,
+    types: list[str] = Query(..., description=f"Data types to fetch. Available: {AVAILABLE_DATA_TYPES}"),
+    country: str = Query("in", description="Country code: 'in' for India, 'us' for USA"),
+    source: str = Query("nse", description="Data source: 'nse' for NSE India"),
+):
+    """Fetch raw data directly from the exchange API for a stock. Specify which data types you want (e.g. 'announcements-equity', 'quarterly-results'). Returns the raw JSON response for each requested type."""
     symbol = symbol.upper()
     source = source.upper()
 
-    if source == "NSE":
+    if country.lower() != "in" or source != "NSE":
+        raise HTTPException(status_code=501, detail=f"Source '{source}' for country '{country}' is not yet supported")
+
+    invalid = [t for t in types if t not in ENDPOINTS]
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"Invalid data types: {invalid}. Available: {AVAILABLE_DATA_TYPES}")
+
+    results: Dict[str, Any] = {}
+    for dtype in types:
+        try:
+            url = ENDPOINTS[dtype].format(symbol=symbol) if "{symbol}" in ENDPOINTS[dtype] else ENDPOINTS[dtype]
+            data = await asyncio.to_thread(
+                lambda u=url: nse_scraper.api._safe_json(nse_scraper.api._call(u, symbol=symbol))
+            )
+            results[dtype] = data
+        except Exception as e:
+            logger.error(f"Error fetching {dtype} for {symbol}: {e}")
+            results[dtype] = {"error": str(e)}
+
+    return {
+        "symbol": symbol,
+        "source": source,
+        "types_requested": types,
+        "data": results,
+    }
+
+
+@app.post("/equity/data/pull", summary="Pull raw stock data from exchange into DB")
+async def equity_data_pull(
+    symbol: str,
+    country: str = Query("in", description="Country code: 'in' for India, 'us' for USA"),
+    source: str = Query("nse", description="Data source: 'nse' for NSE India"),
+):
+    """Pull raw stock data from the specified exchange, parse XBRL filings, and store in MongoDB. Returns record counts and parse summary."""
+    symbol = symbol.upper()
+    source = source.upper()
+
+    if country.lower() == "in" and source == "NSE":
+        return await pull_nse_data(symbol)
+    raise HTTPException(status_code=501, detail=f"Source '{source}' for country '{country}' is not yet supported")
+
+
+@app.get("/equity/data/status", summary="Get pull status and data availability for a stock")
+async def equity_data_status(
+    symbol: str,
+    country: str = Query("in", description="Country code: 'in' for India, 'us' for USA"),
+    source: str = Query("nse", description="Data source: 'nse' for NSE India"),
+):
+    """Returns last pull time, record counts per collection, and financial breakdowns for a stock."""
+    symbol = symbol.upper()
+    source = source.upper()
+
+    if country.lower() == "in" and source == "NSE":
         meta = await NSEStockMetadata.find_one(NSEStockMetadata.symbol == symbol)
         if not meta:
             raise HTTPException(status_code=404, detail=f"No data found for {symbol}")
@@ -248,7 +326,6 @@ async def stock_data_status(symbol: str, source: str = "NSE"):
 
         # Detailed breakdown for parsed financial collections
         financial_breakdown: Dict[str, Any] = {}
-        available_metrics: Dict[str, Any] = {}
         for coll_name in ("nse_quarterly_financials", "nse_annual_financials", "nse_shareholding_financials"):
             coll = database[coll_name]
             breakdown_pipeline = [
@@ -277,27 +354,6 @@ async def stock_data_status(symbol: str, source: str = "NSE"):
             except Exception as e:
                 financial_breakdown[coll_name] = str(e)
 
-            # Unique metric tags available in this collection for this symbol
-            try:
-                tag_pipeline = [
-                    {"$match": {"symbol": symbol}},
-                    {"$unwind": "$financials"},
-                    {"$group": {"_id": "$financials.tag"}},
-                    {"$sort": {"_id": 1}},
-                ]
-                tag_cursor = coll.aggregate(tag_pipeline)
-                tags = await tag_cursor.to_list(length=200)
-                available_metrics[coll_name] = [t["_id"] for t in tags if t["_id"]]
-            except Exception as e:
-                available_metrics[coll_name] = str(e)
-
-        # Static metric catalog from the financial fields definition
-        from src.ratios.nse import FINANCIAL_FIELD_MAP
-        metrics_catalog = [
-            {"id": f["id"], "name": f["name"], "type": f["type"], "category": f["category"]}
-            for f in FINANCIAL_FIELD_MAP.values()
-        ]
-
         return {
             "symbol": meta.symbol,
             "source": meta.source,
@@ -306,27 +362,27 @@ async def stock_data_status(symbol: str, source: str = "NSE"):
             "previous_pulls": meta.previous_pulls,
             "record_counts": record_counts,
             "financial_breakdown": financial_breakdown,
-            "available_metrics": available_metrics,
-            "metrics_catalog": metrics_catalog,
             "created_at": meta.created_at,
             "updated_at": meta.updated_at,
         }
 
-    raise HTTPException(status_code=501, detail=f"Source '{source}' is not yet supported")
+    raise HTTPException(status_code=501, detail=f"Source '{source}' for country '{country}' is not yet supported")
 
 
-@app.get("/stock-data")
-async def get_stock_data(
+@app.get("/equity/data/metrics", summary="Retrieve raw/parsed financial metrics from DB")
+async def equity_data_metrics(
     symbol: str,
-    source: str = "NSE",
+    country: str = Query("in", description="Country code: 'in' for India, 'us' for USA"),
+    source: str = Query("nse", description="Data source: 'nse' for NSE India"),
     collections: list[str] = Query(None),
     metrics: list[str] = Query(None),
     limit: int = Query(0, ge=0),
 ):
+    """Fetch raw endpoint data and parsed financial records from MongoDB, with optional filtering by collection and metric tags."""
     symbol = symbol.upper()
     source = source.upper()
 
-    if source == "NSE":
+    if country.lower() == "in" and source == "NSE":
         database = get_database()
         result: Dict[str, Any] = {}
         total = 0
@@ -365,39 +421,79 @@ async def get_stock_data(
             "data": result,
         }
 
-    raise HTTPException(status_code=501, detail=f"Source '{source}' is not yet supported")
+    raise HTTPException(status_code=501, detail=f"Source '{source}' for country '{country}' is not yet supported")
 
 
-@app.get("/available-metrics")
-async def available_metrics(source: str = "NSE"):
-    from src.ratios.nse import get_metrics_catalog
-    from src.ratios.technicals import get_technicals_catalog
-    from src.ratios.valuation import get_valuation_catalog
+@app.get("/equity/data/metrics/available", summary="List all available financial metrics, valuation, and technical indicators")
+async def equity_data_metrics_available(
+    country: str = Query("in", description="Country code: 'in' for India, 'us' for USA"),
+    source: str = Query("nse", description="Data source: 'nse' for NSE India"),
+):
+    """Returns the full catalog of available financial metrics including raw fields, valuation ratios, and technical indicators, organized by category."""
+    from src.tools.nse.ratios import get_metrics_catalog
+    from src.tools.nse.technicals import get_technicals_catalog
+    from src.tools.nse.valuation import get_valuation_catalog
 
     categories = get_metrics_catalog()
     categories.append(get_valuation_catalog())
     categories.append(get_technicals_catalog())
 
     return {
+        "country": country,
         "source": source.upper(),
         "categories": categories,
     }
 
 
-@app.get("/financial-ratios")
-async def financial_ratios(symbol: str, source: str = "NSE", consolidated: str = "Consolidated"):
+@app.get("/equity/data/ratios/available", summary="List available ratio categories and their definitions")
+async def equity_data_ratios_available(
+    country: str = Query("in", description="Country code: 'in' for India, 'us' for USA"),
+    source: str = Query("nse", description="Data source: 'nse' for NSE India"),
+):
+    """Returns all available financial ratio categories (profitability, return, capital structure, liquidity, cash flow, earnings quality, growth) with their individual ratio definitions."""
+    from src.tools.nse.ratios import RATIO_CATEGORIES, Growth
+
+    ratios_by_category = []
+    for cat in RATIO_CATEGORIES:
+        ratios_by_category.append({
+            "id": cat["id"],
+            "name": cat["name"],
+            "type": cat["type"],
+        })
+    ratios_by_category.append({
+        "id": "growth",
+        "name": "Growth Metrics",
+        "type": "ratio",
+        "metrics": [{"id": r["id"], "name": r["name"]} for r in Growth],
+    })
+
+    return {
+        "country": country,
+        "source": source.upper(),
+        "categories": ratios_by_category,
+    }
+
+
+@app.get("/equity/data/ratios", summary="Compute financial ratios, growth, valuation, and technicals for a stock")
+async def equity_data_ratios(
+    symbol: str,
+    country: str = Query("in", description="Country code: 'in' for India, 'us' for USA"),
+    source: str = Query("nse", description="Data source: 'nse' for NSE India"),
+    consolidated: str = Query("Consolidated", description="Use 'Consolidated' or 'Standalone' financials"),
+):
+    """Computes static financial ratios (profitability, leverage, liquidity), QoQ/YoY growth, valuation multiples (P/E, P/B, PEG), and technical indicators for a stock."""
     symbol = symbol.upper()
     source = source.upper()
 
-    if source == "NSE":
-        from src.ratios.nse import (
+    if country.lower() == "in" and source == "NSE":
+        from src.tools.nse.ratios import (
             compute_growth,
             compute_static,
             extract_quarterly_value,
             flatten_financials,
         )
-        from src.ratios.technicals import fetch_price_info, fetch_technicals
-        from src.ratios.valuation import compute_valuation, to_float
+        from src.tools.nse.technicals import fetch_price_info, fetch_technicals
+        from src.tools.nse.valuation import compute_valuation, to_float
 
         database = get_database()
         records: list = []
@@ -414,36 +510,56 @@ async def financial_ratios(symbol: str, source: str = "NSE", consolidated: str =
         if not records:
             raise HTTPException(status_code=404, detail=f"No financial data found for {symbol} ({consolidated})")
 
+        # Deduplicate by date: quarterly and annual collections may both have records for the same date
+        seen_dates: set = set()
+        deduped: list = []
+        for rec in records:
+            key = (rec.get("date"), rec.get("consolidated"))
+            if key not in seen_dates:
+                seen_dates.add(key)
+                deduped.append(rec)
+        records = deduped
+
         price_info = await asyncio.to_thread(fetch_price_info, symbol, source)
         current_price = price_info.get("current_price")
         shares_outstanding = price_info.get("shares_outstanding")
 
-        # Pre-compute EPS and Revenue for TTM and CAGR (quarterly context only)
-        eps_list = []
-        rev_list = []
+        # Pre-compute quarterly lists for P&L fields (used for TTM ratios)
+        PNL_FIELDS = [
+            "BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations",
+            "RevenueFromOperations", "ProfitLossForPeriod", "ProfitBeforeTax",
+            "FinanceCosts", "CashFlowsFromUsedInOperatingActivities",
+        ]
+        qtrly: dict[str, list] = {f: [] for f in PNL_FIELDS}
         for rec in records:
             fin = rec.get("financials", [])
-            eps_list.append(to_float(extract_quarterly_value(fin, "BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations")))
-            rev_list.append(to_float(extract_quarterly_value(fin, "RevenueFromOperations")))
+            for f in PNL_FIELDS:
+                qtrly[f].append(to_float(extract_quarterly_value(fin, f)))
+
+        def _ttm_sum(values: list) -> Optional[float]:
+            if len(values) >= 4:
+                vals = [values[j] for j in range(4)]
+                if all(v is not None for v in vals):
+                    return sum(vals)
+            return None
+
+        ttm_eps = _ttm_sum(qtrly["BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations"])
+        ttm_revenue = _ttm_sum(qtrly["RevenueFromOperations"])
+
+        def _ttm_data(data: dict, i: int) -> dict:
+            """Replace single-period P&L values with TTM sums for ratio computation."""
+            d = dict(data)
+            for f in ("ProfitLossForPeriod", "RevenueFromOperations", "ProfitBeforeTax", "FinanceCosts", "CashFlowsFromUsedInOperatingActivities"):
+                if f in qtrly:
+                    ttm = _ttm_sum(qtrly[f][i:])
+                    if ttm is not None:
+                        d[f] = str(ttm)
+            return d
 
         # Valuation uses latest record's financials + today's price
         latest_data = flatten_financials(records[0].get("financials", [])) if records else {}
         latest_fin = records[0].get("financials", []) if records else []
         latest_eps = to_float(extract_quarterly_value(latest_fin, "BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations"))
-
-        # TTM EPS = sum of last 4 quarters
-        ttm_eps = None
-        if len(eps_list) >= 4:
-            vals = [eps_list[j] for j in range(4)]
-            if all(v is not None for v in vals):
-                ttm_eps = sum(vals)
-
-        # TTM Revenue = sum of last 4 quarters
-        ttm_revenue = None
-        if len(rev_list) >= 4:
-            vals = [rev_list[j] for j in range(4)]
-            if all(v is not None for v in vals):
-                ttm_revenue = sum(vals)
 
         def _find_financials(ref_date: str, offset_months: int) -> Optional[list]:
             try:
@@ -487,9 +603,10 @@ async def financial_ratios(symbol: str, source: str = "NSE", consolidated: str =
 
         # 3-year CAGR for PEG
         cagr = None
-        if len(eps_list) >= 13:
-            now = eps_list[0]
-            old = eps_list[12]
+        eps_vals = qtrly["BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations"]
+        if len(eps_vals) >= 13:
+            now = eps_vals[0]
+            old = eps_vals[12]
             if now is not None and old is not None and now > 0 and old > 0:
                 cagr = ((now / old) ** (1.0 / 3) - 1) * 100
 
@@ -498,9 +615,10 @@ async def financial_ratios(symbol: str, source: str = "NSE", consolidated: str =
         valuation = compute_valuation(latest_data, current_price, shares_outstanding, peg_growth, ttm_eps, latest_eps, ttm_revenue)
 
         result: list = []
-        for rec in records:
+        for i, rec in enumerate(records):
             data = flatten_financials(rec.get("financials", []))
-            static = compute_static(data)
+            rdata = _ttm_data(data, i)
+            static = compute_static(rdata)
             growth: dict = {}
             rec_date = rec.get("date")
 
@@ -542,24 +660,87 @@ async def financial_ratios(symbol: str, source: str = "NSE", consolidated: str =
             "technicals": technicals,
         }
 
-    raise HTTPException(status_code=501, detail=f"Source '{source}' is not yet supported")
+    raise HTTPException(status_code=501, detail=f"Source '{source}' for country '{country}' is not yet supported")
 
 
-@app.get("/read-nse-document")
-def read_nse_document(url: str, symbol: str = None):
+@app.get("/equity/read-pdf", summary="Fetch and extract text from an exchange PDF document")
+def equity_read_pdf(
+    url: str,
+    symbol: str = None,
+    country: str = Query("in", description="Country code: 'in' for India, 'us' for USA"),
+):
+    """Fetches a PDF document from the exchange and extracts its text content. Returns the full text of the document."""
     content = nse_scraper.read_nse_document(url, symbol=symbol)
     if content is None:
-        raise HTTPException(status_code=502, detail="Failed to fetch or parse PDF from NSE")
+        raise HTTPException(status_code=502, detail="Failed to fetch or parse PDF from exchange")
     return {"url": url, "content": content}
 
 
-@app.get("/available-web-sources")
-def available_web_sources(source: Optional[str] = None):
-    return {"sources": load_web_sources(source)}
+@app.get("/equity/industries", summary="List available industries for a country/source")
+async def equity_industries(
+    country: str = Query("in", description="Country code: 'in' for India, 'us' for USA"),
+    source: str = Query("nse", description="Data source: 'nse' for NSE India"),
+):
+    """Returns a list of available industry classifications for the specified country and data source."""
+    if country.lower() == "in" and source.upper() == "NSE":
+        return {
+            "country": country,
+            "source": source.upper(),
+            "industries": [],
+            "note": "Industry data not yet implemented for NSE",
+        }
+    raise HTTPException(status_code=501, detail=f"Industries not available for country '{country}', source '{source}'")
 
 
-@app.get("/web-source")
-def web_source(id: str, symbol: str, source: str = "NSE"):
+@app.get("/equity/sectors", summary="List available sectors for a country/source")
+async def equity_sectors(
+    country: str = Query("in", description="Country code: 'in' for India, 'us' for USA"),
+    source: str = Query("nse", description="Data source: 'nse' for NSE India"),
+):
+    """Returns a list of available sector classifications for the specified country and data source."""
+    if country.lower() == "in" and source.upper() == "NSE":
+        return {
+            "country": country,
+            "source": source.upper(),
+            "sectors": [],
+            "note": "Sector data not yet implemented for NSE",
+        }
+    raise HTTPException(status_code=501, detail=f"Sectors not available for country '{country}', source '{source}'")
+
+
+@app.get("/equity/indices", summary="List available market indices for a country/source")
+async def equity_indices(
+    country: str = Query("in", description="Country code: 'in' for India, 'us' for USA"),
+    source: str = Query("nse", description="Data source: 'nse' for NSE India"),
+):
+    """Returns a list of available market indices (NIFTY 50, SENSEX, etc.) for the specified country and data source."""
+    if country.lower() == "in" and source.upper() == "NSE":
+        return {
+            "country": country,
+            "source": source.upper(),
+            "indices": [],
+            "note": "Index data not yet implemented for NSE",
+        }
+    raise HTTPException(status_code=501, detail=f"Indices not available for country '{country}', source '{source}'")
+
+
+@app.get("/equity/web/sources", summary="List available web screening sources")
+def equity_web_sources(
+    country: str = Query("in", description="Country code: 'in' for India, 'us' for USA"),
+    source: Optional[str] = Query(None, description="Filter by data source (e.g. 'NSE')"),
+):
+    """Returns a list of available web sources (Screener.in, Trendlyne, etc.) with their IDs, names, and types."""
+    return {"country": country, "sources": load_web_sources(source)}
+
+
+@app.get("/equity/web/data", summary="Fetch live content from a named web source")
+def equity_web_data(
+    id: str,
+    symbol: str,
+    country: str = Query("in", description="Country code: 'in' for India, 'us' for USA"),
+    source: str = Query("nse", description="Data source: 'nse' for NSE India"),
+):
+    """Looks up a web source by ID, constructs the URL with the stock symbol, fetches the page, and returns the HTML content."""
     with open(WEB_SOURCES_CSV, newline="") as f:
         reader = csv.DictReader(f)
         url_format = None
@@ -577,6 +758,7 @@ def web_source(id: str, symbol: str, source: str = "NSE"):
         resp.raise_for_status()
         return {
             "id": id,
+            "country": country,
             "source": source.upper(),
             "symbol": symbol.upper(),
             "url": url,
@@ -584,6 +766,96 @@ def web_source(id: str, symbol: str, source: str = "NSE"):
         }
     except requests.RequestException as e:
         raise HTTPException(status_code=502, detail=f"Failed to fetch {url}: {e}")
+
+
+# ============================================================
+# Fund Endpoints (Dummy)
+# ============================================================
+
+
+@app.get("/fund/in/available", summary="List available mutual fund categories in India")
+def fund_in_available():
+    """Returns a list of available mutual fund categories and sub-categories in India (equity, debt, hybrid, etc.)."""
+    return {
+        "country": "in",
+        "categories": [],
+        "note": "Mutual fund data not yet implemented",
+    }
+
+
+@app.get("/fund/in/data", summary="Fetch mutual fund data for a given scheme")
+def fund_in_data(
+    scheme: str = Query(..., description="Mutual fund scheme name or code"),
+):
+    """Fetches detailed data for a specific mutual fund scheme including NAV, holdings, performance, and expense ratio."""
+    return {
+        "country": "in",
+        "scheme": scheme,
+        "data": None,
+        "note": "Mutual fund data not yet implemented",
+    }
+
+
+# ============================================================
+# Macro Endpoints (Dummy)
+# ============================================================
+
+
+@app.get("/macro/available", summary="List available macroeconomic indicators")
+def macro_available(
+    country: str = Query("in", description="Country code: 'in' for India, 'us' for USA"),
+):
+    """Returns a list of available macroeconomic indicators (GDP, inflation, interest rates, etc.) for the specified country."""
+    return {
+        "country": country,
+        "indicators": [],
+        "note": "Macro data not yet implemented",
+    }
+
+
+@app.get("/macro/data", summary="Fetch macroeconomic data for a country/indicator")
+def macro_data(
+    indicator: str = Query(..., description="Macro indicator name (e.g. 'gdp', 'inflation')"),
+    country: str = Query("in", description="Country code: 'in' for India, 'us' for USA"),
+):
+    """Fetches time-series macroeconomic data for the specified indicator and country."""
+    return {
+        "country": country,
+        "indicator": indicator,
+        "data": None,
+        "note": "Macro data not yet implemented",
+    }
+
+
+# ============================================================
+# News Endpoints (Dummy)
+# ============================================================
+
+
+@app.get("/news/available", summary="List available news sources and categories")
+def news_available(
+    country: str = Query("in", description="Country code: 'in' for India, 'us' for USA"),
+):
+    """Returns a list of available news sources and categories (business, markets, economy, etc.) for the specified country."""
+    return {
+        "country": country,
+        "sources": [],
+        "note": "News data not yet implemented",
+    }
+
+
+@app.get("/news/data", summary="Fetch news articles for a stock or topic")
+def news_data(
+    query: str = Query(..., description="Search query (stock symbol, company name, or topic)"),
+    country: str = Query("in", description="Country code: 'in' for India, 'us' for USA"),
+):
+    """Fetches recent news articles matching the query from available news sources for the specified country."""
+    return {
+        "country": country,
+        "query": query,
+        "articles": [],
+        "note": "News data not yet implemented",
+    }
 
 
 if __name__ == "__main__":
