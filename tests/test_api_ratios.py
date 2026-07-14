@@ -16,35 +16,35 @@ except ImportError:
 
 class TestAvailableMetrics:
     def test_returns_200(self):
-        response = client.get("/available-metrics")
+        response = client.get("/equity/data/metrics/available")
         assert response.status_code == 200
 
     def test_contains_raw_categories(self):
-        response = client.get("/available-metrics")
+        response = client.get("/equity/data/metrics/available")
         data = response.json()
         categories = {c["id"]: c for c in data["categories"]}
         assert "raw_income_statement" in categories
         assert "raw_balance_sheet" in categories
 
     def test_contains_valuation_ratios(self):
-        response = client.get("/available-metrics")
+        response = client.get("/equity/data/metrics/available")
         data = response.json()
         categories = {c["id"]: c for c in data["categories"]}
         assert "ratio_valuation" in categories
 
     def test_contains_technicals(self):
-        response = client.get("/available-metrics")
+        response = client.get("/equity/data/metrics/available")
         data = response.json()
         categories = {c["id"]: c for c in data["categories"]}
         assert "technicals" in categories
 
     def test_total_categories_count(self):
-        response = client.get("/available-metrics")
+        response = client.get("/equity/data/metrics/available")
         data = response.json()
         assert len(data["categories"]) == 14
 
     def test_metrics_have_id_and_name(self):
-        response = client.get("/available-metrics")
+        response = client.get("/equity/data/metrics/available")
         data = response.json()
         for category in data["categories"]:
             for metric in category["metrics"]:
@@ -150,7 +150,7 @@ class TestFinancialRatios:
         }
 
         response = client.get(
-            "/financial-ratios?symbol=TEST&source=NSE&consolidated=Consolidated"
+            "/equity/data/ratios?symbol=TEST&country=in&source=nse&consolidated=Consolidated"
         )
         assert response.status_code == 200
         data = response.json()
@@ -173,7 +173,7 @@ class TestFinancialRatios:
         self.mock_get_db.return_value = self._setup_db_mock([])
 
         response = client.get(
-            "/financial-ratios?symbol=UNKNOWN&source=NSE&consolidated=Consolidated"
+            "/equity/data/ratios?symbol=UNKNOWN&country=in&source=nse&consolidated=Consolidated"
         )
         assert response.status_code == 404
 
@@ -204,7 +204,7 @@ class TestFinancialRatios:
         }
 
         response = client.get(
-            "/financial-ratios?symbol=TEST&source=NSE&consolidated=Consolidated"
+            "/equity/data/ratios?symbol=TEST&country=in&source=nse&consolidated=Consolidated"
         )
         assert response.status_code == 200
         body = response.text

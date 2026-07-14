@@ -1,5 +1,5 @@
 
-from src.ratios.nse import (
+from src.tools.nse.ratios import (
     ALL_CATEGORIES,
     compute_growth,
     compute_static,
@@ -75,9 +75,22 @@ class TestFlattenFinancials:
         assert result == {"Revenue": "1000", "Profit": "200"}
 
     def test_duplicate_tags(self):
-        data = [{"tag": "Revenue", "value": "1000"}, {"tag": "Revenue", "value": "2000"}]
+        # Prefers quarterly (OneI) over non-quarterly, and first match for same type
+        data = [
+            {"tag": "Revenue", "value": "1000"},
+            {"tag": "Revenue", "value": "2000", "contextRef": "OneI"},
+        ]
         result = flatten_financials(data)
         assert result == {"Revenue": "2000"}
+
+    def test_duplicate_tags_first_wins(self):
+        # First non-quarterly wins; quarterly overrides after
+        data = [
+            {"tag": "Revenue", "value": "1000"},
+            {"tag": "Revenue", "value": "2000"},
+        ]
+        result = flatten_financials(data)
+        assert result == {"Revenue": "1000"}
 
 
 class TestComputeStatic:

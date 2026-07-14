@@ -2,7 +2,7 @@ import unittest
 
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
-from src.tools.exchange.nse import NSEApiClient, NSEDataParser, NSEIndia
+from src.tools.nse.client import NSEApiClient, NSEDataParser, NSEIndia
 # NSEFinancials model was removed; skip the test that imports it
 try:
     from src.db.models import NSEFinancials
@@ -40,7 +40,7 @@ def test_extract_xml_invalid(parser):
     result = parser.extract_xml(b"invalid xml", "TCS")
     assert result is None
 
-@patch('src.tools.exchange.nse.RateLimitedSession')
+@patch('src.tools.nse.client.RateLimitedSession')
 def test_api_client_fetch_xbrl_content(mock_session_class, api_client):
     mock_session = mock_session_class.return_value
     mock_response = MagicMock()
@@ -63,7 +63,7 @@ def test_run_background_scrape(mock_job_status_class, mock_nse_financials_class,
 
     asyncio.run()
 
-@patch('src.tools.exchange.nse.RateLimitedSession')
+@patch('src.tools.nse.client.RateLimitedSession')
 def test_api_client_json_decode_error(mock_session_class, api_client):
     mock_session = mock_session_class.return_value
     mock_response = MagicMock()
@@ -80,7 +80,7 @@ def test_api_client_json_decode_error(mock_session_class, api_client):
     mock_session.get.assert_called()
 
 
-@patch('src.tools.exchange.nse.RateLimitedSession')
+@patch('src.tools.nse.client.RateLimitedSession')
 def test_api_client_non_200_recovers(mock_session_class, api_client):
     mock_session = mock_session_class.return_value
     fail_response = MagicMock()

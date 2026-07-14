@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
-from src.tools.exchange.nse import NSEIndia
+from src.tools.nse.client import NSEIndia
 from src.tools.news.marketsmithindia import MarketSmithIndia
 from src.tools.web_screeners.screener import Screener
 from src.tools.web_screeners.stockscans import StockScans

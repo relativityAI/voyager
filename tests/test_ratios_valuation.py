@@ -1,7 +1,7 @@
 
 import pytest
 
-from src.ratios.valuation import (
+from src.tools.nse.valuation import (
     compute_shares_outstanding,
     compute_valuation,
     get_valuation_catalog,
@@ -53,7 +53,7 @@ class TestComputeValuation:
         assert result["pb_ratio"] == pytest.approx(41.6667, rel=1e-3)  # 2500 / (6000M/100M)
         assert result["ps_ratio"] == 12.5  # 2500 / (20000M/100M)
         assert result["pcf_ratio"] == pytest.approx(83.3333, rel=1e-3)  # 2500 / (3000M/100M)
-        assert result["peg_ratio"] == pytest.approx(333.3333, rel=1e-3)  # 50 / (15/100)
+        assert result["peg_ratio"] == pytest.approx(3.3333, rel=1e-3)  # 50 / 15
 
     def test_all_none_when_no_price(self):
         result = compute_valuation(self.COMPLETE_DATA, None, 100000000)
