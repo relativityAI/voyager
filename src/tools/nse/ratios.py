@@ -32,9 +32,9 @@ def ratio_field(tag: str) -> Callable[[Dict[str, Any]], Optional[float]]:
 
 
 def _compute_operating_margin(d: Dict[str, Any]) -> Optional[float]:
-    pbt = to_float(d.get("ProfitBeforeTax"))
-    fc = to_float(d.get("FinanceCosts"))
-    revenue = to_float(d.get("RevenueFromOperations"))
+    pbt = to_float(d.get("profit_before_tax"))
+    fc = to_float(d.get("finance_costs"))
+    revenue = to_float(d.get("revenue_from_operations"))
     if pbt is None and fc is None:
         return None
     ebit = (pbt or 0) + (fc or 0)
@@ -42,10 +42,10 @@ def _compute_operating_margin(d: Dict[str, Any]) -> Optional[float]:
 
 
 def _compute_roce(d: Dict[str, Any]) -> Optional[float]:
-    pbt = to_float(d.get("ProfitBeforeTax"))
-    fc = to_float(d.get("FinanceCosts"))
-    assets = to_float(d.get("Assets"))
-    ncl = to_float(d.get("NoncurrentLiabilities"))
+    pbt = to_float(d.get("profit_before_tax"))
+    fc = to_float(d.get("finance_costs"))
+    assets = to_float(d.get("assets"))
+    ncl = to_float(d.get("noncurrent_liabilities"))
     if pbt is None and fc is None:
         return None
     ebit = (pbt or 0) + (fc or 0)
@@ -54,11 +54,11 @@ def _compute_roce(d: Dict[str, Any]) -> Optional[float]:
 
 
 def _compute_debt_to_equity(d: Dict[str, Any]) -> Optional[float]:
-    direct = to_float(d.get("DebtEquityRatio"))
+    direct = to_float(d.get("debt_equity_ratio"))
     if direct is not None and direct != 0:
         return direct
-    debt = (to_float(d.get("BorrowingsCurrent")) or 0) + (to_float(d.get("BorrowingsNoncurrent")) or 0)
-    equity = (to_float(d.get("EquityShareCapital")) or 0) + (to_float(d.get("OtherEquity")) or 0)
+    debt = (to_float(d.get("borrowings_current")) or 0) + (to_float(d.get("borrowings_noncurrent")) or 0)
+    equity = (to_float(d.get("equity_share_capital")) or 0) + (to_float(d.get("other_equity")) or 0)
     return safe_div(debt, equity)
 
 
@@ -67,8 +67,8 @@ Profitability: List[RatioDef] = [
         "id": "net_profit_margin",
         "name": "Net Profit Margin",
         "compute": lambda d: pct(safe_div(
-            to_float(d.get("ProfitLossForPeriod")),
-            to_float(d.get("RevenueFromOperations"))
+            to_float(d.get("profit_loss_for_period")),
+            to_float(d.get("revenue_from_operations"))
         )),
     },
     {
@@ -80,16 +80,16 @@ Profitability: List[RatioDef] = [
         "id": "pre_tax_margin",
         "name": "Pre-Tax Margin",
         "compute": lambda d: pct(safe_div(
-            to_float(d.get("ProfitBeforeTax")),
-            to_float(d.get("RevenueFromOperations"))
+            to_float(d.get("profit_before_tax")),
+            to_float(d.get("revenue_from_operations"))
         )),
     },
     {
         "id": "interest_cost_ratio",
         "name": "Interest Cost Ratio",
         "compute": lambda d: pct(safe_div(
-            to_float(d.get("FinanceCosts")),
-            to_float(d.get("RevenueFromOperations"))
+            to_float(d.get("finance_costs")),
+            to_float(d.get("revenue_from_operations"))
         )),
     },
 ]
@@ -99,16 +99,16 @@ ReturnRatios: List[RatioDef] = [
         "id": "roa",
         "name": "Return on Assets (ROA)",
         "compute": lambda d: pct(safe_div(
-            to_float(d.get("ProfitLossForPeriod")),
-            to_float(d.get("Assets"))
+            to_float(d.get("profit_loss_for_period")),
+            to_float(d.get("assets"))
         )),
     },
     {
         "id": "roe",
         "name": "Return on Equity (ROE)",
         "compute": lambda d: pct(safe_div(
-            to_float(d.get("ProfitLossForPeriod")),
-            (to_float(d.get("EquityShareCapital")) or 0) + (to_float(d.get("OtherEquity")) or 0)
+            to_float(d.get("profit_loss_for_period")),
+            (to_float(d.get("equity_share_capital")) or 0) + (to_float(d.get("other_equity")) or 0)
         )),
     },
     {
@@ -128,16 +128,16 @@ CapitalStructure: List[RatioDef] = [
         "id": "equity_ratio",
         "name": "Equity Ratio",
         "compute": lambda d: pct(safe_div(
-            (to_float(d.get("EquityShareCapital")) or 0) + (to_float(d.get("OtherEquity")) or 0),
-            to_float(d.get("Assets"))
+            (to_float(d.get("equity_share_capital")) or 0) + (to_float(d.get("other_equity")) or 0),
+            to_float(d.get("assets"))
         )),
     },
     {
         "id": "financial_leverage",
         "name": "Financial Leverage",
         "compute": lambda d: safe_div(
-            to_float(d.get("Assets")),
-            (to_float(d.get("EquityShareCapital")) or 0) + (to_float(d.get("OtherEquity")) or 0)
+            to_float(d.get("assets")),
+            (to_float(d.get("equity_share_capital")) or 0) + (to_float(d.get("other_equity")) or 0)
         ),
     },
 ]
@@ -147,16 +147,16 @@ Liquidity: List[RatioDef] = [
         "id": "cash_ratio",
         "name": "Cash Ratio",
         "compute": lambda d: safe_div(
-            to_float(d.get("CashAndCashEquivalents")),
-            to_float(d.get("BorrowingsCurrent"))
+            to_float(d.get("cash_and_cash_equivalents")),
+            to_float(d.get("borrowings_current"))
         ),
     },
     {
         "id": "operating_cash_flow_ratio",
         "name": "Operating Cash Flow Ratio",
         "compute": lambda d: safe_div(
-            to_float(d.get("CashFlowsFromUsedInOperatingActivities")),
-            to_float(d.get("BorrowingsCurrent"))
+            to_float(d.get("cash_flows_from_used_in_operating_activities")),
+            to_float(d.get("borrowings_current"))
         ),
     },
 ]
@@ -166,16 +166,16 @@ CashFlow: List[RatioDef] = [
         "id": "operating_cash_flow_margin",
         "name": "Operating Cash Flow Margin",
         "compute": lambda d: pct(safe_div(
-            to_float(d.get("CashFlowsFromUsedInOperatingActivities")),
-            to_float(d.get("RevenueFromOperations"))
+            to_float(d.get("cash_flows_from_used_in_operating_activities")),
+            to_float(d.get("revenue_from_operations"))
         )),
     },
     {
         "id": "ocf_to_net_income",
         "name": "OCF to Net Income",
         "compute": lambda d: safe_div(
-            to_float(d.get("CashFlowsFromUsedInOperatingActivities")),
-            to_float(d.get("ProfitLossForPeriod"))
+            to_float(d.get("cash_flows_from_used_in_operating_activities")),
+            to_float(d.get("profit_loss_for_period"))
         ),
     },
 ]
@@ -185,9 +185,9 @@ EarningsQuality: List[RatioDef] = [
         "id": "dilution_impact",
         "name": "Dilution Impact",
         "compute": lambda d: pct(safe_div(
-            (to_float(d.get("BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations")) or 0)
-            - (to_float(d.get("DilutedEarningsLossPerShareFromContinuingAndDiscontinuedOperations")) or 0),
-            to_float(d.get("BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations"))
+            (to_float(d.get("basic_earnings_loss_per_share_from_continuing_and_discontinued_operations")) or 0)
+            - (to_float(d.get("diluted_earnings_loss_per_share_from_continuing_and_discontinued_operations")) or 0),
+            to_float(d.get("basic_earnings_loss_per_share_from_continuing_and_discontinued_operations"))
         )),
     },
 ]
@@ -202,9 +202,9 @@ Growth: List[RatioDef] = [
 ]
 
 GROWTH_METRICS_MAP = {
-    "revenue_growth": "RevenueFromOperations",
-    "net_profit_growth": "ProfitLossForPeriod",
-    "eps_growth": "BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations",
+    "revenue_growth": "revenue_from_operations",
+    "net_profit_growth": "profit_loss_for_period",
+    "eps_growth": "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations",
 }
 
 

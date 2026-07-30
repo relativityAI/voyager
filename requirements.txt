@@ -20,5 +20,6 @@ rich
 pytesseract
 pdf2image
 google-generativeai
+tavily-python
 youtube_search
 youtube_transcript_api

@@ -31,7 +31,7 @@ def test_extract_xml_valid(parser):
     result = parser.extract_xml(sample_xml, "TCS")
     assert result is not None
     assert result["symbol"] == "TCS"
-    assert result["date"] == "2023-03-31"
+    assert result["period_end_date"] == "2023-03-31"
     assert len(result["financials"]) == 2
     assert result["financials"][0]["tag"] == "RevenueFromOperations"
     assert result["financials"][0]["value"] == "1000"
@@ -114,6 +114,20 @@ def test_nse_financials_schema():
 SAMPLE_XBRL = b"""<?xml version="1.0" encoding="utf-8"?>
 <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"
             xmlns:in-bse-fin="http://www.bseindia.com/xbrl/fin/2015-03-31/in-bse-fin">
+    <xbrli:context id="OneI">
+        <xbrli:entity><xbrli:identifier scheme="http://www.bseindia.com">TEST</xbrli:identifier></xbrli:entity>
+        <xbrli:period>
+            <xbrli:startDate>2025-07-01</xbrli:startDate>
+            <xbrli:endDate>2025-09-30</xbrli:endDate>
+        </xbrli:period>
+    </xbrli:context>
+    <xbrli:context id="FourD">
+        <xbrli:entity><xbrli:identifier scheme="http://www.bseindia.com">TEST</xbrli:identifier></xbrli:entity>
+        <xbrli:period>
+            <xbrli:startDate>2025-01-01</xbrli:startDate>
+            <xbrli:endDate>2025-12-31</xbrli:endDate>
+        </xbrli:period>
+    </xbrli:context>
     <in-bse-fin:endDate>2025-09-30</in-bse-fin:endDate>
     <in-bse-fin:RevenueFromOperations contextRef="OneI">5000000</in-bse-fin:RevenueFromOperations>
     <in-bse-fin:RevenueFromOperations contextRef="FourD">15000000</in-bse-fin:RevenueFromOperations>
@@ -127,24 +141,23 @@ SAMPLE_XBRL = b"""<?xml version="1.0" encoding="utf-8"?>
 MOCK_XBRL_URL = "https://nsearchives.nseindia.com/corporate/xbrl/test.xml"
 
 def test_process_xbrl_filters_quarterly(nse_india):
-    """process_xbrl should only keep quarterly (OneD/OneI) facts for integrated-filing."""
+    """process_xbrl should classify quarterly (OneD/OneI) facts into correct statement docs."""
     mock_record = {"xbrl": MOCK_XBRL_URL, "consolidated": "Consolidated"}
     with unittest.mock.patch.object(nse_india.api, "fetch_xbrl_content", return_value=SAMPLE_XBRL):
         result = nse_india.process_xbrl(mock_record, "TEST", "integrated-filing")
     assert result is not None
-    assert result["symbol"] == "TEST"
-    assert result["date"] == "2025-09-30"
-    tags = [f["tag"] for f in result["financials"]]
-    assert "endDate" in tags
-    for f in result["financials"]:
-        if f["tag"] == "RevenueFromOperations":
-            assert f["value"] == "5000000"
-            assert "OneI" in f.get("contextRef", "")
-        if f["tag"] == "DilutedEarningsLossPerShareFromContinuingOperations":
-            assert f["value"] == "0.53"
-            assert "OneI" in f.get("contextRef", "")
-    four_d_facts = [f for f in result["financials"] if "FourD" in (f.get("contextRef") or "")]
-    assert len(four_d_facts) == 0, "Should have filtered out FourD (annual) facts"
+    assert result["income_statement"] is not None
+    assert result["balance_sheet"] is None
+    assert result["cash_flow"] is None
+    assert result["shareholding"] is None
+    doc = result["income_statement"]
+    assert doc["symbol"] == "TEST"
+    assert doc["period_end_date"] == "2025-09-30"
+    assert doc["consolidated"] is True
+    assert doc["revenue_from_operations"] == "5000000"
+    assert doc["profit_loss_for_period"] == "1000000"
+    assert doc["diluted_earnings_loss_per_share_from_continuing_operations"] == "0.53"
+
 
 def test_process_xbrl_filters_annual(nse_india):
     """process_xbrl should only keep annual (FourD) facts for annual-results."""
@@ -152,22 +165,20 @@ def test_process_xbrl_filters_annual(nse_india):
     with unittest.mock.patch.object(nse_india.api, "fetch_xbrl_content", return_value=SAMPLE_XBRL):
         result = nse_india.process_xbrl(mock_record, "TEST", "annual-results")
     assert result is not None
-    tags = [f["tag"] for f in result["financials"]]
-    assert "endDate" in tags
-    for f in result["financials"]:
-        if f["tag"] == "RevenueFromOperations":
-            assert f["value"] == "15000000"
-            assert "FourD" in f.get("contextRef", "")
-    one_i_facts = [f for f in result["financials"] if "OneI" in (f.get("contextRef") or "")]
-    assert len(one_i_facts) == 0, "Should have filtered out OneI (quarterly) facts"
+    assert result["income_statement"] is not None
+    doc = result["income_statement"]
+    assert doc["revenue_from_operations"] == "15000000"
+    assert doc["profit_loss_for_period"] == "3500000"
+    assert doc["diluted_earnings_loss_per_share_from_continuing_operations"] == "2.10"
+
 
 def test_process_xbrl_skips_empty_after_filter(nse_india):
     """process_xbrl should return None when no facts match the filter."""
-    sample = SAMPLE_XBRL.replace(b"FourD", b"TwoD").replace(b"OneI", b"TwoD")
+    sample = SAMPLE_XBRL.replace(b"2025-01-01", b"2025-07-01").replace(b"2025-12-31", b"2025-09-30")
     mock_record = {"xbrl": MOCK_XBRL_URL, "consolidated": "Consolidated"}
     with unittest.mock.patch.object(nse_india.api, "fetch_xbrl_content", return_value=sample):
         result = nse_india.process_xbrl(mock_record, "TEST", "annual-results")
-    assert result is None, "Should skip XBRL with no annual (FourD) facts"
+    assert result is None, "Should skip XBRL with no annual duration facts"
 
 def test_nse_financials_fetch():
     nseindia = NSEIndia()
@@ -192,10 +203,10 @@ def test_nse_financials_fetch():
         ep_key = "integrated-filing" if category == "integrated" else "quarterly-results"
         parsed_data = nseindia.process_xbrl(x, "SKYGOLD", ep_key)
         if parsed_data:
-            assert parsed_data["symbol"] == "SKYGOLD"
-            assert "financials" in parsed_data
-            assert "date" in parsed_data
-            assert len(parsed_data["financials"]) > 0
+            stmt = parsed_data.get("income_statement") or parsed_data.get("balance_sheet") or parsed_data.get("cash_flow") or parsed_data.get("shareholding")
+            assert stmt is not None, "At least one statement doc should be present"
+            assert stmt["symbol"] == "SKYGOLD"
+            assert "period_end_date" in stmt
             found_parsed = True
             break
 

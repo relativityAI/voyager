@@ -11,26 +11,26 @@ from src.tools.nse.valuation import (
 class TestComputeSharesOutstanding:
     def test_normal(self):
         data = {
-            "PaidUpValueOfEquityShareCapital": "1000000000",
-            "FaceValueOfEquityShareCapital": "10",
+            "paid_up_value_of_equity_share_capital": "1000000000",
+            "face_value_of_equity_share_capital": "10",
         }
         assert compute_shares_outstanding(data) == 100000000.0
 
     def test_missing_face_value(self):
-        data = {"PaidUpValueOfEquityShareCapital": "1000000000"}
+        data = {"paid_up_value_of_equity_share_capital": "1000000000"}
         assert compute_shares_outstanding(data) is None
 
     def test_zero_face_value(self):
         data = {
-            "PaidUpValueOfEquityShareCapital": "1000000000",
-            "FaceValueOfEquityShareCapital": "0",
+            "paid_up_value_of_equity_share_capital": "1000000000",
+            "face_value_of_equity_share_capital": "0",
         }
         assert compute_shares_outstanding(data) is None
 
     def test_nan_values(self):
         data = {
-            "PaidUpValueOfEquityShareCapital": float("nan"),
-            "FaceValueOfEquityShareCapital": "10",
+            "paid_up_value_of_equity_share_capital": float("nan"),
+            "face_value_of_equity_share_capital": "10",
         }
         assert compute_shares_outstanding(data) is None
 
@@ -40,11 +40,11 @@ class TestComputeSharesOutstanding:
 
 class TestComputeValuation:
     COMPLETE_DATA = {
-        "BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations": "50.0",
-        "PaidUpValueOfEquityShareCapital": "1000000000",
-        "ReserveExcludingRevaluationReserves": "5000000000",
-        "RevenueFromOperations": "20000000000",
-        "CashFlowsFromUsedInOperatingActivities": "3000000000",
+        "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": "50.0",
+        "paid_up_value_of_equity_share_capital": "1000000000",
+        "reserve_excluding_revaluation_reserves": "5000000000",
+        "revenue_from_operations": "20000000000",
+        "cash_flows_from_used_in_operating_activities": "3000000000",
     }
 
     def test_all_ratios_with_valid_data(self):
@@ -68,32 +68,31 @@ class TestComputeValuation:
         assert all(v is None for v in result.values())
 
     def test_pe_with_negative_eps(self):
-        data = {"BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations": "-10"}
+        data = {"basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": "-10"}
         result = compute_valuation(data, 100.0, 100000000)
-        assert result["pe_ratio"] == -10.0  # negative PE is valid
+        assert result["pe_ratio"] == -10.0
 
     def test_pe_only_with_no_shares(self):
         result = compute_valuation(
-            {"BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations": "25"},
+            {"basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": "25"},
             500.0,
             0,
         )
-        assert result["pe_ratio"] == 20.0  # 500/25
-        assert result["pb_ratio"] is None  # needs shares
+        assert result["pe_ratio"] == 20.0
+        assert result["pb_ratio"] is None
         assert result["ps_ratio"] is None
         assert result["pcf_ratio"] is None
 
     def test_fallback_shares_from_financials(self):
         data = {
-            "BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations": "10",
-            "PaidUpValueOfEquityShareCapital": "500000000",
-            "FaceValueOfEquityShareCapital": "10",
-            "EquityShareCapital": "500000000",
-            "OtherEquity": "2000000000",
+            "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": "10",
+            "paid_up_value_of_equity_share_capital": "500000000",
+            "face_value_of_equity_share_capital": "10",
+            "equity_share_capital": "500000000",
+            "other_equity": "2000000000",
         }
         result = compute_valuation(data, 100.0, None)
         assert result["pe_ratio"] == 10.0
-        # equity=2500M, shares=50M, bvps=50, pb=100/50=2.0
         assert result["pb_ratio"] == pytest.approx(2.0, rel=1e-3)
 
     def test_no_peg_with_zero_growth(self):
@@ -108,26 +107,26 @@ class TestComputeValuation:
 
     def test_zero_revenue(self):
         data = {
-            "BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations": "10",
-            "EquityShareCapital": "100000000",
-            "OtherEquity": "400000000",
-            "RevenueFromOperations": "0",
+            "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": "10",
+            "equity_share_capital": "100000000",
+            "other_equity": "400000000",
+            "revenue_from_operations": "0",
         }
         result = compute_valuation(data, 100.0, 50000000)
         assert result["pe_ratio"] == 10.0
-        assert result["ps_ratio"] is None  # zero revenue
+        assert result["ps_ratio"] is None
 
     def test_zero_equity(self):
         data = {
-            "BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations": "10",
-            "RevenueFromOperations": "10000000000",
-            "CashFlowsFromUsedInOperatingActivities": "2000000000",
+            "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": "10",
+            "revenue_from_operations": "10000000000",
+            "cash_flows_from_used_in_operating_activities": "2000000000",
         }
         result = compute_valuation(data, 500.0, 50000000)
         assert result["pe_ratio"] == 50.0
-        assert result["pb_ratio"] is None  # zero equity
-        assert result["ps_ratio"] == 2.5  # 500 / (10000M/50M)
-        assert result["pcf_ratio"] == 12.5  # 500 / (2000M/50M)
+        assert result["pb_ratio"] is None
+        assert result["ps_ratio"] == 2.5
+        assert result["pcf_ratio"] == 12.5
 
 
 class TestGetValuationCatalog:

@@ -68,17 +68,33 @@ tags = [
 
 """
 
+import hashlib
+import json
 import logging
 import os
 import random
+from datetime import datetime
 from io import BytesIO
+from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 from lxml import etree
 from pypdf import PdfReader
 
+from src.tools.nse.ratios import FINANCIAL_FIELD_MAP
+from src.utils.case_converter import camel_to_snake
 from src.utils.rate_limiter import RateLimitedSession, get_rate_limiter
 from src.utils.web import generate_fake_headers
+
+XBRLI_NS = "http://www.xbrl.org/2003/instance"
+
+CAML_TO_SNAKE: Dict[str, str] = {k: camel_to_snake(k) for k in FINANCIAL_FIELD_MAP}
+
+CATEGORY_MAP: Dict[str, str] = {}
+for camel_tag, field in FINANCIAL_FIELD_MAP.items():
+    cat = field.get("category", "")
+    snake = camel_to_snake(camel_tag)
+    CATEGORY_MAP[snake] = cat
 
 
 def get_random_symbol():
@@ -140,7 +156,7 @@ def get_random_symbol():
 ENDPOINTS = {
     "corp-info": "https://www.nseindia.com/api/corp-info?symbol={symbol}&corpType=corpInfo&market=equities",
     "shareholding-pattern": "https://www.nseindia.com/api/corporate-share-holdings-master?index=equities&symbol={symbol}",
-    "announcements-equity": "https://www.nseindia.com/api/corporate-announcements?index=equities&symbol={symbol}",
+    "announcements-equities": "https://www.nseindia.com/api/corporate-announcements?index=equities&symbol={symbol}",
     "announcements-sme": "https://www.nseindia.com/api/corporate-announcements?index=sme&symbol={symbol}",
     "annual-reports": "https://www.nseindia.com/api/annual-reports?index=equities&symbol={symbol}",
     "event-calendar": "https://www.nseindia.com/api/event-calendar",
@@ -149,14 +165,21 @@ ENDPOINTS = {
     "integrated-filing": "https://www.nseindia.com/api/integrated-filing-results?&symbol={symbol}",
 }
 
+SH_PERCENTAGE_TAGS = {"ShareholdingAsAPercentageOfTotalNumberOfShares"}
+
+SH_CONTEXT_TO_FIELD = {
+    "ShareholdingOfPromoterAndPromoterGroupI": "promoters_and_promoter_group",
+    "InstitutionsForeignI": "foreign_institutional_investors",
+    "InstitutionsDomesticI": "domestic_institutional_investors",
+    "NonInstitutionsI": "non_institutions",
+    "PublicShareholdingI": "public_shareholding",
+    "SharesHeldByNonPromoterNonPublicShareholdersI": "non_promoter_non_public_shareholding",
+}
+
+shareholding_context_ref_types = list(SH_CONTEXT_TO_FIELD.keys())
+
 quarterly_context_ref_types = ["OneD", "OneI"]
 annual_context_ref_types = ["FourD"]
-shareholding_context_ref_types = [
-    "ShareholdingOfPromoterAndPromoterGroupI",
-    "InstitutionsForeignI",
-    "InstitutionsDomesticI",
-    "NonInstitutionsI",
-]
 
 
 class NSEApiClient:
@@ -229,7 +252,7 @@ class NSEApiClient:
             return {}
 
     def announcements_xbrls(self, symbol):
-        res = self._call(self.endpoints["announcements-equity"].format(symbol=symbol.upper()))
+        res = self._call(self.endpoints["announcements-equities"].format(symbol=symbol.upper()))
         return self._safe_json(res)
 
     def annual_results_xbrls(self, symbol):
@@ -270,33 +293,67 @@ class NSEDataParser:
             tree = etree.parse(BytesIO(content))
             root = tree.getroot()
 
-            nsmap = root.nsmap.copy()
-            if None in nsmap:
-                nsmap["default"] = nsmap.pop(None)
-
             rows = []
-            date = None
+            period_end_date = None
+            contexts: Dict[str, Dict[str, str]] = {}
+            units: Dict[str, str] = {}
+
             for elem in root.iter():
                 tag = etree.QName(elem.tag).localname
                 ns = etree.QName(elem.tag).namespace
-                if tag in ("context", "unit", "xbrl"):
-                    continue
                 text = elem.text.strip() if elem.text else None
 
-                if tag == "endDate":
-                    date = text
+                if tag == "context" and ns == XBRLI_NS:
+                    ctx_id = elem.get("id")
+                    ctx_data: Dict[str, str] = {}
+                    for child in elem.iter():
+                        ct = etree.QName(child.tag).localname
+                        if child.text:
+                            val = child.text.strip()
+                            if ct in ("identifier",):
+                                ctx_data["entity"] = val
+                            elif ct in ("instant", "startDate", "endDate"):
+                                ctx_data[ct] = val
+                    contexts[ctx_id] = ctx_data
+                    continue
+
+                if tag == "unit" and ns == XBRLI_NS:
+                    for child in elem.iter():
+                        ct = etree.QName(child.tag).localname
+                        if ct == "measure" and child.text:
+                            units[elem.get("id")] = child.text.strip()
+                    continue
+
+                if tag in ("xbrl",):
+                    continue
+
+                if tag == "endDate" and text:
+                    period_end_date = text
 
                 if ns and text:
-                    rows.append(
-                        {
-                            "tag": tag,
-                            "value": text,
-                            "contextRef": elem.get("contextRef"),
-                        }
-                    )
+                    rows.append({
+                        "tag": tag,
+                        "value": text,
+                        "contextRef": elem.get("contextRef"),
+                    })
 
-            data = {"symbol": symbol, "date": date, "financials": rows}
-            return data
+            currency = next(iter(units.values()), None)
+
+            for row in rows:
+                cr = row.get("contextRef")
+                ctx = contexts.get(cr, {})
+                row["entity"] = ctx.get("entity", symbol)
+                row["start_date"] = ctx.get("startDate")
+                row["end_date"] = ctx.get("endDate")
+                row["instant_date"] = ctx.get("instant")
+
+            return {
+                "symbol": symbol,
+                "period_end_date": period_end_date,
+                "financials": rows,
+                "currency": currency,
+                "contexts": contexts,
+            }
         except Exception as e:
             self.logger.error(f"Extraction error: {e}")
             return None
@@ -308,34 +365,92 @@ class NSEIndia:
         self.parser = NSEDataParser()
         self.logger = logging.getLogger(__name__)
 
+    @staticmethod
+    def _derive_fiscal_period(period_end: str) -> str:
+        try:
+            dt = datetime.strptime(period_end, "%Y-%m-%d")
+            m = dt.month
+            if m in (1, 2, 3):
+                return "Q4"
+            elif m in (4, 5, 6):
+                return "Q1"
+            elif m in (7, 8, 9):
+                return "Q2"
+            else:
+                return "Q3"
+        except (ValueError, TypeError):
+            return ""
+
+    @staticmethod
+    def _get_context_ref_type(context_ref: str) -> str:
+        if not context_ref:
+            return ""
+        if any(ref in context_ref for ref in quarterly_context_ref_types):
+            return "quarterly"
+        if any(ref in context_ref for ref in annual_context_ref_types):
+            return "annual"
+        if any(ref in context_ref for ref in shareholding_context_ref_types):
+            return "shareholding"
+        return context_ref
+
+    @staticmethod
+    def _filter_facts_by_period(financials: list, category: str) -> list:
+        period_tag = "quarterly" if category in ("integrated-filing", "quarterly-results", "integrated") else "annual" if category == "annual-results" else None
+        if period_tag is None:
+            return financials
+
+        result = []
+        for f in financials:
+            start = f.get("start_date")
+            end = f.get("end_date")
+            instant = f.get("instant_date")
+            point_in_time = bool(instant and not start)
+
+            if point_in_time:
+                result.append(f)
+                continue
+
+            if start and end:
+                try:
+                    sd = datetime.strptime(start, "%Y-%m-%d")
+                    ed = datetime.strptime(end, "%Y-%m-%d")
+                    days = (ed - sd).days
+                    is_quarterly = 0 < days <= 200
+                    is_annual = days > 200
+                except (ValueError, TypeError):
+                    is_quarterly = False
+                    is_annual = False
+
+                if period_tag == "quarterly" and is_quarterly:
+                    result.append(f)
+                elif period_tag == "annual" and is_annual:
+                    result.append(f)
+            else:
+                result.append(f)
+
+        return result
+
     def process_xbrl(self, x, symbol, category):
         try:
-            xbrl_url = x.get("xbrl") or x.get("broadCastDate")  # fallback
+            xbrl_url = x.get("xbrl") or x.get("broadCastDate")
             if not xbrl_url or xbrl_url in ("-", "null"):
                 return None
 
-            date_str = x.get("broadcast_Date") or x.get("broadCastDate")
+            broadcast_date = x.get("broadcast_Date") or x.get("broadCastDate")
 
+            self.logger.info(f"Processing XBRL for {symbol} ({category}): {xbrl_url}")
             extension = xbrl_url.split(".")[-1]
             if extension == "xml":
                 content = self.api.fetch_xbrl_content(xbrl_url, symbol)
                 if content:
                     data = self.parser.extract_xml(content, symbol)
-                    if data and data.get("date"):
-                        if category in ("integrated-filing", "quarterly-results", "integrated"):
+                    if data and data.get("period_end_date"):
+                        data["financials"] = self._filter_facts_by_period(data["financials"], category)
+
+                        if category == "shareholding-pattern":
                             data["financials"] = [
                                 f for f in data["financials"]
-                                if not f.get("contextRef") or any(ref in (f.get("contextRef") or "") for ref in self.api.quarterly_context_ref_types)
-                            ]
-                        elif category == "annual-results":
-                            data["financials"] = [
-                                f for f in data["financials"]
-                                if not f.get("contextRef") or any(ref in (f.get("contextRef") or "") for ref in self.api.annual_context_ref_types)
-                            ]
-                        elif category == "shareholding-pattern":
-                            data["financials"] = [
-                                f for f in data["financials"]
-                                if not f.get("contextRef") or any(ref in (f.get("contextRef") or "") for ref in self.api.shareholding_context_ref_types)
+                                if f.get("contextRef") in shareholding_context_ref_types
                             ]
 
                         if not any(f.get("contextRef") for f in data["financials"]):
@@ -343,13 +458,100 @@ class NSEIndia:
                             return None
 
                         default_consolidated = "Shareholding" if category == "shareholding-pattern" else "Consolidated"
-                        return {
+                        consolidated = x.get("consolidated", default_consolidated)
+                        period_end = data["period_end_date"]
+
+                        is_cons = str(consolidated).lower() in ("consolidated", "true", "1")
+
+                        if category in ("integrated-filing", "quarterly-results"):
+                            filing_type = "quarterly"
+                        elif category == "annual-results":
+                            filing_type = "annual"
+                        elif category == "shareholding-pattern":
+                            filing_type = "shareholding"
+                        else:
+                            filing_type = "quarterly"
+
+                        base_meta = {
                             "symbol": symbol.upper(),
-                            "date": data["date"],
-                            "consolidated": x.get("consolidated", default_consolidated),
-                            "financials": data["financials"],
-                            "broadcast_date": date_str,
+                            "period_end_date": period_end,
+                            "period_start_date": None,
+                            "xbrl_url": xbrl_url,
+                            "broadcast_date": broadcast_date,
+                            "consolidated": is_cons,
+                            "filing_type": filing_type,
+                            "measure": data.get("currency"),
+                            "entity_identifier": symbol.upper(),
+                            "fiscal_period": self._derive_fiscal_period(period_end),
+                            "source_endpoint": category,
+                            "pulled_at": datetime.utcnow(),
                         }
+
+                        for f in data["financials"]:
+                            if f.get("start_date") and base_meta["period_start_date"] is None:
+                                base_meta["period_start_date"] = f["start_date"]
+
+                        result: Dict[str, Any] = {
+                            "income_statement": None,
+                            "balance_sheet": None,
+                            "cash_flow": None,
+                            "shareholding": None,
+                        }
+
+                        stmts: Dict[str, list] = {
+                            "income_statement": [],
+                            "balance_sheet": [],
+                            "cash_flow": [],
+                            "shareholding": [],
+                        }
+
+                        ctx_ref_types_used: set = set()
+                        for f in data["financials"]:
+                            cr = f.get("contextRef", "")
+                            ctx_ref_types_used.add(self._get_context_ref_type(cr))
+
+                            tag = f["tag"]
+                            tag_snake = CAML_TO_SNAKE.get(tag, camel_to_snake(tag))
+                            cat = CATEGORY_MAP.get(tag_snake, "other")
+
+                            if category == "shareholding-pattern" and cr:
+                                if tag not in SH_PERCENTAGE_TAGS:
+                                    continue
+                                field = SH_CONTEXT_TO_FIELD.get(cr, camel_to_snake(cr))
+                                stmts["shareholding"].append((field, f["value"]))
+                                continue
+
+                            entry = (tag_snake, f["value"])
+
+                            if cat == "income_statement" or cat == "per_share":
+                                stmts["income_statement"].append(entry)
+                            elif cat == "balance_sheet":
+                                stmts["balance_sheet"].append(entry)
+                            elif cat == "cash_flow":
+                                stmts["cash_flow"].append(entry)
+                            elif cat == "metadata":
+                                pass
+                            else:
+                                stmts["income_statement"].append(entry)
+
+                        ctx_ref_type_str = ", ".join(sorted(ctx_ref_types_used)) if ctx_ref_types_used else ""
+                        base_meta["context_ref_type"] = ctx_ref_type_str
+
+                        for stmt_key in ("income_statement", "balance_sheet", "cash_flow", "shareholding"):
+                            entries = stmts[stmt_key]
+                            if not entries:
+                                continue
+                            doc = dict(base_meta)
+                            doc["_content_hash"] = hashlib.md5(
+                                json.dumps({k: doc[k] for k in ("symbol", "period_end_date", "consolidated", "source_endpoint")}, sort_keys=True, default=str).encode()
+                            ).hexdigest()
+                            for tag_snake, value in entries:
+                                doc[tag_snake] = value
+                            result[stmt_key] = doc
+
+                        stmt_types = [k for k, v in result.items() if v is not None]
+                        self.logger.info(f"Parsed XBRL for {symbol} ({category}): {', '.join(stmt_types)}")
+                        return result
             elif extension == "html":
                 self.logger.error("HTML data extraction yet to be implemented")
             elif extension == "pdf":
