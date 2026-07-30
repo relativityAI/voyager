@@ -5,6 +5,13 @@ import pandas as pd
 import typer
 from loguru import logger
 
+import asyncio
+import json
+
+from src.logging_config import setup_logging
+
+setup_logging()
+
 from __version__ import __version__
 from src.core import (
     extract_pdf_content,
@@ -23,9 +30,6 @@ from src.utils.mongodb import DB
 
 app = typer.Typer()
 db = DB()
-
-import asyncio
-import json
 
 from src.db.connection import init_db
 from src.db.models import ScreenerData

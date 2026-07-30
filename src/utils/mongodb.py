@@ -6,9 +6,6 @@ from pymongo.mongo_client import MongoClient
 
 from src.utils import console
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-
-
 # ==========================================
 from dotenv import load_dotenv
 

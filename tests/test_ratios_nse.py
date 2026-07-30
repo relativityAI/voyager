@@ -95,21 +95,21 @@ class TestFlattenFinancials:
 
 class TestComputeStatic:
     FULL_DATA = {
-        "RevenueFromOperations": "100000",
-        "ProfitLossForPeriod": "15000",
-        "ProfitBeforeTax": "20000",
-        "FinanceCosts": "3000",
-        "Expenses": "80000",
-        "Assets": "500000",
-        "EquityShareCapital": "50000",
-        "OtherEquity": "150000",
-        "NoncurrentLiabilities": "100000",
-        "DebtEquityRatio": "1.5",
-        "BorrowingsCurrent": "20000",
-        "CashAndCashEquivalents": "10000",
-        "CashFlowsFromUsedInOperatingActivities": "25000",
-        "BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations": "10",
-        "DilutedEarningsLossPerShareFromContinuingAndDiscontinuedOperations": "9.5",
+        "revenue_from_operations": "100000",
+        "profit_loss_for_period": "15000",
+        "profit_before_tax": "20000",
+        "finance_costs": "3000",
+        "expenses": "80000",
+        "assets": "500000",
+        "equity_share_capital": "50000",
+        "other_equity": "150000",
+        "noncurrent_liabilities": "100000",
+        "debt_equity_ratio": "1.5",
+        "borrowings_current": "20000",
+        "cash_and_cash_equivalents": "10000",
+        "cash_flows_from_used_in_operating_activities": "25000",
+        "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": "10",
+        "diluted_earnings_loss_per_share_from_continuing_and_discontinued_operations": "9.5",
     }
 
     def test_all_ratios_computed(self):
@@ -192,7 +192,7 @@ class TestComputeStatic:
                 assert ratio_val is None, f"{cat_key} expected None got {ratio_val}"
 
     def test_partial_data(self):
-        data = {"RevenueFromOperations": "1000", "ProfitLossForPeriod": "100"}
+        data = {"revenue_from_operations": "1000", "profit_loss_for_period": "100"}
         result = compute_static(data)
         assert result["profitability"]["net_profit_margin"] == 10.0
         assert result["profitability"]["operating_margin"] is None
@@ -200,16 +200,16 @@ class TestComputeStatic:
 
 class TestComputeGrowth:
     CURRENT = {
-        "RevenueFromOperations": "120000",
-        "ProfitLossForPeriod": "18000",
-        "BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations": "12",
-        "EquityShareCapital": "60000",
+        "revenue_from_operations": "120000",
+        "profit_loss_for_period": "18000",
+        "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": "12",
+        "equity_share_capital": "60000",
     }
     PREVIOUS = {
-        "RevenueFromOperations": "100000",
-        "ProfitLossForPeriod": "15000",
-        "BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations": "10",
-        "EquityShareCapital": "50000",
+        "revenue_from_operations": "100000",
+        "profit_loss_for_period": "15000",
+        "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": "10",
+        "equity_share_capital": "50000",
     }
 
     def test_revenue_growth(self):
@@ -227,7 +227,7 @@ class TestComputeGrowth:
         assert all(v is None for v in growth.values())
 
     def test_zero_previous(self):
-        prev = {"RevenueFromOperations": "0"}
+        prev = {"revenue_from_operations": "0"}
         growth = compute_growth(self.CURRENT, prev)
         assert growth["revenue_growth"] is None
 

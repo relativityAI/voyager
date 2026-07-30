@@ -1,0 +1,73 @@
+{
+  "income_statements": {
+    "priority": [
+      "revenue_from_operations",
+      "other_income",
+      "income",
+      "finance_costs",
+      "other_expenses",
+      "expenses",
+      "profit_before_exceptional_items_and_tax",
+      "exceptional_items_before_tax",
+      "profit_before_tax",
+      "current_tax",
+      "deferred_tax",
+      "tax_expense",
+      "profit_loss_for_period_from_continuing_operations",
+      "profit_loss_from_discontinued_operations_before_tax",
+      "tax_expense_of_discontinued_operations",
+      "profit_loss_from_discontinued_operations_after_tax",
+      "profit_loss_for_period",
+      "profit_or_loss_attributable_to_owners_of_parent",
+      "comprehensive_income_for_the_period",
+      "basic_earnings_loss_per_share_from_continuing_operations",
+      "diluted_earnings_loss_per_share_from_continuing_operations",
+      "basic_earnings_loss_per_share_from_discontinued_operations",
+      "diluted_earnings_loss_per_share_from_discontinued_operations",
+      "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations",
+      "diluted_earnings_loss_per_share_from_continuing_and_discontinued_operations"
+    ]
+  },
+  "balance_sheets": {
+    "priority": [
+      "paid_up_value_of_equity_share_capital",
+      "face_value_of_equity_share_capital",
+      "equity_share_capital",
+      "other_equity",
+      "debt_equity_ratio",
+      "noncurrent_liabilities",
+      "borrowings_current",
+      "noncurrent_investments",
+      "trade_receivables_noncurrent",
+      "loans_noncurrent",
+      "other_noncurrent_financial_assets",
+      "noncurrent_financial_assets",
+      "deferred_tax_assets_net",
+      "other_noncurrent_assets",
+      "noncurrent_assets",
+      "capital_work_in_progress",
+      "investment_property",
+      "goodwill",
+      "other_intangible_assets",
+      "assets",
+      "cash_and_cash_equivalents",
+      "bank_balance_other_than_cash_and_cash_equivalents"
+    ]
+  },
+  "cash_flows": {
+    "priority": [
+      "cash_flows_from_used_in_operations",
+      "cash_flows_from_used_in_operating_activities"
+    ]
+  },
+  "shareholdings": {
+    "priority": [
+      "promoters_and_promoter_group",
+      "foreign_institutional_investors",
+      "domestic_institutional_investors",
+      "public_shareholding",
+      "non_institutions",
+      "non_promoter_non_public_shareholding"
+    ]
+  }
+}

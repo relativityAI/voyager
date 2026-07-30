@@ -14,51 +14,13 @@ except ImportError:
     pytest.skip("Skipping API tests: motor/pymongo import issue", allow_module_level=True)
 
 
-class TestAvailableMetrics:
-    def test_returns_200(self):
-        response = client.get("/equity/data/metrics/available")
-        assert response.status_code == 200
-
-    def test_contains_raw_categories(self):
-        response = client.get("/equity/data/metrics/available")
-        data = response.json()
-        categories = {c["id"]: c for c in data["categories"]}
-        assert "raw_income_statement" in categories
-        assert "raw_balance_sheet" in categories
-
-    def test_contains_valuation_ratios(self):
-        response = client.get("/equity/data/metrics/available")
-        data = response.json()
-        categories = {c["id"]: c for c in data["categories"]}
-        assert "ratio_valuation" in categories
-
-    def test_contains_technicals(self):
-        response = client.get("/equity/data/metrics/available")
-        data = response.json()
-        categories = {c["id"]: c for c in data["categories"]}
-        assert "technicals" in categories
-
-    def test_total_categories_count(self):
-        response = client.get("/equity/data/metrics/available")
-        data = response.json()
-        assert len(data["categories"]) == 14
-
-    def test_metrics_have_id_and_name(self):
-        response = client.get("/equity/data/metrics/available")
-        data = response.json()
-        for category in data["categories"]:
-            for metric in category["metrics"]:
-                assert "id" in metric
-                assert "name" in metric
-
-
-class TestFinancialRatios:
+class TestFinancialMetrics:
     @pytest.fixture(autouse=True)
     def setup_mocks(self):
         from unittest.mock import patch
 
-        price_patcher = patch("api.fetch_price_info")
-        tech_patcher = patch("api.fetch_technicals")
+        price_patcher = patch("src.tools.nse.technicals.fetch_price_info")
+        tech_patcher = patch("src.tools.nse.technicals.fetch_technicals")
         db_patcher = patch("api.get_database")
 
         self.mock_fetch_price = price_patcher.start()
@@ -71,71 +33,103 @@ class TestFinancialRatios:
         tech_patcher.stop()
         db_patcher.stop()
 
-    def _setup_db_mock(self, financials_list):
+    def _make_records(self, records_list):
+        """Convert flat dict list into per-collection iterables."""
+        income = []
+        balance = []
+        cashflow = []
+        for rec in records_list:
+            income.append({
+                "period_end_date": rec["period_end_date"],
+                "consolidated": rec["consolidated"],
+                "revenue_from_operations": rec.get("revenue_from_operations"),
+                "profit_loss_for_period": rec.get("profit_loss_for_period"),
+                "profit_before_tax": rec.get("profit_before_tax"),
+                "finance_costs": rec.get("finance_costs"),
+                "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": rec.get("basic_earnings_loss_per_share_from_continuing_and_discontinued_operations"),
+                "diluted_earnings_loss_per_share_from_continuing_and_discontinued_operations": rec.get("diluted_earnings_loss_per_share_from_continuing_and_discontinued_operations"),
+                "paid_up_value_of_equity_share_capital": rec.get("paid_up_value_of_equity_share_capital"),
+                "face_value_of_equity_share_capital": rec.get("face_value_of_equity_share_capital"),
+            })
+            balance.append({
+                "period_end_date": rec["period_end_date"],
+                "consolidated": rec["consolidated"],
+                "equity_share_capital": rec.get("equity_share_capital"),
+                "other_equity": rec.get("other_equity"),
+                "assets": rec.get("assets"),
+                "noncurrent_liabilities": rec.get("noncurrent_liabilities"),
+                "debt_equity_ratio": rec.get("debt_equity_ratio"),
+                "borrowings_current": rec.get("borrowings_current"),
+                "cash_and_cash_equivalents": rec.get("cash_and_cash_equivalents"),
+            })
+            cashflow.append({
+                "period_end_date": rec["period_end_date"],
+                "consolidated": rec["consolidated"],
+                "cash_flows_from_used_in_operating_activities": rec.get("cash_flows_from_used_in_operating_activities"),
+            })
+        return income, balance, cashflow
+
+    def _setup_db_mock(self, records_list):
         mock_db = MagicMock()
-        mock_coll_q = AsyncMock()
-        mock_coll_a = AsyncMock()
+        income, balance, cashflow = self._make_records(records_list)
 
         def db_getitem(name):
             colls = {
-                "nse_quarterly_financials": mock_coll_q,
-                "nse_annual_financials": mock_coll_a,
+                "income_statements": self._make_cursor(income),
+                "balance_sheets": self._make_cursor(balance),
+                "cash_flows": self._make_cursor(cashflow),
             }
-            return colls.get(name, AsyncMock())
+            mock = MagicMock()
+            mock.find.return_value = colls.get(name, self._make_empty_cursor())
+            return mock
 
         mock_db.__getitem__.side_effect = db_getitem
-
-        mock_cursor = MagicMock()
-        mock_cursor.sort.return_value = mock_cursor
-        mock_cursor.__aiter__.return_value = iter(financials_list)
-        mock_coll_q.find.return_value = mock_cursor
-
-        mock_cursor_a = MagicMock()
-        mock_cursor_a.sort.return_value = mock_cursor_a
-        mock_cursor_a.__aiter__.return_value = iter([])
-        mock_coll_a.find.return_value = mock_cursor_a
-
         return mock_db
+
+    def _make_cursor(self, items):
+        cur = MagicMock()
+        cur.sort.return_value = cur
+        cur.__aiter__.return_value = iter(items)
+        cur.to_list = AsyncMock(return_value=items)
+        return cur
+
+    def _make_empty_cursor(self):
+        cur = MagicMock()
+        cur.sort.return_value = cur
+        cur.__aiter__.return_value = iter([])
+        return cur
 
     def test_successful_response(self):
         self.mock_get_db.return_value = self._setup_db_mock([
             {
-                "date": "2024-12-31",
-                "consolidated": "Consolidated",
-                "source_endpoint": "quarterly-results",
-                "broadcast_date": "2025-01-15",
-                "financials": [
-                    {"tag": "RevenueFromOperations", "value": "100000"},
-                    {"tag": "ProfitLossForPeriod", "value": "15000"},
-                    {"tag": "ProfitBeforeTax", "value": "20000"},
-                    {"tag": "FinanceCosts", "value": "3000"},
-                    {"tag": "NoncurrentLiabilities", "value": "100000"},
-                    {"tag": "DebtEquityRatio", "value": "1.5"},
-                    {"tag": "BorrowingsCurrent", "value": "20000"},
-                    {"tag": "CashAndCashEquivalents", "value": "10000"},
-                    {"tag": "CashFlowsFromUsedInOperatingActivities", "value": "25000"},
-                    {"tag": "BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations", "value": "10"},
-                    {"tag": "DilutedEarningsLossPerShareFromContinuingAndDiscontinuedOperations", "value": "9.5"},
-                    {"tag": "PaidUpValueOfEquityShareCapital", "value": "500000"},
-                    {"tag": "FaceValueOfEquityShareCapital", "value": "10"},
-                    {"tag": "EquityShareCapital", "value": "50000"},
-                    {"tag": "OtherEquity", "value": "150000"},
-                    {"tag": "Assets", "value": "500000"},
-                ],
+                "period_end_date": "2024-12-31",
+                "consolidated": True,
+                "revenue_from_operations": "100000",
+                "profit_loss_for_period": "15000",
+                "profit_before_tax": "20000",
+                "finance_costs": "3000",
+                "noncurrent_liabilities": "100000",
+                "debt_equity_ratio": "1.5",
+                "borrowings_current": "20000",
+                "cash_and_cash_equivalents": "10000",
+                "cash_flows_from_used_in_operating_activities": "25000",
+                "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": "10",
+                "diluted_earnings_loss_per_share_from_continuing_and_discontinued_operations": "9.5",
+                "paid_up_value_of_equity_share_capital": "500000",
+                "face_value_of_equity_share_capital": "10",
+                "equity_share_capital": "50000",
+                "other_equity": "150000",
+                "assets": "500000",
             },
             {
-                "date": "2024-09-30",
-                "consolidated": "Consolidated",
-                "source_endpoint": "quarterly-results",
-                "broadcast_date": "2024-10-15",
-                "financials": [
-                    {"tag": "RevenueFromOperations", "value": "90000"},
-                    {"tag": "ProfitLossForPeriod", "value": "12000"},
-                    {"tag": "BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations", "value": "8"},
-                    {"tag": "EquityShareCapital", "value": "50000"},
-                    {"tag": "OtherEquity", "value": "140000"},
-                    {"tag": "Assets", "value": "450000"},
-                ],
+                "period_end_date": "2024-09-30",
+                "consolidated": True,
+                "revenue_from_operations": "90000",
+                "profit_loss_for_period": "12000",
+                "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": "8",
+                "equity_share_capital": "50000",
+                "other_equity": "140000",
+                "assets": "450000",
             },
         ])
 
@@ -150,22 +144,19 @@ class TestFinancialRatios:
         }
 
         response = client.get(
-            "/equity/data/ratios?symbol=TEST&country=in&source=nse&consolidated=Consolidated"
+            "/financial-metrics?symbol=TEST&country=in&source=nse&compute_ratios=true"
         )
         assert response.status_code == 200
         data = response.json()
         assert data["symbol"] == "TEST"
-        assert data["current_price"] == 2500.0
-        assert len(data["records"]) == 2
+        assert len(data["ratios"]) >= 1
         assert "valuation" in data
         assert "pe_ratio" in data["valuation"]
         assert "pb_ratio" in data["valuation"]
         assert "ps_ratio" in data["valuation"]
-        assert "records" in data
-        assert "ratios" in data["records"][0]
-        assert "growth" in data["records"][0]["ratios"]
-        assert "eps_growth_qoq" in data["records"][0]["ratios"]["growth"]
-        assert "revenue_growth_qoq" in data["records"][0]["ratios"]["growth"]
+        assert "growth" in data["ratios"][0]
+        assert "eps_growth_qoq" in data["ratios"][0]["growth"]
+        assert "revenue_growth_qoq" in data["ratios"][0]["growth"]
         assert "technicals" in data
         assert data["technicals"]["rsi_14"] == 55.5
 
@@ -173,24 +164,23 @@ class TestFinancialRatios:
         self.mock_get_db.return_value = self._setup_db_mock([])
 
         response = client.get(
-            "/equity/data/ratios?symbol=UNKNOWN&country=in&source=nse&consolidated=Consolidated"
+            "/financial-metrics?symbol=UNKNOWN&country=in&source=nse&compute_ratios=true"
         )
-        assert response.status_code == 404
+        assert response.status_code == 200
+        data = response.json()
+        assert data["ratios"] is None
 
     def test_no_nan_in_json_response(self):
         self.mock_get_db.return_value = self._setup_db_mock([
             {
-                "date": "2024-12-31",
-                "consolidated": "Consolidated",
-                "source_endpoint": "quarterly-results",
-                "financials": [
-                    {"tag": "RevenueFromOperations", "value": "100000"},
-                    {"tag": "ProfitLossForPeriod", "value": "15000"},
-                    {"tag": "BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations", "value": "10"},
-                    {"tag": "EquityShareCapital", "value": "50000"},
-                    {"tag": "OtherEquity", "value": "150000"},
-                    {"tag": "Assets", "value": "500000"},
-                ],
+                "period_end_date": "2024-12-31",
+                "consolidated": True,
+                "revenue_from_operations": "100000",
+                "profit_loss_for_period": "15000",
+                "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": "10",
+                "equity_share_capital": "50000",
+                "other_equity": "150000",
+                "assets": "500000",
             },
         ])
 
@@ -204,7 +194,7 @@ class TestFinancialRatios:
         }
 
         response = client.get(
-            "/equity/data/ratios?symbol=TEST&country=in&source=nse&consolidated=Consolidated"
+            "/financial-metrics?symbol=TEST&country=in&source=nse&compute_ratios=true"
         )
         assert response.status_code == 200
         body = response.text
