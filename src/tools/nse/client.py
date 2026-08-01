@@ -73,6 +73,8 @@ import json
 import logging
 import os
 import random
+import threading
+import time
 from datetime import datetime
 from io import BytesIO
 from typing import Any, Dict, Optional
@@ -182,6 +184,10 @@ quarterly_context_ref_types = ["OneD", "OneI"]
 annual_context_ref_types = ["FourD"]
 
 
+class CookieError(Exception):
+    """Raised when an NSE session cookie could not be established."""
+
+
 class NSEApiClient:
     def __init__(self, calls_per_second: float = 10.0):
         self.exchange = "nse"
@@ -200,37 +206,59 @@ class NSEApiClient:
         )
         self.rate_limiter = get_rate_limiter("nse_india", calls_per_second)
         self.headers = generate_fake_headers()
+        self._cookie_lock = threading.Lock()
         self.logger = logging.getLogger(__name__)
 
-    def _set_cookies(self, symbol: str, timeout=10):
+    def _set_cookies(self, symbol: str, timeout=5) -> bool:
         url = self.share_url_format.format(symbol=symbol)
         try:
             self.headers = generate_fake_headers()
             self.session.get(url, headers=self.headers, timeout=timeout)
         except Exception as e:
             self.logger.error(f"Failed to set cookies: {e}")
+            return False
+        if not self.session.cookies:
+            self.logger.error(f"No cookies set by NSE for {symbol}")
+            return False
+        return True
 
-    def _call(self, url, symbol=None, max_call_attempts=3, timeout=10, referer=None):
+    def _call(self, url, symbol=None, max_call_attempts=3, timeout=5, referer=None):
         if not symbol:
             symbol = get_random_symbol()
-        headers = self.headers.copy()
-        if referer:
-            headers["Referer"] = referer
-        for _ in range(max_call_attempts):
-            if not self.session.cookies:
-                self._set_cookies(symbol)
+        cookies_established = False
+        for attempt in range(max_call_attempts):
+            with self._cookie_lock:
+                if not self.session.cookies:
+                    if not self._set_cookies(symbol):
+                        self.logger.warning(
+                            f"Could not establish NSE cookies for {symbol}, skipping request"
+                        )
+                        continue
+                cookies_established = True
+            headers = self.headers.copy()
+            if referer:
+                headers["Referer"] = referer
             try:
                 response = self.session.get(url, headers=headers, timeout=timeout)
-                if response.status_code == 200:
-                    return response
-                else:
-                    self.logger.warning(f"Got {response.status_code} from {url}, resetting cookies")
-                    self.session.cookies.clear()
-                    self._set_cookies(symbol)
             except Exception as e:
                 self.logger.error(f"Request failed: {e}")
-                self.session.cookies.clear()
-                self._set_cookies(symbol)
+                with self._cookie_lock:
+                    self.session.cookies.clear()
+                continue
+            if response.status_code == 200:
+                return response
+            self.logger.warning(f"Got {response.status_code} from {url}")
+            if response.status_code in (401, 403, 429):
+                with self._cookie_lock:
+                    self.session.cookies.clear()
+                if attempt == 0:
+                    continue
+                break
+        if not cookies_established:
+            raise CookieError(
+                f"Could not establish NSE session cookies for {symbol} "
+                f"after {max_call_attempts} attempts"
+            )
         return None
 
     def fetch_xbrl_content(self, url, symbol):
@@ -438,12 +466,17 @@ class NSEIndia:
 
             broadcast_date = x.get("broadcast_Date") or x.get("broadCastDate")
 
-            self.logger.info(f"Processing XBRL for {symbol} ({category}): {xbrl_url}")
+            self.logger.debug(f"Processing XBRL for {symbol} ({category}): {xbrl_url}")
             extension = xbrl_url.split(".")[-1]
             if extension == "xml":
+                t0 = time.perf_counter()
                 content = self.api.fetch_xbrl_content(xbrl_url, symbol)
+                download_ms = (time.perf_counter() - t0) * 1000
                 if content:
+                    t1 = time.perf_counter()
                     data = self.parser.extract_xml(content, symbol)
+                    parse_ms = (time.perf_counter() - t1) * 1000
+                    self.logger.debug(f"XBRL {symbol} ({category}) download={download_ms:.0f}ms parse={parse_ms:.0f}ms")
                     if data and data.get("period_end_date"):
                         data["financials"] = self._filter_facts_by_period(data["financials"], category)
 
@@ -550,7 +583,7 @@ class NSEIndia:
                             result[stmt_key] = doc
 
                         stmt_types = [k for k, v in result.items() if v is not None]
-                        self.logger.info(f"Parsed XBRL for {symbol} ({category}): {', '.join(stmt_types)}")
+                        self.logger.debug(f"Parsed XBRL for {symbol} ({category}): {', '.join(stmt_types)}")
                         return result
             elif extension == "html":
                 self.logger.error("HTML data extraction yet to be implemented")

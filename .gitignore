@@ -10,6 +10,7 @@ __pycache__/
 **/__pycache__/_
 *.py[cod]
 *$py.class
+logs/
 
 # C extensions
 *.so

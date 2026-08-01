@@ -2,7 +2,7 @@ import unittest
 
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
-from src.tools.nse.client import NSEApiClient, NSEDataParser, NSEIndia
+from src.tools.nse.client import CookieError, NSEApiClient, NSEDataParser, NSEIndia
 # NSEFinancials model was removed; skip the test that imports it
 try:
     from src.db.models import NSEFinancials
@@ -103,6 +103,81 @@ def test_api_client_non_200_recovers(mock_session_class, api_client):
     assert mock_session.get.call_count == 2
 
 
+def test_api_client_call_fails_fast_on_blocking_status(api_client):
+    api_client.session = MagicMock()
+    blocked = MagicMock()
+    blocked.status_code = 401
+    api_client.session.get.return_value = blocked
+    api_client.session.cookies = {"fake": "cookie"}
+    api_client._set_cookies = MagicMock()
+
+    result = api_client._call("http://fake.url", symbol="TCS")
+
+    assert result is None
+    assert api_client.session.get.call_count == 2
+
+
+@patch('src.tools.nse.client.generate_fake_headers', return_value={"User-Agent": "test"})
+@patch('src.tools.nse.client.RateLimitedSession')
+def test_set_cookies_returns_true_with_cookies(mock_session_class, mock_headers, api_client):
+    mock_session = mock_session_class.return_value
+    api_client.session = mock_session
+    api_client.session.cookies = {"fake": "cookie"}
+
+    assert api_client._set_cookies("TCS") is True
+    mock_session.get.assert_called_once()
+
+
+@patch('src.tools.nse.client.generate_fake_headers', return_value={"User-Agent": "test"})
+@patch('src.tools.nse.client.RateLimitedSession')
+def test_set_cookies_returns_false_without_cookies(mock_session_class, mock_headers, api_client):
+    mock_session = mock_session_class.return_value
+    api_client.session = mock_session
+    api_client.session.cookies = {}
+
+    assert api_client._set_cookies("TCS") is False
+    mock_session.get.assert_called_once()
+
+
+@patch('src.tools.nse.client.generate_fake_headers', return_value={"User-Agent": "test"})
+@patch('src.tools.nse.client.RateLimitedSession')
+def test_set_cookies_returns_false_on_exception(mock_session_class, mock_headers, api_client):
+    mock_session = mock_session_class.return_value
+    api_client.session = mock_session
+    api_client.session.cookies = {}
+    mock_session.get.side_effect = Exception("network down")
+
+    assert api_client._set_cookies("TCS") is False
+    mock_session.get.assert_called_once()
+
+
+@patch('src.tools.nse.client.RateLimitedSession')
+def test_call_raises_cookie_error_when_cookies_never_set(mock_session_class, api_client):
+    mock_session = mock_session_class.return_value
+    api_client.session = mock_session
+    api_client.session.cookies = {}
+    api_client._set_cookies = MagicMock(return_value=False)
+
+    with pytest.raises(CookieError):
+        api_client._call("http://fake.url", symbol="TCS")
+    assert mock_session.get.call_count == 0
+
+
+@patch('src.tools.nse.client.RateLimitedSession')
+def test_call_returns_none_when_request_fails_despite_cookies(mock_session_class, api_client):
+    mock_session = mock_session_class.return_value
+    api_client.session = mock_session
+    api_client.session.cookies = {"fake": "cookie"}
+    fail_response = MagicMock()
+    fail_response.status_code = 500
+    mock_session.get.return_value = fail_response
+    api_client._set_cookies = MagicMock(return_value=True)
+
+    result = api_client._call("http://fake.url", symbol="TCS")
+    assert result is None
+    assert mock_session.get.call_count == 3
+
+
 def test_nse_financials_schema():
     if NSEFinancials is None:
         pytest.skip("NSEFinancials model not available")
@@ -182,21 +257,23 @@ def test_process_xbrl_skips_empty_after_filter(nse_india):
 
 def test_nse_financials_fetch():
     nseindia = NSEIndia()
-    
-    # "perform a test fetch in tests/test_nse for SKYGOLD Share"
-    integrated = nseindia.api.integrated_filing_xbrls("SKYGOLD")
-    integrated_data = integrated.get("data", []) if isinstance(integrated, dict) else []
-    
-    if not integrated_data:
-        quarterly = nseindia.api.quarterly_results_xbrls("SKYGOLD")
-        quarterly_data = quarterly.get("data", quarterly) if isinstance(quarterly, dict) else quarterly
-        if not isinstance(quarterly_data, list):
-            quarterly_data = []
-        data_list = quarterly_data
-        category = "quarterly"
-    else:
-        data_list = integrated_data
-        category = "integrated"
+    try:
+        # "perform a test fetch in tests/test_nse for SKYGOLD Share"
+        integrated = nseindia.api.integrated_filing_xbrls("SKYGOLD")
+        integrated_data = integrated.get("data", []) if isinstance(integrated, dict) else []
+
+        if not integrated_data:
+            quarterly = nseindia.api.quarterly_results_xbrls("SKYGOLD")
+            quarterly_data = quarterly.get("data", quarterly) if isinstance(quarterly, dict) else quarterly
+            if not isinstance(quarterly_data, list):
+                quarterly_data = []
+            data_list = quarterly_data
+            category = "quarterly"
+        else:
+            data_list = integrated_data
+            category = "integrated"
+    except CookieError as e:
+        pytest.skip(f"NSE session unavailable: {e}")
 
     found_parsed = False
     for x in data_list:
