@@ -2,6 +2,7 @@ import asyncio
 import csv
 import json
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Dict, Optional
@@ -11,15 +12,16 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from loguru import logger
 from pydantic import BaseModel
+from pymongo.operations import ReplaceOne
 
 from __version__ import __version__
 from src.db.connection import get_database, init_db
 from src.db.models import NSEStockMetadata
-from src.tools.nse.client import ENDPOINTS, NSEIndia
+from src.logging_config import setup_logging
+from src.tools.nse.client import ENDPOINTS, CookieError, NSEIndia
+from src.tools.nse.ratios import FINANCIAL_FIELD_MAP
 
 load_dotenv()
-
-from src.logging_config import setup_logging
 
 setup_logging()
 
@@ -131,7 +133,9 @@ class PullStockDataRequest(BaseModel):
     symbol: str
 
 
-nse_scraper = NSEIndia()
+nse_scraper = NSEIndia(calls_per_second=float(os.getenv("NSE_CALLS_PER_SECOND", "10")))
+
+NSE_MAX_XBRL_CONCURRENCY = int(os.getenv("NSE_MAX_XBRL_CONCURRENCY", "6"))
 
 XBRL_PARSE_MAP: Dict[str, str] = {
     "integrated-filing": "quarterly",
@@ -143,56 +147,112 @@ XBRL_PARSE_MAP: Dict[str, str] = {
 ALL_NSE_COLLECTIONS: Dict[str, str] = {**STATEMENT_COLLECTIONS}
 
 
-async def pull_nse_data(symbol: str, filing_type: Optional[str] = None) -> Dict[str, Any]:
+def _fetch_endpoint_json(url: str, symbol: str):
+    res = nse_scraper.api._call(url, symbol=symbol)
+    if res is None:
+        return None
+    return nse_scraper.api._safe_json(res)
+
+
+async def pull_nse_data(
+    symbol: str, filing_type: Optional[str] = None, refresh: bool = False
+) -> Dict[str, Any]:
     database = get_database()
     total_records = 0
     total_parsed = 0
     endpoint_breakdown: Dict[str, Any] = {}
     raw_by_endpoint: Dict[str, list] = {}
+    parsed_counts: Dict[str, int] = {}
+
+    timing: Dict[str, Any] = {"phases": {}, "counts": {}, "total_ms": 0.0}
+    _started = time.perf_counter()
+    _last = [_started]
+
+    def _tick(key: str) -> None:
+        now = time.perf_counter()
+        timing["phases"][key] = timing["phases"].get(key, 0.0) + (now - _last[0]) * 1000
+        _last[0] = now
+
+    def _count(key: str, n: int = 1) -> None:
+        timing["counts"][key] = timing["counts"].get(key, 0) + n
 
     FT_ENDPOINTS = {
         "quarterly": {"integrated-filing", "quarterly-results"},
         "annual": {"annual-results"},
     }
 
-    for endpoint_key, endpoint_url in ENDPOINTS.items():
-        if filing_type and endpoint_key in XBRL_PARSE_MAP and endpoint_key not in FT_ENDPOINTS.get(filing_type, set()) and endpoint_key != "shareholding-pattern":
-            continue
-        count = 0
+    selected = [
+        (key, url)
+        for key, url in ENDPOINTS.items()
+        if not (filing_type and key in XBRL_PARSE_MAP and key not in FT_ENDPOINTS.get(filing_type, set()) and key != "shareholding-pattern")
+    ]
+
+    _tick("setup")
+
+    # ---- Phase 1: fetch all endpoints (parallel) ----
+    urls = [
+        url.format(symbol=symbol) if "{symbol}" in url else url
+        for _, url in selected
+    ]
+    fetch_results = await asyncio.gather(
+        *[asyncio.to_thread(_fetch_endpoint_json, url, symbol) for url in urls],
+        return_exceptions=True,
+    )
+    _tick("fetch")
+
+    for (ep_key, _), data in zip(selected, fetch_results):
         endpoint_records: list = []
+        if isinstance(data, CookieError):
+            logger.error(f"Cookie failure for {ep_key} ({symbol}): {data}")
+            endpoint_breakdown[ep_key] = "cookie failed"
+            raw_by_endpoint[ep_key] = []
+            continue
+        if isinstance(data, Exception):
+            logger.error(f"Error pulling {ep_key} for {symbol}: {data}")
+            endpoint_breakdown[ep_key] = str(data)
+            raw_by_endpoint[ep_key] = []
+            continue
+        if data is None:
+            logger.warning(f"Endpoint {ep_key} failed ({symbol})")
+            endpoint_breakdown[ep_key] = "failed"
+            raw_by_endpoint[ep_key] = []
+            continue
+        if not isinstance(data, (dict, list)) or (isinstance(data, dict) and not data):
+            logger.info(f"No data returned for {ep_key} ({symbol})")
+            endpoint_breakdown[ep_key] = "no data"
+            raw_by_endpoint[ep_key] = []
+            continue
 
-        try:
-            url = endpoint_url.format(symbol=symbol) if "{symbol}" in endpoint_url else endpoint_url
-            data = await asyncio.to_thread(
-                lambda: nse_scraper.api._safe_json(nse_scraper.api._call(url, symbol=symbol))
-            )
+        if isinstance(data, dict):
+            inner = data.get("data")
+            records = inner if isinstance(inner, list) else [data]
+        else:
+            records = data
 
-            if isinstance(data, dict):
-                inner = data.get("data")
-                records = inner if isinstance(inner, list) else [data]
-            elif isinstance(data, list):
-                records = data
-            else:
-                records = []
+        count = 0
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            count += 1
+            record["symbol"] = symbol
+            endpoint_records.append(record)
 
-            for record in records:
-                if not isinstance(record, dict):
-                    continue
-                count += 1
-                record["symbol"] = symbol
-                endpoint_records.append(record)
+        total_records += count
+        endpoint_breakdown[ep_key] = count
+        raw_by_endpoint[ep_key] = endpoint_records
+        _count("endpoint_records", count)
+        logger.info(f"Pulled {count} records for {ep_key} ({symbol})")
 
-            total_records += count
-            endpoint_breakdown[endpoint_key] = count
-            raw_by_endpoint[endpoint_key] = endpoint_records
-            logger.info(f"Pulled {count} records for {endpoint_key} ({symbol})")
-
-        except Exception as e:
-            logger.error(f"Error pulling {endpoint_key} for {symbol}: {e}")
-            endpoint_breakdown[endpoint_key] = str(e)
-            raw_by_endpoint[endpoint_key] = []
-
-    parsed_counts: Dict[str, int] = {}
+    # ---- Phase 2: skip XBRL already stored (unless refresh) ----
+    existing_urls: set = set()
+    if not refresh:
+        for coll_name in STATEMENT_COLLECTIONS.values():
+            cursor = database[coll_name].find({"symbol": symbol}, {"xbrl_url": 1, "_id": 0})
+            async for d in cursor:
+                u = d.get("xbrl_url")
+                if u:
+                    existing_urls.add(u)
+    _tick("existing_scan")
 
     STMT_TO_COLLECTION = {
         "income_statement": "income_statements",
@@ -200,6 +260,9 @@ async def pull_nse_data(symbol: str, filing_type: Optional[str] = None) -> Dict[
         "cash_flow": "cash_flows",
         "shareholding": "shareholdings",
     }
+
+    seen_xbrl: set = set()
+    pending: list = []
 
     for ep_key, _parse_type in XBRL_PARSE_MAP.items():
         records = raw_by_endpoint.get(ep_key, [])
@@ -211,69 +274,115 @@ async def pull_nse_data(symbol: str, filing_type: Optional[str] = None) -> Dict[
             records = sorted(records, key=lambda r: 1 if r.get("type_Sub") == "Revision" else 0)
 
         for record in records:
-            try:
-                parsed = await asyncio.to_thread(nse_scraper.process_xbrl, record, symbol, ep_key)
-                if parsed is None:
-                    logger.debug(f"Skipped {ep_key} record for {symbol} (no parseable XML)")
-                    continue
+            xbrl_key = record.get("xbrl") or record.get("broadCastDate")
+            if not xbrl_key:
+                _count("skipped_no_url")
+                continue
+            if xbrl_key in seen_xbrl:
+                _count("skipped_dup_url")
+                continue
+            if xbrl_key in existing_urls:
+                _count("skipped_existing")
+                continue
+            seen_xbrl.add(xbrl_key)
+            pending.append((record, ep_key))
 
-                for stmt_key, coll_name in STMT_TO_COLLECTION.items():
-                    doc = parsed.get(stmt_key)
-                    if doc is None:
-                        continue
-                    target_coll = database[coll_name]
+    _tick("dedup")
 
-                    existing = await target_coll.find_one({
+    # ---- Phase 3: parse XBRL with bounded concurrency ----
+    sem = asyncio.Semaphore(NSE_MAX_XBRL_CONCURRENCY)
+
+    async def _parse(record, ep_key):
+        async with sem:
+            return await asyncio.to_thread(nse_scraper.process_xbrl, record, symbol, ep_key)
+
+    parsed_results = await asyncio.gather(
+        *[_parse(record, ep_key) for record, ep_key in pending],
+        return_exceptions=True,
+    )
+    _tick("xbrl")
+
+    # ---- Phase 4: batch DB upserts ----
+    ops_by_coll: Dict[str, list] = {}
+    for (record, ep_key), parsed in zip(pending, parsed_results):
+        if isinstance(parsed, Exception):
+            logger.error(f"Error parsing XBRL for {symbol} {ep_key}: {parsed}")
+            _count("parse_errors")
+            continue
+        if parsed is None:
+            _count("skipped_unparseable")
+            continue
+
+        for stmt_key, coll_name in STMT_TO_COLLECTION.items():
+            doc = parsed.get(stmt_key)
+            if doc is None:
+                continue
+            doc["pulled_at"] = datetime.utcnow()
+            ops_by_coll.setdefault(coll_name, []).append(
+                ReplaceOne(
+                    {
                         "symbol": doc["symbol"],
                         "period_end_date": doc["period_end_date"],
                         "consolidated": doc["consolidated"],
                         "source_endpoint": ep_key,
-                    })
+                    },
+                    doc,
+                    upsert=True,
+                )
+            )
+            parsed_counts[coll_name] = parsed_counts.get(coll_name, 0) + 1
+            total_parsed += 1
 
-                    if existing:
-                        existing_id = existing["_id"]
-                        update_data = {k: v for k, v in doc.items() if k != "_id"}
-                        update_data["pulled_at"] = datetime.utcnow()
-                        await target_coll.update_one(
-                            {"_id": existing_id},
-                            {"$set": update_data},
-                        )
-                        logger.info(f"Updated {stmt_key} for {symbol} - {doc['period_end_date']} (consolidated={doc['consolidated']}, filing_type={doc.get('filing_type', 'N/A')})")
-                    else:
-                        doc["pulled_at"] = datetime.utcnow()
-                        await target_coll.insert_one(doc)
-                        logger.info(f"Inserted {stmt_key} for {symbol} - {doc['period_end_date']} (consolidated={doc['consolidated']}, filing_type={doc.get('filing_type', 'N/A')})")
-
-                    parsed_counts[coll_name] = parsed_counts.get(coll_name, 0) + 1
-                    total_parsed += 1
-
-            except Exception as e:
-                logger.error(f"Error parsing XBRL for {symbol} {ep_key}: {e}")
+    for coll_name, ops in ops_by_coll.items():
+        if ops:
+            await database[coll_name].bulk_write(ops, ordered=False)
+            logger.info(f"Upserted {len(ops)} {coll_name} docs for {symbol}")
+    _tick("db")
 
     for coll_name, count in parsed_counts.items():
         endpoint_breakdown[f"parsed_{coll_name}"] = count
 
-    now = datetime.utcnow()
-    meta = await NSEStockMetadata.find_one(NSEStockMetadata.symbol == symbol)
-    if meta:
-        if meta.last_pull:
-            meta.previous_pulls.append(meta.last_pull)
-        meta.last_pull = now
-        meta.updated_at = now
-        await meta.save()
-        logger.info(f"Updated metadata for {symbol}")
+    failures = {
+        k for k, v in endpoint_breakdown.items()
+        if isinstance(v, str) and v not in ("no data",)
+    }
+    successes = {k for k, v in endpoint_breakdown.items() if isinstance(v, int) and v > 0}
+    if failures and not successes:
+        pull_status = "failed"
+    elif failures:
+        pull_status = "partial"
     else:
-        meta = NSEStockMetadata(symbol=symbol, last_pull=now, previous_pulls=[])
-        await meta.insert()
-        logger.info(f"Created metadata for {symbol}")
+        pull_status = "completed"
+
+    if pull_status != "failed":
+        now = datetime.utcnow()
+        meta = await NSEStockMetadata.find_one(NSEStockMetadata.symbol == symbol)
+        if meta:
+            if meta.last_pull:
+                meta.previous_pulls.append(meta.last_pull)
+            meta.last_pull = now
+            meta.updated_at = now
+            await meta.save()
+            logger.info(f"Updated metadata for {symbol}")
+        else:
+            meta = NSEStockMetadata(symbol=symbol, last_pull=now, previous_pulls=[])
+            await meta.insert()
+            logger.info(f"Created metadata for {symbol}")
+    else:
+        logger.error(f"All NSE endpoints failed for {symbol}; skipping metadata update")
+
+    timing["total_ms"] = round((time.perf_counter() - _started) * 1000, 1)
+    for key in timing["phases"]:
+        timing["phases"][key] = round(timing["phases"][key], 1)
 
     return {
         "symbol": symbol,
         "source": "NSE",
-        "status": "completed",
+        "status": pull_status,
         "records_pulled": total_records,
         "xbrl_parsed": total_parsed,
         "endpoint_breakdown": endpoint_breakdown,
+        "timing": timing,
     }
 
 
@@ -410,12 +519,13 @@ async def _get_statement_data(
     return {response_key: records}
 
 
-@app.post("/financials/pull", summary="Pull raw stock data from exchange into DB")
+@app.post("/pull", summary="Pull raw stock data from exchange into DB")
 async def financials_pull(
     symbol: str,
     country: str = Query("in"),
     source: str = Query("nse"),
     filing_type: str = Query("quarterly", description="quarterly or annual"),
+    refresh: bool = Query(False, description="Re-download and re-parse XBRL already present in the DB"),
 ):
     symbol = symbol.upper()
     source = source.upper()
@@ -424,11 +534,11 @@ async def financials_pull(
         raise HTTPException(status_code=400, detail="filing_type must be 'quarterly' or 'annual'")
 
     if country.lower() == "in" and source == "NSE":
-        return await pull_nse_data(symbol, filing_type)
+        return await pull_nse_data(symbol, filing_type, refresh)
     raise HTTPException(status_code=501, detail=f"Source '{source}' for country '{country}' is not yet supported")
 
 
-@app.get("/financials/pull", summary="Get pull status and data availability for a stock")
+@app.get("/pull", summary="Get pull status and data availability for a stock")
 async def financials_pull_status(
     symbol: str,
     country: str = Query("in"),
@@ -469,8 +579,8 @@ async def financials_pull_status(
                 if groups:
                     breakdown = {}
                     for g in groups:
-                        cons_type = str(g["_id"]) if g["_id"] is not None else "unknown"
-                        breakdown[cons_type] = {
+                        cons_label = {True: "consolidated", False: "standalone"}.get(g["_id"], "unknown")
+                        breakdown[cons_label] = {
                             "count": g["count"],
                             "periods": len(g["periods"]),
                             "date_range": f"{g['min_date']} to {g['max_date']}",
@@ -484,7 +594,7 @@ async def financials_pull_status(
             "source": meta.source,
             "last_pull": meta.last_pull,
             "total_pulls": len(meta.previous_pulls) + (1 if meta.last_pull else 0),
-            "previous_pulls": meta.previous_pulls,
+            "previous_pulls_count": len(meta.previous_pulls),
             "record_counts": record_counts,
             "financial_breakdown": financial_breakdown,
             "created_at": meta.created_at,
@@ -829,6 +939,9 @@ async def announcements(
                 "has_xbrl": a.get("hasXbrl", False),
             })
         return {"symbol": symbol, "source": source, "market": market, "announcements": cleaned}
+    except CookieError as e:
+        logger.error(f"Cookie failure fetching announcements for {symbol}: {e}")
+        raise HTTPException(status_code=503, detail="NSE session unavailable (cookie failure)")
     except Exception as e:
         logger.error(f"Error fetching announcements for {symbol}: {e}")
         raise HTTPException(status_code=502, detail=str(e))
@@ -890,6 +1003,9 @@ async def shareholdings(
             return {"symbol": symbol, "source": source, "shareholdings": _filter_priority_fields(doc, priority, False)}
 
         raise HTTPException(status_code=404, detail=f"No parseable shareholding XBRL found for {symbol}")
+    except CookieError as e:
+        logger.error(f"Cookie failure fetching shareholdings for {symbol}: {e}")
+        raise HTTPException(status_code=503, detail="NSE session unavailable (cookie failure)")
     except HTTPException:
         raise
     except Exception as e:
