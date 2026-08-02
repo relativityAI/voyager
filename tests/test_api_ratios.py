@@ -87,10 +87,13 @@ class TestFinancialMetrics:
         return mock_db
 
     def _make_cursor(self, items):
+        async def _agen():
+            for i in items:
+                yield i
+
         cur = MagicMock()
         cur.sort.return_value = cur
-        cur.__aiter__.return_value = iter(items)
-        cur.to_list = AsyncMock(return_value=items)
+        cur.__aiter__.side_effect = _agen
         return cur
 
     def _make_empty_cursor(self):
@@ -144,31 +147,25 @@ class TestFinancialMetrics:
         }
 
         response = client.get(
-            "/financial-metrics?symbol=TEST&country=in&source=nse&compute_ratios=true"
+            "/financial-metrics?symbol=TEST&country=in&source=nse"
         )
         assert response.status_code == 200
         data = response.json()
         assert data["symbol"] == "TEST"
-        assert len(data["ratios"]) >= 1
-        assert "valuation" in data
-        assert "pe_ratio" in data["valuation"]
-        assert "pb_ratio" in data["valuation"]
-        assert "ps_ratio" in data["valuation"]
-        assert "growth" in data["ratios"][0]
-        assert "eps_growth_qoq" in data["ratios"][0]["growth"]
-        assert "revenue_growth_qoq" in data["ratios"][0]["growth"]
-        assert "technicals" in data
-        assert data["technicals"]["rsi_14"] == 55.5
+        assert data["filing_type"] == "quarterly"
+        assert data["period_end_date"] == "2024-12-31"
+        assert data["price_to_earnings_ratio"] == pytest.approx(250.0)
+        assert data["net_margin"] == pytest.approx(15.0)
+        assert data["rsi_14"] == 55.5
 
-    def test_404_for_unknown_symbol(self):
+    def test_empty_response_for_unknown_symbol(self):
         self.mock_get_db.return_value = self._setup_db_mock([])
 
         response = client.get(
-            "/financial-metrics?symbol=UNKNOWN&country=in&source=nse&compute_ratios=true"
+            "/financial-metrics?symbol=UNKNOWN&country=in&source=nse"
         )
         assert response.status_code == 200
-        data = response.json()
-        assert data["ratios"] is None
+        assert response.json() == {}
 
     def test_no_nan_in_json_response(self):
         self.mock_get_db.return_value = self._setup_db_mock([
@@ -194,9 +191,117 @@ class TestFinancialMetrics:
         }
 
         response = client.get(
-            "/financial-metrics?symbol=TEST&country=in&source=nse&compute_ratios=true"
+            "/financial-metrics?symbol=TEST&country=in&source=nse"
         )
         assert response.status_code == 200
         body = response.text
         assert "NaN" not in body
         assert "Infinity" not in body
+
+    def _make_ttm_quarterly_records(self):
+        """8 quarterly records (desc): [0:4] current TTM window, [4:8] prior TTM window."""
+        rows = [
+            ("2025-03-31", 100, 15, 20, 3, 10, 25),
+            ("2024-12-31", 90, 13, 18, 3, 9, 20),
+            ("2024-09-30", 80, 11, 16, 2, 8, 18),
+            ("2024-06-30", 70, 9, 14, 2, 7, 15),
+            ("2024-03-31", 60, 7, 12, 2, 6, 12),
+            ("2023-12-31", 50, 6, 10, 2, 5, 10),
+            ("2023-09-30", 40, 5, 8, 1, 4, 8),
+            ("2023-06-30", 30, 4, 6, 1, 3, 6),
+        ]
+        return [
+            {
+                "period_end_date": date,
+                "consolidated": True,
+                "revenue_from_operations": str(rev),
+                "profit_loss_for_period": str(pat),
+                "profit_before_tax": str(pbt),
+                "finance_costs": str(fc),
+                "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": str(eps),
+                "cash_flows_from_used_in_operating_activities": str(ocf),
+                "equity_share_capital": "50000",
+                "other_equity": "150000",
+                "assets": "500000",
+            }
+            for date, rev, pat, pbt, fc, eps, ocf in rows
+        ]
+
+    def test_ttm_filing_type(self):
+        self.mock_get_db.return_value = self._setup_db_mock(self._make_ttm_quarterly_records())
+        self.mock_fetch_price.return_value = {
+            "current_price": 2500.0,
+            "shares_outstanding": 50000000,
+        }
+        self.mock_fetch_tech.return_value = {"current_price": 2500.0}
+
+        response = client.get(
+            "/financial-metrics?symbol=TEST&country=in&source=nse&filing_type=ttm"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["filing_type"] == "ttm"
+        assert data["period_end_date"] == "2025-03-31"
+        assert data["earnings_per_share"] == pytest.approx(34.0)
+        assert data["revenue_growth"] == pytest.approx(88.8889, abs=0.01)
+        assert data["earnings_growth"] == pytest.approx(118.1818, abs=0.01)
+        assert data["price_to_earnings_ratio"] == pytest.approx(2500.0 / 34.0)
+        assert data["net_margin"] == pytest.approx(14.1176, abs=0.01)
+        assert data["operating_margin"] == pytest.approx(22.9412, abs=0.01)
+
+    def test_annual_does_not_sum_ttm(self):
+        self.mock_get_db.return_value = self._setup_db_mock([
+            {
+                "period_end_date": "2024-12-31", "consolidated": True,
+                "revenue_from_operations": "100", "profit_loss_for_period": "20",
+                "profit_before_tax": "22", "finance_costs": "2",
+                "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": "10",
+                "cash_flows_from_used_in_operating_activities": "30",
+                "equity_share_capital": "50000", "other_equity": "150000", "assets": "500000",
+            },
+            {
+                "period_end_date": "2023-12-31", "consolidated": True,
+                "revenue_from_operations": "80", "profit_loss_for_period": "16",
+                "profit_before_tax": "18", "finance_costs": "2",
+                "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": "8",
+                "cash_flows_from_used_in_operating_activities": "20",
+            },
+            {
+                "period_end_date": "2022-12-31", "consolidated": True,
+                "revenue_from_operations": "60", "profit_loss_for_period": "12",
+                "profit_before_tax": "14", "finance_costs": "2",
+                "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": "6",
+                "cash_flows_from_used_in_operating_activities": "15",
+            },
+            {
+                "period_end_date": "2021-12-31", "consolidated": True,
+                "revenue_from_operations": "40", "profit_loss_for_period": "8",
+                "profit_before_tax": "10", "finance_costs": "2",
+                "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": "4",
+                "cash_flows_from_used_in_operating_activities": "10",
+            },
+        ])
+        self.mock_fetch_price.return_value = {
+            "current_price": 2500.0,
+            "shares_outstanding": 50000000,
+        }
+        self.mock_fetch_tech.return_value = {"current_price": 2500.0}
+
+        response = client.get(
+            "/financial-metrics?symbol=TEST&country=in&source=nse&filing_type=annual"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["filing_type"] == "annual"
+        assert data["earnings_per_share"] == pytest.approx(10.0)
+        assert data["price_to_earnings_ratio"] == pytest.approx(250.0)
+        assert data["net_margin"] == pytest.approx(20.0)
+        assert data["revenue_growth"] == pytest.approx(25.0)
+
+    def test_invalid_filing_type(self):
+        self.mock_get_db.return_value = self._setup_db_mock([])
+
+        response = client.get(
+            "/financial-metrics?symbol=TEST&country=in&source=nse&filing_type=foo"
+        )
+        assert response.status_code == 400

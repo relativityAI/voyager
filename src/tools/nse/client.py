@@ -438,13 +438,22 @@ class NSEIndia:
                 result.append(f)
                 continue
 
+            ctx_type = NSEIndia._get_context_ref_type(f.get("contextRef"))
+
+            if ctx_type in ("quarterly", "annual"):
+                if period_tag == "quarterly" and ctx_type == "quarterly":
+                    result.append(f)
+                elif period_tag == "annual" and ctx_type == "annual":
+                    result.append(f)
+                continue
+
             if start and end:
                 try:
                     sd = datetime.strptime(start, "%Y-%m-%d")
                     ed = datetime.strptime(end, "%Y-%m-%d")
                     days = (ed - sd).days
-                    is_quarterly = 0 < days <= 200
-                    is_annual = days > 200
+                    is_quarterly = 60 < days <= 130
+                    is_annual = days >= 300
                 except (ValueError, TypeError):
                     is_quarterly = False
                     is_annual = False

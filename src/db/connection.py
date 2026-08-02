@@ -1,5 +1,17 @@
 import os
 
+# Motor 3.7.1 imports `_QUERY_OPTIONS` from `pymongo.cursor`, but newer pymongo
+# (>= 4.11) moved it to `pymongo.cursor_shared`. Re-expose it before motor loads.
+import pymongo.cursor
+
+if not hasattr(pymongo.cursor, "_QUERY_OPTIONS"):
+    try:
+        from pymongo.cursor_shared import _QUERY_OPTIONS
+
+        pymongo.cursor._QUERY_OPTIONS = _QUERY_OPTIONS
+    except ImportError:
+        pass
+
 from beanie import init_beanie
 from dotenv import load_dotenv
 from loguru import logger
