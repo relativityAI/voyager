@@ -163,7 +163,6 @@ class Trendlyne(object):
         return self._flatten_data(data)
 
     def format_output(self, data: dict):
-
         output = """"""
 
         swot = data["swot"]

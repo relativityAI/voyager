@@ -57,7 +57,10 @@ class TestFetchPriceInfo:
         mock_ticker.info = {"sharesOutstanding": 50000000}
         mock_ticker.history.return_value = mock_hist
 
-        with patch("src.tools.nse.technicals._get_yf_raw", return_value=(mock_ticker, mock_hist)):
+        with patch(
+            "src.tools.nse.technicals._get_yf_raw",
+            return_value=(mock_ticker, mock_hist),
+        ):
             result = fetch_price_info("TEST", "NSE")
             assert result["current_price"] == 104.0
             assert result["shares_outstanding"] == 50000000.0
@@ -67,7 +70,10 @@ class TestFetchPriceInfo:
         mock_ticker.info = {}
         mock_ticker.history.return_value = pd.DataFrame()
 
-        with patch("src.tools.nse.technicals._get_yf_raw", return_value=(mock_ticker, pd.DataFrame())):
+        with patch(
+            "src.tools.nse.technicals._get_yf_raw",
+            return_value=(mock_ticker, pd.DataFrame()),
+        ):
             result = fetch_price_info("TEST", "NSE")
             assert result["current_price"] is None
             assert result["shares_outstanding"] is None
@@ -83,7 +89,10 @@ class TestFetchPriceInfo:
         mock_ticker.info = {}
         mock_ticker.history.return_value = mock_hist
 
-        with patch("src.tools.nse.technicals._get_yf_raw", return_value=(mock_ticker, mock_hist)):
+        with patch(
+            "src.tools.nse.technicals._get_yf_raw",
+            return_value=(mock_ticker, mock_hist),
+        ):
             result = fetch_price_info("TEST", "NSE")
             assert result["current_price"] == 103.0  # last valid non-NaN close
 
@@ -98,7 +107,10 @@ class TestFetchPriceInfo:
         mock_ticker.info = {}
         mock_ticker.history.return_value = mock_hist
 
-        with patch("src.tools.nse.technicals._get_yf_raw", return_value=(mock_ticker, mock_hist)):
+        with patch(
+            "src.tools.nse.technicals._get_yf_raw",
+            return_value=(mock_ticker, mock_hist),
+        ):
             result = fetch_price_info("TEST", "NSE")
             assert result["current_price"] is None
 
@@ -118,6 +130,7 @@ class TestFetchTechnicals:
 
     def _clear_caches(self):
         from src.tools.nse.technicals import _RAW_CACHE, _cache
+
         _cache.clear()
         _RAW_CACHE.clear()
 
@@ -127,7 +140,9 @@ class TestFetchTechnicals:
         mock_ticker = MagicMock()
         mock_ticker.history.return_value = hist
 
-        with patch("src.tools.nse.technicals._get_yf_raw", return_value=(mock_ticker, hist)):
+        with patch(
+            "src.tools.nse.technicals._get_yf_raw", return_value=(mock_ticker, hist)
+        ):
             result = fetch_technicals("TSTSUCC", "NSE")
             assert "current_price" in result
             assert result["current_price"] is not None
@@ -139,16 +154,27 @@ class TestFetchTechnicals:
         mock_ticker = MagicMock()
         mock_ticker.history.return_value = hist
 
-        with patch("src.tools.nse.technicals._get_yf_raw", return_value=(mock_ticker, hist)):
+        with patch(
+            "src.tools.nse.technicals._get_yf_raw", return_value=(mock_ticker, hist)
+        ):
             result = fetch_technicals("TSTALL", "NSE")
             expected_keys = [
-                "current_price", "sma_20", "sma_50", "sma_200",
-                "ema_12", "ema_26",
+                "current_price",
+                "sma_20",
+                "sma_50",
+                "sma_200",
+                "ema_12",
+                "ema_26",
                 "rsi_14",
-                "macd", "macd_signal", "macd_hist",
-                "bb_upper", "bb_middle", "bb_lower",
+                "macd",
+                "macd_signal",
+                "macd_hist",
+                "bb_upper",
+                "bb_middle",
+                "bb_lower",
                 "atr_14",
-                "stoch_k", "stoch_d",
+                "stoch_k",
+                "stoch_d",
                 "obv",
             ]
             for key in expected_keys:
@@ -161,7 +187,9 @@ class TestFetchTechnicals:
         mock_ticker = MagicMock()
         mock_ticker.history.return_value = hist
 
-        with patch("src.tools.nse.technicals._get_yf_raw", return_value=(mock_ticker, hist)):
+        with patch(
+            "src.tools.nse.technicals._get_yf_raw", return_value=(mock_ticker, hist)
+        ):
             result = fetch_technicals("TSTINSF", "NSE")
             assert result["current_price"] is not None
             assert "sma_200" not in result
@@ -174,7 +202,9 @@ class TestFetchTechnicals:
         mock_ticker = MagicMock()
         mock_ticker.history.return_value = hist
 
-        with patch("src.tools.nse.technicals._get_yf_raw", return_value=(mock_ticker, hist)):
+        with patch(
+            "src.tools.nse.technicals._get_yf_raw", return_value=(mock_ticker, hist)
+        ):
             result = fetch_technicals("TSTNAN", "NSE")
             for key, val in result.items():
                 if isinstance(val, float):
@@ -186,7 +216,10 @@ class TestFetchTechnicals:
         mock_ticker = MagicMock()
         mock_ticker.history.return_value = pd.DataFrame()
 
-        with patch("src.tools.nse.technicals._get_yf_raw", return_value=(mock_ticker, pd.DataFrame())):
+        with patch(
+            "src.tools.nse.technicals._get_yf_raw",
+            return_value=(mock_ticker, pd.DataFrame()),
+        ):
             result = fetch_technicals("TSTEMPT", "NSE")
             assert "error" in result
 

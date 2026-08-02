@@ -1,4 +1,3 @@
-
 import pytest
 
 from src.tools.nse.valuation import (
@@ -48,11 +47,17 @@ class TestComputeValuation:
     }
 
     def test_all_ratios_with_valid_data(self):
-        result = compute_valuation(self.COMPLETE_DATA, 2500.0, 100000000, eps_growth=15.0)
+        result = compute_valuation(
+            self.COMPLETE_DATA, 2500.0, 100000000, eps_growth=15.0
+        )
         assert result["pe_ratio"] == 50.0  # 2500/50
-        assert result["pb_ratio"] == pytest.approx(41.6667, rel=1e-3)  # 2500 / (6000M/100M)
+        assert result["pb_ratio"] == pytest.approx(
+            41.6667, rel=1e-3
+        )  # 2500 / (6000M/100M)
         assert result["ps_ratio"] == 12.5  # 2500 / (20000M/100M)
-        assert result["pcf_ratio"] == pytest.approx(83.3333, rel=1e-3)  # 2500 / (3000M/100M)
+        assert result["pcf_ratio"] == pytest.approx(
+            83.3333, rel=1e-3
+        )  # 2500 / (3000M/100M)
         assert result["peg_ratio"] == pytest.approx(3.3333, rel=1e-3)  # 50 / 15
 
     def test_all_none_when_no_price(self):
@@ -68,13 +73,17 @@ class TestComputeValuation:
         assert all(v is None for v in result.values())
 
     def test_pe_with_negative_eps(self):
-        data = {"basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": "-10"}
+        data = {
+            "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": "-10"
+        }
         result = compute_valuation(data, 100.0, 100000000)
         assert result["pe_ratio"] == -10.0
 
     def test_pe_only_with_no_shares(self):
         result = compute_valuation(
-            {"basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": "25"},
+            {
+                "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": "25"
+            },
             500.0,
             0,
         )
@@ -101,7 +110,9 @@ class TestComputeValuation:
         assert result["peg_ratio"] is None
 
     def test_no_peg_with_negative_growth(self):
-        result = compute_valuation(self.COMPLETE_DATA, 2500.0, 100000000, eps_growth=-10.0)
+        result = compute_valuation(
+            self.COMPLETE_DATA, 2500.0, 100000000, eps_growth=-10.0
+        )
         assert result["pe_ratio"] is not None
         assert result["peg_ratio"] is None
 
@@ -144,4 +155,3 @@ class TestGetValuationCatalog:
         assert "ps_ratio" in ids
         assert "pcf_ratio" in ids
         assert "peg_ratio" in ids
-

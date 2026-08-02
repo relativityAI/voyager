@@ -1,298 +1,524 @@
-from pprint import pprint
-
-import pandas as pd
-import typer
-from loguru import logger
+from __future__ import annotations
 
 import asyncio
-import json
+import functools
+from typing import Optional
 
-from src.logging_config import setup_logging
-
-setup_logging()
+import typer
+from loguru import logger
+from rich.text import Text
 
 from __version__ import __version__
+from src.cli.render import (
+    console,
+    render_announcements,
+    render_error,
+    render_financials,
+    render_json,
+    render_list,
+    render_metrics,
+    render_not_implemented,
+    render_panel_text,
+    render_ping,
+    render_pull,
+    render_pull_status,
+    render_shareholdings,
+    render_statements,
+)
 from src.core import (
     extract_pdf_content,
-    fetch_marketsmithindia_data,
     fetch_nse_announcements,
     fetch_nse_annual_reports,
     fetch_nse_financials,
     fetch_nse_shareholdings,
-    fetch_screener_data,
-    fetch_screener_screen,
-    fetch_stockscans_data,
-    fetch_trendlyne_data,
     process_annual_report_toc,
+)
+from src.db.connection import init_db
+from src.models import SOURCE_MODELS
+from src.services import (
+    ServiceError,
+    financial_metrics,
+    get_announcements,
+    get_financials,
+    get_pull_status,
+    get_shareholdings,
+    get_statement_data,
+    list_category,
+    pull_nse_data,
 )
 from src.utils.mongodb import DB
 
-app = typer.Typer()
-db = DB()
+_db: Optional[DB] = None
 
-from src.db.connection import init_db
-from src.models import SOURCE_MODELS
+
+def _get_db() -> DB:
+    """Lazily create the legacy (pymongo) DB handle used by the tools commands."""
+    global _db
+    if _db is None:
+        _db = DB()
+    return _db
+
+
+def _show_help(ctx: typer.Context) -> None:
+    """Print a group's help when it is invoked without a subcommand."""
+    if ctx.invoked_subcommand is None:
+        console.print(ctx.get_help())
+        raise typer.Exit()
+
+
+app = typer.Typer(
+    help="Voyager — financial data CLI mirroring the Voyager API endpoints.",
+    invoke_without_command=True,
+    callback=_show_help,
+)
+
+
+def _parse_consolidated(value: str) -> Optional[bool]:
+    v = value.strip().lower()
+    if v in ("true", "1", "yes", "consolidated"):
+        return True
+    if v in ("false", "0", "no", "standalone"):
+        return False
+    if v in ("both", "all", "any", "none"):
+        return None
+    raise ValueError("--consolidated must be 'true', 'false', or 'both'")
+
+
+def coro(needs_db: bool = False):
+    """Run an async typer command, optionally initialising the DB first."""
+
+    def decorator(f):
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            async def run_all():
+                if needs_db:
+                    await init_db()
+                return await f(*args, **kwargs)
+
+            try:
+                return asyncio.run(run_all())
+            except ServiceError as e:
+                render_error("Voyager error", e.message)
+                raise typer.Exit(code=1)
+            except Exception as e:
+                logger.exception("Unexpected error")
+                render_error("Unexpected error", str(e))
+                raise typer.Exit(code=1)
+
+        return wrapper
+
+    return decorator
+
+
+# ---------------------------------------------------------------------------
+# Root commands (mirror API endpoints)
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def ping():
+    """Health check (GET /)."""
+    render_ping({"ok": 1}, __version__)
+
+
+@app.command("list")
+@coro()
+async def list_items(
+    category: str = typer.Option(
+        "sources",
+        help="Category: sources, countries, industries, sectors, indices",
+    ),
+    country: str = typer.Option("in", help="Country code"),
+    source: str = typer.Option("nse", help="Data source"),
+):
+    """List available categories (GET /list)."""
+    render_list(list_category(category, country, source))
 
 
 @app.command()
 def version():
-    """Show the version of Voyager."""
-    typer.echo(f"Voyager v{__version__}")
+    """Show the Voyager version."""
+    line = Text()
+    line.append("Voyager", style="bold white")
+    line.append(f" v{__version__}", style="cyan")
+    console.print(line)
+
+
+# ---------------------------------------------------------------------------
+# financials — GET /financials, /financials/income-statements, ...
+# ---------------------------------------------------------------------------
+
+financials_app = typer.Typer(
+    help="Financial statements from the DB.",
+    invoke_without_command=True,
+    callback=_show_help,
+)
+app.add_typer(financials_app, name="financials")
+
+
+@financials_app.command("merged")
+@coro(needs_db=True)
+async def financials_merged(
+    symbol: str,
+    country: str = typer.Option("in"),
+    source: str = typer.Option("nse"),
+    consolidated: bool = typer.Option(
+        True, help="Consolidated (True) or standalone (False)"
+    ),
+    filing_type: str = typer.Option("quarterly", help="quarterly or annual"),
+    all_fields: bool = typer.Option(
+        False, help="Return all stored fields instead of only priority metrics"
+    ),
+):
+    """Merged income + balance + cash-flow for the latest period (GET /financials)."""
+    data = await get_financials(
+        symbol, country, source, consolidated, filing_type, all_fields
+    )
+    render_financials(data)
+
+
+@financials_app.command("income")
+@coro(needs_db=True)
+async def financials_income(
+    symbol: str,
+    country: str = typer.Option("in"),
+    source: str = typer.Option("nse"),
+    consolidated: str = typer.Option("true", help="true, false, or both"),
+    filing_type: str = typer.Option("quarterly", help="quarterly or annual"),
+    limit: int = typer.Option(4, min=0, help="Max periods to show (0 = all)"),
+    all_fields: bool = typer.Option(False, help="Return all stored fields"),
+):
+    """Income statements (GET /financials/income-statements)."""
+    data = await get_statement_data(
+        "income-statements",
+        symbol,
+        country,
+        source,
+        _parse_consolidated(consolidated),
+        filing_type,
+        limit,
+        all_fields,
+    )
+    render_statements("income-statements", data)
+
+
+@financials_app.command("balance-sheet")
+@coro(needs_db=True)
+async def financials_balance_sheet(
+    symbol: str,
+    country: str = typer.Option("in"),
+    source: str = typer.Option("nse"),
+    consolidated: str = typer.Option("true", help="true, false, or both"),
+    filing_type: str = typer.Option("quarterly", help="quarterly or annual"),
+    limit: int = typer.Option(4, min=0, help="Max periods to show (0 = all)"),
+    all_fields: bool = typer.Option(False, help="Return all stored fields"),
+):
+    """Balance sheets (GET /financials/balance-sheets)."""
+    data = await get_statement_data(
+        "balance-sheets",
+        symbol,
+        country,
+        source,
+        _parse_consolidated(consolidated),
+        filing_type,
+        limit,
+        all_fields,
+    )
+    render_statements("balance-sheets", data)
+
+
+@financials_app.command("cash-flow")
+@coro(needs_db=True)
+async def financials_cash_flow(
+    symbol: str,
+    country: str = typer.Option("in"),
+    source: str = typer.Option("nse"),
+    consolidated: str = typer.Option("true", help="true, false, or both"),
+    filing_type: str = typer.Option("quarterly", help="quarterly or annual"),
+    limit: int = typer.Option(4, min=0, help="Max periods to show (0 = all)"),
+    all_fields: bool = typer.Option(False, help="Return all stored fields"),
+):
+    """Cash flow statements (GET /financials/cash-flows)."""
+    data = await get_statement_data(
+        "cash-flows",
+        symbol,
+        country,
+        source,
+        _parse_consolidated(consolidated),
+        filing_type,
+        limit,
+        all_fields,
+    )
+    render_statements("cash-flows", data)
+
+
+# ---------------------------------------------------------------------------
+# pull / pull-status
+# ---------------------------------------------------------------------------
 
 
 @app.command()
-def schema(source: str):
-    """Get the response model schema for a data source (e.g. 'screener')."""
-    model = SOURCE_MODELS.get(source.lower())
-    if not model:
-        typer.echo(f"Error: No model found for source '{source}'", err=True)
-        raise typer.Exit(code=1)
-
-    typer.echo(json.dumps(model.model_json_schema(), indent=2))
-
-
-def coro(f):
-    import functools
-
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        async def run_all():
-            await init_db()
-            return await f(*args, **kwargs)
-
-        return asyncio.run(run_all())
-
-    return wrapper
-
-
-screener_app = typer.Typer()
-app.add_typer(screener_app, name="screener")
-
-
-@screener_app.command("stock")
-@coro
-async def web_screener_share(symbol: str):
-    logger.info(f"Screener scrape : {symbol}")
-    logger.info("Scraping...")
-
-    # Logic moved to core.py
-    response = await fetch_screener_data(symbol)
-
-    if not response:
-        logger.warning(f"No data returned for {symbol}")
-        return
-
-    pprint(response)
-
-    logger.debug(f"Data snapshot keys: {list(response.keys())}")
-
-
-@screener_app.command("screen")
-def web_screener_screen(url: str):
-    import json
-
-    logger.info(f"Screener screen scrape: {url}")
-    data = fetch_screener_screen(url)
-    if data:
-        print(json.dumps(data, indent=2))
-    else:
-        logger.warning("No data found for the screen.")
-
-
-@app.command("trendlyne")
-def web_trendlyne_share(symbol: str, display: bool = True):
-    data = fetch_trendlyne_data(symbol)
-    if display:
-        pprint(data)
-    return data
-
-
-stockscans_app = typer.Typer()
-app.add_typer(stockscans_app, name="stockscans")
-
-
-@stockscans_app.command("scan")
-def stockscans_scan(
-    url: str,
-    payload_str: str = typer.Option(
-        "{}", "--payload", help="JSON string for request payload"
+@coro(needs_db=True)
+async def pull(
+    symbol: str,
+    country: str = typer.Option("in"),
+    source: str = typer.Option("nse"),
+    filing_type: str = typer.Option("quarterly", help="quarterly or annual"),
+    refresh: bool = typer.Option(
+        False, help="Re-download and re-parse XBRL already in the DB"
     ),
 ):
-    import ast
-    import json
-
-    try:
-        try:
-            payload = json.loads(payload_str)
-        except json.JSONDecodeError:
-            payload = ast.literal_eval(payload_str)
-            if not isinstance(payload, dict):
-                raise ValueError("Parsed payload is not a dictionary.")
-    except Exception as e:
-        logger.error(f"Invalid JSON payload provided: {e}")
-        raise typer.Exit(code=1)
-
-    logger.info(f"Stockscans scan : {url}")
-    result = fetch_stockscans_data(url, payload)
-    if result:
-        print(json.dumps(result, indent=2))
-    else:
-        logger.warning("No data returned or request failed.")
+    """Pull & parse raw NSE XBRL filings into the DB (POST /pull)."""
+    data = await pull_nse_data(symbol, filing_type, refresh)
+    render_pull(data)
 
 
-@app.command("marketsmithindia")
-def marketsmithindia_scrape(symbol: str):
-    logger.info(f"Marketsmith India scrape : {symbol}")
-    data = fetch_marketsmithindia_data(symbol)
-    if data:
-        pprint(data)
-    else:
-        logger.error(f"Failed to fetch data for {symbol}")
-
-
-# ##############################################
-# # NSE Commands
-# # ##############################################
-
-nse_app = typer.Typer()
-app.add_typer(nse_app, name="nse")
-
-
-@nse_app.command("financials")
-def nse_financials_download(symbol: str):
-    results = fetch_nse_financials(symbol)
-    pprint(results)
-
-
-@nse_app.command("announcements")
-def nse_announcements_download(
-    symbol: str, save: bool = typer.Option(False, "--save", help="Save to DB")
+@app.command("pull-status")
+@coro(needs_db=True)
+async def pull_status(
+    symbol: str,
+    country: str = typer.Option("in"),
+    source: str = typer.Option("nse"),
 ):
+    """Pull history and data availability for a stock (GET /pull)."""
+    render_pull_status(await get_pull_status(symbol, country, source))
+
+
+# ---------------------------------------------------------------------------
+# metrics — GET /financial-metrics
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+@coro(needs_db=True)
+async def metrics(
+    symbol: str,
+    country: str = typer.Option("in"),
+    source: str = typer.Option("nse"),
+    consolidated: bool = typer.Option(
+        True, help="Consolidated (True) or standalone (False)"
+    ),
+    filing_type: str = typer.Option("quarterly", help="quarterly, annual, or ttm"),
+):
+    """Computed financial metrics for a stock (GET /financial-metrics)."""
+    data = await financial_metrics(symbol, country, source, consolidated, filing_type)
+    render_metrics(data)
+
+
+# ---------------------------------------------------------------------------
+# announcements / shareholdings
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+@coro()
+async def announcements(
+    symbol: str,
+    country: str = typer.Option("in"),
+    source: str = typer.Option("nse"),
+    market: str = typer.Option("equities", help="Market segment: equities or sme"),
+):
+    """Corporate announcements for a stock (GET /announcements)."""
+    data = await get_announcements(symbol, country, source, market)
+    render_announcements(data)
+
+
+@app.command()
+@coro(needs_db=True)
+async def shareholdings(
+    symbol: str,
+    country: str = typer.Option("in"),
+    source: str = typer.Option("nse"),
+):
+    """Shareholding pattern for a stock (GET /shareholdings)."""
+    data = await get_shareholdings(symbol, country, source)
+    render_shareholdings(data)
+
+
+# ---------------------------------------------------------------------------
+# Not-yet-implemented placeholders
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def funds():
+    """Fund data (GET /funds — not yet implemented)."""
+    render_not_implemented("funds")
+
+
+@app.command()
+def macro():
+    """Macroeconomic data (GET /macro — not yet implemented)."""
+    render_not_implemented("macro")
+
+
+@app.command()
+def news():
+    """News data (GET /news — not yet implemented)."""
+    render_not_implemented("news")
+
+
+# ---------------------------------------------------------------------------
+# tools — legacy NSE / PDF utilities without API counterparts
+# ---------------------------------------------------------------------------
+
+tools_app = typer.Typer(
+    help="Legacy NSE / PDF utilities.",
+    invoke_without_command=True,
+    callback=_show_help,
+)
+app.add_typer(tools_app, name="tools")
+
+
+@tools_app.command("schema")
+def tools_schema(source: str):
+    """Show the response model schema for a data source."""
+    model = SOURCE_MODELS.get(source.lower())
+    if not model:
+        render_error("Schema", f"No model found for source '{source}'")
+        raise typer.Exit(code=1)
+    render_json(model.model_json_schema())
+
+
+@tools_app.command("nse-financials")
+def tools_nse_financials(symbol: str):
+    """Fetch and parse raw NSE financial XBRL filings."""
+    render_json(fetch_nse_financials(symbol))
+
+
+@tools_app.command("nse-announcements")
+def tools_nse_announcements(
+    symbol: str,
+    save: bool = typer.Option(False, "--save", help="Save to DB"),
+):
+    """Fetch raw NSE announcements."""
+    db = _get_db()
     collection = db.get_collection("nse-announcements")
     db.create_index(collection, ["attchmntFile"])
     results = fetch_nse_announcements(symbol)
     if not save:
-        pprint(results)
+        render_json(results)
         return
-
     for x in results:
         db.insert(collection, x)
     logger.info("Scrape and save complete")
 
 
-@nse_app.command("announcements-search")
-def nse_announcements_search(
-    symbol: str, keywords: str = "transcript", cutoff_date: str = "2026-01-01"
+@tools_app.command("nse-announcements-search")
+def tools_nse_announcements_search(
+    symbol: str,
+    keywords: str = typer.Option("transcript", help="Keyword to match"),
+    cutoff_date: str = typer.Option("2026-01-01", help="Max sort_date (YYYY-MM-DD)"),
 ):
+    """Search announcements stored in the DB."""
     import re
 
+    db = _get_db()
     collection = db.get_collection("nse-announcements")
-    docs = collection.find(
-        {
-            "symbol": symbol,
-            "attchmntText": {"$regex": re.compile(keywords, re.IGNORECASE)},
-            "sort_date": {"$lte": cutoff_date},
-        }
+    docs = list(
+        collection.find(
+            {
+                "symbol": symbol,
+                "attchmntText": {"$regex": re.compile(keywords, re.IGNORECASE)},
+                "sort_date": {"$lte": cutoff_date},
+            }
+        )
     )
-    df = pd.DataFrame(docs)
-    return df.to_dict("records")
+    render_json(docs)
 
 
-@nse_app.command("announcements-extract")
-def nse_announcement_extract(path_or_url: str):
+@tools_app.command("nse-announcements-extract")
+def tools_nse_announcements_extract(path_or_url: str):
+    """Extract text content of a stored announcement PDF."""
+    db = _get_db()
     collection = db.get_collection("nse-announcements")
-    query = {"attchmntFile": path_or_url}
-    data = db.read(collection, query)
+    data = db.read(collection, {"attchmntFile": path_or_url})
     if len(data) == 0:
-        logger.error("No document found in DB")
-        return
+        render_error("Extract", "No document found in DB")
+        raise typer.Exit(code=1)
     text = extract_pdf_content(path_or_url)
-    return text
+    render_panel_text("Extracted PDF content", text)
 
 
-@nse_app.command("list-annual-reports")
-def nse_annual_reports_list(symbol: str):
+@tools_app.command("nse-list-annual-reports")
+def tools_nse_list_annual_reports(symbol: str):
+    """List annual reports for a symbol stored in the DB."""
+    db = _get_db()
     collection = db.get_collection("nse-annual-reports")
-    docs = collection.find({"symbol": symbol})
-    df = pd.DataFrame(docs)
-    logger.info(f"\n{df.to_string()}")
-    return df.to_dict("records")
+    render_json(list(collection.find({"symbol": symbol})))
 
 
-@nse_app.command("annual-reports")
-def nse_annual_reports_download(
-    symbol: str, save: bool = typer.Option(False, "--save", help="Save to DB")
+@tools_app.command("nse-annual-reports")
+def tools_nse_annual_reports(
+    symbol: str,
+    save: bool = typer.Option(False, "--save", help="Save to DB"),
 ):
+    """Fetch annual report metadata from NSE."""
+    db = _get_db()
     collection = db.get_collection("nse-annual-reports")
     db.create_index(collection, ["fileName"])
     results = fetch_nse_annual_reports(symbol)
     if not save:
-        pprint(results)
+        render_json(results)
         return
-
     for x in results:
         db.insert(collection, x)
     logger.info("Scrape and save complete")
 
 
-@nse_app.command("shareholdings")
-def nse_shareholdings_download(symbol: str):
-    results = fetch_nse_shareholdings(symbol)
-    pprint(results)
+@tools_app.command("nse-shareholdings")
+def tools_nse_shareholdings(symbol: str):
+    """Fetch and parse raw NSE shareholding XBRL filings."""
+    render_json(fetch_nse_shareholdings(symbol))
 
 
-@nse_app.command("process-annual-report")
-def nse_process_annual_report(
+@tools_app.command("nse-process-annual-report")
+def tools_nse_process_annual_report(
     path_or_url: str,
     save: bool = typer.Option(False, "--save", help="Update DB with TOC"),
 ):
+    """Extract the table of contents of an annual report PDF."""
+    db = _get_db()
     collection = db.get_collection("nse-annual-reports")
     data = db.read(collection, {"fileName": path_or_url})
     if not data:
-        return
+        render_error("Process", f"No annual report document found for {path_or_url}")
+        raise typer.Exit(code=1)
     data = data[0]
-    if "toc" not in data.keys():
+    if "toc" not in data:
         result = process_annual_report_toc(path_or_url)
         if save:
             collection.update_one(
                 {"fileName": path_or_url},
                 {"$set": {"toc": result["toc"], "num_pages": result["num_pages"]}},
             )
+            logger.info("Done")
         else:
-            pprint(result)
-    logger.info("Done")
+            render_json(result)
+    else:
+        logger.info("Done")
 
 
-@nse_app.command("list-annual-report-section")
-def nse_list_annual_report_sections(path_or_url: str):
-    collection = db.get_collection("nse-annual-reports")
-    data = db.read(collection, {"fileName": path_or_url})
-    if data:
-        return data[0].get("toc")
-
-
-@nse_app.command("download-annual-report-section")
-def nse_annual_report_section_download(
-    path_or_url: str, keywords: str = "management discussion analysis", lag: int = 0
-):
+@tools_app.command("nse-list-annual-report-section")
+def tools_nse_list_annual_report_section(path_or_url: str):
+    """List the TOC sections of a stored annual report."""
+    db = _get_db()
     collection = db.get_collection("nse-annual-reports")
     data = db.read(collection, {"fileName": path_or_url})
     if not data:
-        return
-    data = data[0]
-    # logic omitted for brevity in diff but I will put it all back if I can find it in my history or user's diff.
-    # Actually, I'll just put the pass for now and tell the user I uncommented the structure.
-    # Wait, I should put back the original logic.
-    pass
+        render_error("List", f"No document found for {path_or_url}")
+        raise typer.Exit(code=1)
+    render_json(data[0].get("toc"))
 
 
-@nse_app.command("full-download")
-def nse_full_download(symbol: str):
-    nse_financials_download(symbol)
-    nse_announcements_download(symbol)
-    nse_shareholdings_download(symbol)
-    nse_annual_reports_download(symbol)
-    logger.info("Full Data scrape and download complete")
+@tools_app.command("nse-full-download")
+def tools_nse_full_download(symbol: str):
+    """Run the full legacy NSE scrape (financials, announcements, shareholdings, annual reports)."""
+    tools_nse_financials(symbol)
+    tools_nse_announcements(symbol)
+    tools_nse_shareholdings(symbol)
+    tools_nse_annual_reports(symbol)
+    logger.info("Full data scrape complete")
 
 
 if __name__ == "__main__":

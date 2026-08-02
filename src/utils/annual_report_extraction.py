@@ -20,7 +20,6 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 
 def extract_first_pages(path_or_url, num_pages=6):
-
     reader = load_pdf(path_or_url)
 
     if not reader:
@@ -75,7 +74,6 @@ def clean_section_names(toc_data):
 
 
 def extract_table_of_contents(text):
-
     prompt = f"""
     You are extracting the Table of Contents (ToC) from an annual report.
 

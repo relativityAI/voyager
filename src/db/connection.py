@@ -1,4 +1,5 @@
 import os
+from urllib.parse import urlparse
 
 # Motor 3.7.1 imports `_QUERY_OPTIONS` from `pymongo.cursor`, but newer pymongo
 # (>= 4.11) moved it to `pymongo.cursor_shared`. Re-expose it before motor loads.
@@ -31,6 +32,11 @@ def get_database() -> AsyncIOMotorDatabase:
     return _database
 
 
+def hostname_from_url(url: str) -> str:
+    """Return only the host[:port] part of a Mongo URL, dropping scheme/credentials."""
+    return urlparse(url).netloc.split("@")[-1]
+
+
 async def init_db():
     global _client, _database
     mongodb_url = os.getenv("MONGODB_URL")
@@ -40,7 +46,7 @@ async def init_db():
         logger.error("MONGODB_URL not found in environment variables")
         return
 
-    logger.info(f"Connecting to MongoDB at {mongodb_url}...")
+    logger.info(f"Connecting to MongoDB at {hostname_from_url(mongodb_url)}...")
     _client = AsyncIOMotorClient(mongodb_url)
 
     # Motor 3.x attribute access returns a MotorDatabase, which Beanie tries to call.

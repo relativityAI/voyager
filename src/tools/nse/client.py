@@ -262,7 +262,11 @@ class NSEApiClient:
         return None
 
     def fetch_xbrl_content(self, url, symbol):
-        if not url or url in ("-", "null", "https://nsearchives.nseindia.com/corporate/xbrl/-"):
+        if not url or url in (
+            "-",
+            "null",
+            "https://nsearchives.nseindia.com/corporate/xbrl/-",
+        ):
             return None
         response = self._call(url, symbol=symbol)
         if response and response.status_code == 200:
@@ -280,23 +284,33 @@ class NSEApiClient:
             return {}
 
     def announcements_xbrls(self, symbol):
-        res = self._call(self.endpoints["announcements-equities"].format(symbol=symbol.upper()))
+        res = self._call(
+            self.endpoints["announcements-equities"].format(symbol=symbol.upper())
+        )
         return self._safe_json(res)
 
     def annual_results_xbrls(self, symbol):
-        res = self._call(self.endpoints["integrated-filing"].format(symbol=symbol.upper()))
+        res = self._call(
+            self.endpoints["integrated-filing"].format(symbol=symbol.upper())
+        )
         return self._safe_json(res)
 
     def quarterly_results_xbrls(self, symbol):
-        res = self._call(self.endpoints["quarterly-results"].format(symbol=symbol.upper()))
+        res = self._call(
+            self.endpoints["quarterly-results"].format(symbol=symbol.upper())
+        )
         return self._safe_json(res)
 
     def integrated_filing_xbrls(self, symbol):
-        res = self._call(self.endpoints["integrated-filing"].format(symbol=symbol.upper()))
+        res = self._call(
+            self.endpoints["integrated-filing"].format(symbol=symbol.upper())
+        )
         return self._safe_json(res)
 
     def shareholding_xbrls(self, symbol):
-        res = self._call(self.endpoints["shareholding-pattern"].format(symbol=symbol.upper()))
+        res = self._call(
+            self.endpoints["shareholding-pattern"].format(symbol=symbol.upper())
+        )
         return self._safe_json(res)
 
     def annual_reports_xbrls(self, symbol):
@@ -359,11 +373,13 @@ class NSEDataParser:
                     period_end_date = text
 
                 if ns and text:
-                    rows.append({
-                        "tag": tag,
-                        "value": text,
-                        "contextRef": elem.get("contextRef"),
-                    })
+                    rows.append(
+                        {
+                            "tag": tag,
+                            "value": text,
+                            "contextRef": elem.get("contextRef"),
+                        }
+                    )
 
             currency = next(iter(units.values()), None)
 
@@ -423,7 +439,13 @@ class NSEIndia:
 
     @staticmethod
     def _filter_facts_by_period(financials: list, category: str) -> list:
-        period_tag = "quarterly" if category in ("integrated-filing", "quarterly-results", "integrated") else "annual" if category == "annual-results" else None
+        period_tag = (
+            "quarterly"
+            if category in ("integrated-filing", "quarterly-results", "integrated")
+            else "annual"
+            if category == "annual-results"
+            else None
+        )
         if period_tag is None:
             return financials
 
@@ -485,25 +507,40 @@ class NSEIndia:
                     t1 = time.perf_counter()
                     data = self.parser.extract_xml(content, symbol)
                     parse_ms = (time.perf_counter() - t1) * 1000
-                    self.logger.debug(f"XBRL {symbol} ({category}) download={download_ms:.0f}ms parse={parse_ms:.0f}ms")
+                    self.logger.debug(
+                        f"XBRL {symbol} ({category}) download={download_ms:.0f}ms parse={parse_ms:.0f}ms"
+                    )
                     if data and data.get("period_end_date"):
-                        data["financials"] = self._filter_facts_by_period(data["financials"], category)
+                        data["financials"] = self._filter_facts_by_period(
+                            data["financials"], category
+                        )
 
                         if category == "shareholding-pattern":
                             data["financials"] = [
-                                f for f in data["financials"]
+                                f
+                                for f in data["financials"]
                                 if f.get("contextRef") in shareholding_context_ref_types
                             ]
 
                         if not any(f.get("contextRef") for f in data["financials"]):
-                            self.logger.warning(f"No matching facts found in XBRL for {symbol} (category={category}), skipping")
+                            self.logger.warning(
+                                f"No matching facts found in XBRL for {symbol} (category={category}), skipping"
+                            )
                             return None
 
-                        default_consolidated = "Shareholding" if category == "shareholding-pattern" else "Consolidated"
+                        default_consolidated = (
+                            "Shareholding"
+                            if category == "shareholding-pattern"
+                            else "Consolidated"
+                        )
                         consolidated = x.get("consolidated", default_consolidated)
                         period_end = data["period_end_date"]
 
-                        is_cons = str(consolidated).lower() in ("consolidated", "true", "1")
+                        is_cons = str(consolidated).lower() in (
+                            "consolidated",
+                            "true",
+                            "1",
+                        )
 
                         if category in ("integrated-filing", "quarterly-results"):
                             filing_type = "quarterly"
@@ -530,7 +567,10 @@ class NSEIndia:
                         }
 
                         for f in data["financials"]:
-                            if f.get("start_date") and base_meta["period_start_date"] is None:
+                            if (
+                                f.get("start_date")
+                                and base_meta["period_start_date"] is None
+                            ):
                                 base_meta["period_start_date"] = f["start_date"]
 
                         result: Dict[str, Any] = {
@@ -576,23 +616,46 @@ class NSEIndia:
                             else:
                                 stmts["income_statement"].append(entry)
 
-                        ctx_ref_type_str = ", ".join(sorted(ctx_ref_types_used)) if ctx_ref_types_used else ""
+                        ctx_ref_type_str = (
+                            ", ".join(sorted(ctx_ref_types_used))
+                            if ctx_ref_types_used
+                            else ""
+                        )
                         base_meta["context_ref_type"] = ctx_ref_type_str
 
-                        for stmt_key in ("income_statement", "balance_sheet", "cash_flow", "shareholding"):
+                        for stmt_key in (
+                            "income_statement",
+                            "balance_sheet",
+                            "cash_flow",
+                            "shareholding",
+                        ):
                             entries = stmts[stmt_key]
                             if not entries:
                                 continue
                             doc = dict(base_meta)
                             doc["_content_hash"] = hashlib.md5(
-                                json.dumps({k: doc[k] for k in ("symbol", "period_end_date", "consolidated", "source_endpoint")}, sort_keys=True, default=str).encode()
+                                json.dumps(
+                                    {
+                                        k: doc[k]
+                                        for k in (
+                                            "symbol",
+                                            "period_end_date",
+                                            "consolidated",
+                                            "source_endpoint",
+                                        )
+                                    },
+                                    sort_keys=True,
+                                    default=str,
+                                ).encode()
                             ).hexdigest()
                             for tag_snake, value in entries:
                                 doc[tag_snake] = value
                             result[stmt_key] = doc
 
                         stmt_types = [k for k, v in result.items() if v is not None]
-                        self.logger.debug(f"Parsed XBRL for {symbol} ({category}): {', '.join(stmt_types)}")
+                        self.logger.debug(
+                            f"Parsed XBRL for {symbol} ({category}): {', '.join(stmt_types)}"
+                        )
                         return result
             elif extension == "html":
                 self.logger.error("HTML data extraction yet to be implemented")
@@ -611,7 +674,9 @@ class NSEIndia:
         if ext.lower() != ".pdf":
             self.logger.error(f"Unsupported document type: {ext}")
             return None
-        content = self.api.fetch_url_content(url, symbol=symbol, referer="https://www.nseindia.com/")
+        content = self.api.fetch_url_content(
+            url, symbol=symbol, referer="https://www.nseindia.com/"
+        )
         if not content:
             self.logger.error(f"Failed to fetch document: {url}")
             return None
