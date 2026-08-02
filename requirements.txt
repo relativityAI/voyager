@@ -21,3 +21,4 @@ pytesseract
 pdf2image
 google-generativeai
 tavily-python
+fastmcp

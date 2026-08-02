@@ -8,6 +8,10 @@ import typer
 from loguru import logger
 from rich.text import Text
 
+from src.logging_config import setup_logging
+
+setup_logging()
+
 from __version__ import __version__
 from src.cli.render import (
     console,

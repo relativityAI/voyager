@@ -95,6 +95,51 @@ A `/financial-metrics` response looks like this (values are examples; `null` mea
 
 ---
 
+## MCP server
+
+`mcp_server.py` exposes the same data to MCP clients (Claude Desktop, Cursor, Claude Code, etc.) as an AI-native tool surface. It reuses the exact service layer behind the API and CLI, so every function here maps 1:1 to an endpoint or CLI command.
+
+**Tools** (27) include:
+- `get_financial_metrics` — valuation, profitability, growth, solvency (this repo's core)
+- `get_financials`, `get_income_statements`, `get_balance_sheets`, `get_cash_flows`
+- `pull_status` — inspect NSE data coverage in the DB
+- `announcements`, `shareholdings`, `list_categories`
+- Legacy utilities: `nse_financials_raw`, `nse_announcements`, `nse_annual_reports`, PDF/TOC extraction, `nse_announcements_search`
+- Web screeners: `screener_fetch`, `screener_screen`, `trendlyne_fetch`, `stockscans_fetch`, `marketsmithindia_fetch`
+
+It also ships two **resources** (`voyager://schema/{source}`, `voyager://list/{category}`) and a ready-made **prompt** (`analyze_stock`) that chains the tools into a fundamental-analysis workflow.
+
+### Run
+
+```bash
+python mcp_server.py                                  # stdio (default, for local clients)
+python mcp_server.py --transport http --port 8002     # Streamable HTTP
+fastmcp run mcp_server.py:mcp --transport http --port 8002
+```
+
+The HTTP endpoint is `http://127.0.0.1:8002/mcp`. Configure via env: `MCP_TRANSPORT` (`stdio`|`http`), `MCP_HOST` (default `127.0.0.1`), `MCP_PORT` (default `8002`). Test with the Inspector: `fastmcp dev mcp_server.py`.
+
+### Register with a client
+
+Claude Desktop (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "voyager": {
+      "command": "/path/to/conda/envs/voyager/bin/python",
+      "args": ["/path/to/voyager/mcp_server.py"]
+    }
+  }
+}
+```
+
+Cursor / other clients point at the same command, or at the HTTP endpoint above.
+
+Notes:
+- Logging goes to stderr/file, so stdout stays clean for stdio transport.
+- If you expose the HTTP transport beyond localhost, put it behind auth (fastmcp supports it) — no secrets are stored in the repo.
+
 ## Technical reference
 
 ### Setup
