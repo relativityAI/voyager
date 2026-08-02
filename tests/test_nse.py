@@ -56,13 +56,6 @@ def test_api_client_fetch_xbrl_content(mock_session_class, api_client):
     assert content == b"fake content"
     mock_session.get.assert_called()
 
-import asyncio
-
-def test_run_background_scrape(mock_job_status_class, mock_nse_financials_class, nse_india):
-    import asyncio
-
-    asyncio.run()
-
 @patch('src.tools.nse.client.RateLimitedSession')
 def test_api_client_json_decode_error(mock_session_class, api_client):
     mock_session = mock_session_class.return_value

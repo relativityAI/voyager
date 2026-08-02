@@ -1,4 +1,3 @@
-from datetime import datetime
 from pprint import pprint
 
 import pandas as pd
@@ -32,7 +31,6 @@ app = typer.Typer()
 db = DB()
 
 from src.db.connection import init_db
-from src.db.models import ScreenerData
 from src.models import SOURCE_MODELS
 
 
@@ -73,9 +71,7 @@ app.add_typer(screener_app, name="screener")
 
 @screener_app.command("stock")
 @coro
-async def web_screener_share(
-    symbol: str, save: bool = typer.Option(False, "--save", help="Save data to MongoDB")
-):
+async def web_screener_share(symbol: str):
     logger.info(f"Screener scrape : {symbol}")
     logger.info("Scraping...")
 
@@ -86,29 +82,9 @@ async def web_screener_share(
         logger.warning(f"No data returned for {symbol}")
         return
 
-    if not save:
-        pprint(response)
-        return
-
-    logger.info(f"Storing data for {symbol} in DB via Beanie...")
-
-    # Professional Developer touch: Atomic upsert using Beanie
-    doc = await ScreenerData.find_one(ScreenerData.symbol == symbol.upper())
-    if doc:
-        doc.data = dict(response)
-        doc.extracted_at = datetime.now()
-        await doc.save()
-        logger.info(f"Successfully updated screener data for {symbol}")
-    else:
-        doc = ScreenerData(symbol=symbol.upper(), data=dict(response))
-        await doc.insert()
-        logger.info(f"Successfully created new screener entry for {symbol}")
+    pprint(response)
 
     logger.debug(f"Data snapshot keys: {list(response.keys())}")
-
-    # except Exception as e:
-    #     logger.error(f"Failed to process screener data for {symbol}: {str(e)}")
-    #     raise typer.Exit(code=1)
 
 
 @screener_app.command("screen")
@@ -183,21 +159,9 @@ app.add_typer(nse_app, name="nse")
 
 
 @nse_app.command("financials")
-def nse_financials_download(
-    symbol: str, save: bool = typer.Option(False, "--save", help="Save to DB")
-):
-    collection = db.get_collection("nse-financials")
-    db.create_index(collection, ["xbrl"])
-
+def nse_financials_download(symbol: str):
     results = fetch_nse_financials(symbol)
-    if not save:
-        pprint(results)
-        return
-
-    for data in results:
-        db.insert(collection, data)
-
-    logger.info("Scrape and save complete")
+    pprint(results)
 
 
 @nse_app.command("announcements")
@@ -272,19 +236,9 @@ def nse_annual_reports_download(
 
 
 @nse_app.command("shareholdings")
-def nse_shareholdings_download(
-    symbol: str, save: bool = typer.Option(False, "--save", help="Save to DB")
-):
-    collection = db.get_collection("nse-shareholdings")
-    db.create_index(collection, ["xbrl"])
+def nse_shareholdings_download(symbol: str):
     results = fetch_nse_shareholdings(symbol)
-    if not save:
-        pprint(results)
-        return
-
-    for x in results:
-        db.insert(collection, x)
-    logger.info("Scrape and save complete")
+    pprint(results)
 
 
 @nse_app.command("process-annual-report")
@@ -333,13 +287,11 @@ def nse_annual_report_section_download(
 
 
 @nse_app.command("full-download")
-def nse_full_download(
-    symbol: str, save: bool = typer.Option(False, "--save", help="Save all data to DB")
-):
-    nse_financials_download(symbol, save=save)
-    nse_announcements_download(symbol, save=save)
-    nse_shareholdings_download(symbol, save=save)
-    nse_annual_reports_download(symbol, save=save)
+def nse_full_download(symbol: str):
+    nse_financials_download(symbol)
+    nse_announcements_download(symbol)
+    nse_shareholdings_download(symbol)
+    nse_annual_reports_download(symbol)
     logger.info("Full Data scrape and download complete")
 
 

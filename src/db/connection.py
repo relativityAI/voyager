@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 from loguru import logger
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
-from .models import NSEJobStatus, NSEStockMetadata
+from .models import NSEStockMetadata
 
 load_dotenv()
 
@@ -51,6 +51,6 @@ async def init_db():
 
     await init_beanie(
         database=_database,
-        document_models=[NSEJobStatus, NSEStockMetadata],
+        document_models=[NSEStockMetadata],
     )
     logger.info("Beanie initialization complete.")

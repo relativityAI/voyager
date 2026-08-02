@@ -589,12 +589,16 @@ async def financials_pull_status(
             except Exception as e:
                 financial_breakdown[coll_name] = str(e)
 
+        record_total = sum(v for v in record_counts.values() if isinstance(v, int))
+
         return {
             "symbol": meta.symbol,
             "source": meta.source,
             "last_pull": meta.last_pull,
             "total_pulls": len(meta.previous_pulls) + (1 if meta.last_pull else 0),
             "previous_pulls_count": len(meta.previous_pulls),
+            "total_records": record_total,
+            "available": record_total > 0,
             "record_counts": record_counts,
             "financial_breakdown": financial_breakdown,
             "created_at": meta.created_at,
