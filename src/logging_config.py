@@ -57,7 +57,9 @@ class InterceptHandler(logging.Handler):
 
 
 _bearer_pattern = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
-_query_param_pattern = re.compile(r"(?i)([?&](?:api[_-]?key|token|secret|password|access[_-]?token)=)[^&\s]+")
+_query_param_pattern = re.compile(
+    r"(?i)([?&](?:api[_-]?key|token|secret|password|access[_-]?token)=)[^&\s]+"
+)
 
 
 def _scrub(record):

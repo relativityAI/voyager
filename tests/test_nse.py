@@ -3,23 +3,28 @@ import unittest
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 from src.tools.nse.client import CookieError, NSEApiClient, NSEDataParser, NSEIndia
+
 # NSEFinancials model was removed; skip the test that imports it
 try:
     from src.db.models import NSEFinancials
 except ImportError:
     NSEFinancials = None
 
+
 @pytest.fixture
 def parser():
     return NSEDataParser()
+
 
 @pytest.fixture
 def api_client():
     return NSEApiClient(calls_per_second=100)
 
+
 @pytest.fixture
 def nse_india():
     return NSEIndia(calls_per_second=100)
+
 
 def test_extract_xml_valid(parser):
     sample_xml = b"""<?xml version="1.0" encoding="utf-8"?>
@@ -36,11 +41,13 @@ def test_extract_xml_valid(parser):
     assert result["financials"][0]["tag"] == "RevenueFromOperations"
     assert result["financials"][0]["value"] == "1000"
 
+
 def test_extract_xml_invalid(parser):
     result = parser.extract_xml(b"invalid xml", "TCS")
     assert result is None
 
-@patch('src.tools.nse.client.RateLimitedSession')
+
+@patch("src.tools.nse.client.RateLimitedSession")
 def test_api_client_fetch_xbrl_content(mock_session_class, api_client):
     mock_session = mock_session_class.return_value
     mock_response = MagicMock()
@@ -56,7 +63,8 @@ def test_api_client_fetch_xbrl_content(mock_session_class, api_client):
     assert content == b"fake content"
     mock_session.get.assert_called()
 
-@patch('src.tools.nse.client.RateLimitedSession')
+
+@patch("src.tools.nse.client.RateLimitedSession")
 def test_api_client_json_decode_error(mock_session_class, api_client):
     mock_session = mock_session_class.return_value
     mock_response = MagicMock()
@@ -73,16 +81,16 @@ def test_api_client_json_decode_error(mock_session_class, api_client):
     mock_session.get.assert_called()
 
 
-@patch('src.tools.nse.client.RateLimitedSession')
+@patch("src.tools.nse.client.RateLimitedSession")
 def test_api_client_non_200_recovers(mock_session_class, api_client):
     mock_session = mock_session_class.return_value
     fail_response = MagicMock()
     fail_response.status_code = 401
-    
+
     success_response = MagicMock()
     success_response.status_code = 200
     success_response.json.return_value = {"data": "test_success"}
-    
+
     # Return 401 on first call, 200 on second call
     mock_session.get.side_effect = [fail_response, success_response]
 
@@ -91,7 +99,7 @@ def test_api_client_non_200_recovers(mock_session_class, api_client):
     api_client._set_cookies = MagicMock()
 
     result = api_client.quarterly_results_xbrls("TCS")
-    
+
     assert result == {"data": "test_success"}
     assert mock_session.get.call_count == 2
 
@@ -110,9 +118,13 @@ def test_api_client_call_fails_fast_on_blocking_status(api_client):
     assert api_client.session.get.call_count == 2
 
 
-@patch('src.tools.nse.client.generate_fake_headers', return_value={"User-Agent": "test"})
-@patch('src.tools.nse.client.RateLimitedSession')
-def test_set_cookies_returns_true_with_cookies(mock_session_class, mock_headers, api_client):
+@patch(
+    "src.tools.nse.client.generate_fake_headers", return_value={"User-Agent": "test"}
+)
+@patch("src.tools.nse.client.RateLimitedSession")
+def test_set_cookies_returns_true_with_cookies(
+    mock_session_class, mock_headers, api_client
+):
     mock_session = mock_session_class.return_value
     api_client.session = mock_session
     api_client.session.cookies = {"fake": "cookie"}
@@ -121,9 +133,13 @@ def test_set_cookies_returns_true_with_cookies(mock_session_class, mock_headers,
     mock_session.get.assert_called_once()
 
 
-@patch('src.tools.nse.client.generate_fake_headers', return_value={"User-Agent": "test"})
-@patch('src.tools.nse.client.RateLimitedSession')
-def test_set_cookies_returns_false_without_cookies(mock_session_class, mock_headers, api_client):
+@patch(
+    "src.tools.nse.client.generate_fake_headers", return_value={"User-Agent": "test"}
+)
+@patch("src.tools.nse.client.RateLimitedSession")
+def test_set_cookies_returns_false_without_cookies(
+    mock_session_class, mock_headers, api_client
+):
     mock_session = mock_session_class.return_value
     api_client.session = mock_session
     api_client.session.cookies = {}
@@ -132,9 +148,13 @@ def test_set_cookies_returns_false_without_cookies(mock_session_class, mock_head
     mock_session.get.assert_called_once()
 
 
-@patch('src.tools.nse.client.generate_fake_headers', return_value={"User-Agent": "test"})
-@patch('src.tools.nse.client.RateLimitedSession')
-def test_set_cookies_returns_false_on_exception(mock_session_class, mock_headers, api_client):
+@patch(
+    "src.tools.nse.client.generate_fake_headers", return_value={"User-Agent": "test"}
+)
+@patch("src.tools.nse.client.RateLimitedSession")
+def test_set_cookies_returns_false_on_exception(
+    mock_session_class, mock_headers, api_client
+):
     mock_session = mock_session_class.return_value
     api_client.session = mock_session
     api_client.session.cookies = {}
@@ -144,8 +164,10 @@ def test_set_cookies_returns_false_on_exception(mock_session_class, mock_headers
     mock_session.get.assert_called_once()
 
 
-@patch('src.tools.nse.client.RateLimitedSession')
-def test_call_raises_cookie_error_when_cookies_never_set(mock_session_class, api_client):
+@patch("src.tools.nse.client.RateLimitedSession")
+def test_call_raises_cookie_error_when_cookies_never_set(
+    mock_session_class, api_client
+):
     mock_session = mock_session_class.return_value
     api_client.session = mock_session
     api_client.session.cookies = {}
@@ -156,8 +178,10 @@ def test_call_raises_cookie_error_when_cookies_never_set(mock_session_class, api
     assert mock_session.get.call_count == 0
 
 
-@patch('src.tools.nse.client.RateLimitedSession')
-def test_call_returns_none_when_request_fails_despite_cookies(mock_session_class, api_client):
+@patch("src.tools.nse.client.RateLimitedSession")
+def test_call_returns_none_when_request_fails_despite_cookies(
+    mock_session_class, api_client
+):
     mock_session = mock_session_class.return_value
     api_client.session = mock_session
     api_client.session.cookies = {"fake": "cookie"}
@@ -178,6 +202,7 @@ def test_nse_financials_schema():
     assert "financials" in fields
     assert "broadcast_date" in fields
     assert fields["financials"].default_factory == list
+
 
 SAMPLE_XBRL = b"""<?xml version="1.0" encoding="utf-8"?>
 <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"
@@ -208,10 +233,13 @@ SAMPLE_XBRL = b"""<?xml version="1.0" encoding="utf-8"?>
 
 MOCK_XBRL_URL = "https://nsearchives.nseindia.com/corporate/xbrl/test.xml"
 
+
 def test_process_xbrl_filters_quarterly(nse_india):
     """process_xbrl should classify quarterly (OneD/OneI) facts into correct statement docs."""
     mock_record = {"xbrl": MOCK_XBRL_URL, "consolidated": "Consolidated"}
-    with unittest.mock.patch.object(nse_india.api, "fetch_xbrl_content", return_value=SAMPLE_XBRL):
+    with unittest.mock.patch.object(
+        nse_india.api, "fetch_xbrl_content", return_value=SAMPLE_XBRL
+    ):
         result = nse_india.process_xbrl(mock_record, "TEST", "integrated-filing")
     assert result is not None
     assert result["income_statement"] is not None
@@ -230,7 +258,9 @@ def test_process_xbrl_filters_quarterly(nse_india):
 def test_process_xbrl_filters_annual(nse_india):
     """process_xbrl should only keep annual (FourD) facts for annual-results."""
     mock_record = {"xbrl": MOCK_XBRL_URL, "consolidated": "Consolidated"}
-    with unittest.mock.patch.object(nse_india.api, "fetch_xbrl_content", return_value=SAMPLE_XBRL):
+    with unittest.mock.patch.object(
+        nse_india.api, "fetch_xbrl_content", return_value=SAMPLE_XBRL
+    ):
         result = nse_india.process_xbrl(mock_record, "TEST", "annual-results")
     assert result is not None
     assert result["income_statement"] is not None
@@ -243,26 +273,34 @@ def test_process_xbrl_filters_annual(nse_india):
 def test_process_xbrl_skips_empty_after_filter(nse_india):
     """process_xbrl should return None when no annual-context or annual-duration facts match."""
     sample = (
-        SAMPLE_XBRL
-        .replace(b"FourD", b"FiveD")
+        SAMPLE_XBRL.replace(b"FourD", b"FiveD")
         .replace(b"2025-01-01", b"2025-07-01")
         .replace(b"2025-12-31", b"2025-09-30")
     )
     mock_record = {"xbrl": MOCK_XBRL_URL, "consolidated": "Consolidated"}
-    with unittest.mock.patch.object(nse_india.api, "fetch_xbrl_content", return_value=sample):
+    with unittest.mock.patch.object(
+        nse_india.api, "fetch_xbrl_content", return_value=sample
+    ):
         result = nse_india.process_xbrl(mock_record, "TEST", "annual-results")
     assert result is None, "Should skip XBRL with no annual facts"
+
 
 def test_nse_financials_fetch():
     nseindia = NSEIndia()
     try:
         # "perform a test fetch in tests/test_nse for SKYGOLD Share"
         integrated = nseindia.api.integrated_filing_xbrls("SKYGOLD")
-        integrated_data = integrated.get("data", []) if isinstance(integrated, dict) else []
+        integrated_data = (
+            integrated.get("data", []) if isinstance(integrated, dict) else []
+        )
 
         if not integrated_data:
             quarterly = nseindia.api.quarterly_results_xbrls("SKYGOLD")
-            quarterly_data = quarterly.get("data", quarterly) if isinstance(quarterly, dict) else quarterly
+            quarterly_data = (
+                quarterly.get("data", quarterly)
+                if isinstance(quarterly, dict)
+                else quarterly
+            )
             if not isinstance(quarterly_data, list):
                 quarterly_data = []
             data_list = quarterly_data
@@ -275,10 +313,17 @@ def test_nse_financials_fetch():
 
     found_parsed = False
     for x in data_list:
-        ep_key = "integrated-filing" if category == "integrated" else "quarterly-results"
+        ep_key = (
+            "integrated-filing" if category == "integrated" else "quarterly-results"
+        )
         parsed_data = nseindia.process_xbrl(x, "SKYGOLD", ep_key)
         if parsed_data:
-            stmt = parsed_data.get("income_statement") or parsed_data.get("balance_sheet") or parsed_data.get("cash_flow") or parsed_data.get("shareholding")
+            stmt = (
+                parsed_data.get("income_statement")
+                or parsed_data.get("balance_sheet")
+                or parsed_data.get("cash_flow")
+                or parsed_data.get("shareholding")
+            )
             assert stmt is not None, "At least one statement doc should be present"
             assert stmt["symbol"] == "SKYGOLD"
             assert "period_end_date" in stmt

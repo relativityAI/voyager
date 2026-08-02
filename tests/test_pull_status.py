@@ -6,9 +6,12 @@ import pytest
 from src.tools.nse.client import CookieError
 
 try:
-    from api import pull_nse_data
+    from src.services.nse import pull_nse_data
 except ImportError:
-    pytest.skip("Skipping pull status tests: api import unavailable (motor/pymongo issue)", allow_module_level=True)
+    pytest.skip(
+        "Skipping pull status tests: api import unavailable (motor/pymongo issue)",
+        allow_module_level=True,
+    )
 
 
 class _OkResponse:
@@ -33,8 +36,12 @@ def _fake_meta_cls():
 
 
 def test_pull_status_failed_when_all_endpoints_cookie_fail():
-    with patch("api.get_database", return_value=MagicMock()), patch(
-        "api.nse_scraper.api._call", side_effect=CookieError("no cookies")
+    with (
+        patch("src.services.nse.get_database", return_value=MagicMock()),
+        patch(
+            "src.services.nse.nse_scraper.api._call",
+            side_effect=CookieError("no cookies"),
+        ),
     ):
         result = asyncio.run(pull_nse_data("TEST"))
 
@@ -51,9 +58,11 @@ def test_pull_status_partial_when_some_endpoints_cookie_fail():
             return _OkResponse([{"e": 2}])
         raise CookieError("no cookies")
 
-    with patch("api.get_database", return_value=MagicMock()), patch(
-        "api.NSEStockMetadata", _fake_meta_cls()
-    ), patch("api.nse_scraper.api._call", side_effect=fake_call):
+    with (
+        patch("src.services.nse.get_database", return_value=MagicMock()),
+        patch("src.services.nse.NSEStockMetadata", _fake_meta_cls()),
+        patch("src.services.nse.nse_scraper.api._call", side_effect=fake_call),
+    ):
         result = asyncio.run(pull_nse_data("TEST"))
 
     assert result["status"] == "partial"
@@ -67,9 +76,11 @@ def test_pull_status_completed_without_cookie_failures():
             return _OkResponse({"data": [{"a": 1}]})
         return _OkResponse({})
 
-    with patch("api.get_database", return_value=MagicMock()), patch(
-        "api.NSEStockMetadata", _fake_meta_cls()
-    ), patch("api.nse_scraper.api._call", side_effect=fake_call):
+    with (
+        patch("src.services.nse.get_database", return_value=MagicMock()),
+        patch("src.services.nse.NSEStockMetadata", _fake_meta_cls()),
+        patch("src.services.nse.nse_scraper.api._call", side_effect=fake_call),
+    ):
         result = asyncio.run(pull_nse_data("TEST"))
 
     assert result["status"] == "completed"
@@ -80,7 +91,9 @@ def _pull_with_existing_urls(existing_urls, refresh=False):
     processed = {"n": 0}
 
     def fake_call(url, symbol=None, **kwargs):
-        return _OkResponse({"data": [{"xbrl": "http://x/one.xml", "consolidated": "Consolidated"}]})
+        return _OkResponse(
+            {"data": [{"xbrl": "http://x/one.xml", "consolidated": "Consolidated"}]}
+        )
 
     def fake_process(x, symbol, category):
         processed["n"] += 1
@@ -114,7 +127,9 @@ def _pull_with_existing_urls(existing_urls, refresh=False):
     class FakeColl:
         def find(self, filt, projection=None):
             return FakeCursor(
-                [{"xbrl_url": u} for u in existing_urls] if filt.get("symbol") == "TEST" else []
+                [{"xbrl_url": u} for u in existing_urls]
+                if filt.get("symbol") == "TEST"
+                else []
             )
 
         async def bulk_write(self, ops, ordered=False):
@@ -124,10 +139,11 @@ def _pull_with_existing_urls(existing_urls, refresh=False):
         def __getitem__(self, name):
             return FakeColl()
 
-    with patch("api.get_database", return_value=FakeDB()), patch(
-        "api.NSEStockMetadata", _fake_meta_cls()
-    ), patch("api.nse_scraper.api._call", side_effect=fake_call), patch(
-        "api.nse_scraper.process_xbrl", side_effect=fake_process
+    with (
+        patch("src.services.nse.get_database", return_value=FakeDB()),
+        patch("src.services.nse.NSEStockMetadata", _fake_meta_cls()),
+        patch("src.services.nse.nse_scraper.api._call", side_effect=fake_call),
+        patch("src.services.nse.nse_scraper.process_xbrl", side_effect=fake_process),
     ):
         result = asyncio.run(pull_nse_data("TEST", "quarterly", refresh=refresh))
 

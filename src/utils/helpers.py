@@ -17,7 +17,6 @@ console = Console()
 
 
 def load_pdf(file_path: str) -> PdfReader:
-
     url, pdf_path = None, None
     parsed = urlparse(file_path)
     if parsed.scheme and parsed.netloc:
@@ -52,7 +51,6 @@ def load_pdf(file_path: str) -> PdfReader:
 
 
 def read_pdf(path_or_url: str, start: int = None, end: int = None):
-
     reader = load_pdf(path_or_url)
 
     if not start:

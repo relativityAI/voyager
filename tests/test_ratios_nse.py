@@ -1,4 +1,3 @@
-
 from src.tools.nse.ratios import (
     ALL_CATEGORIES,
     compute_growth,

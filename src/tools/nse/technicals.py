@@ -6,7 +6,11 @@ import pandas_ta as ta
 import yfinance as yf
 
 _YF_SUFFIX_MAP = {
-    "NSE": ".NS", "BSE": ".BO", "NASDAQ": "", "NYSE": "", "AMEX": "",
+    "NSE": ".NS",
+    "BSE": ".BO",
+    "NASDAQ": "",
+    "NYSE": "",
+    "AMEX": "",
 }
 
 
@@ -23,6 +27,7 @@ def _to_valid_float(val: Any) -> Optional[float]:
         return None if math.isnan(f) or math.isinf(f) else f
     except (ValueError, TypeError):
         return None
+
 
 _cache: Dict[str, Dict[str, Any]] = {}
 CACHE_TTL = 300  # 5 minutes
@@ -63,7 +68,9 @@ def fetch_price_info(symbol: str, exchange: str = "NSE") -> Dict[str, Any]:
     ticker, hist = _get_yf_raw(symbol, exchange)
     info = ticker.info or {}
     shares = _to_valid_float(info.get("sharesOutstanding"))
-    current_price = _to_valid_float(info.get("currentPrice") or info.get("regularMarketPrice"))
+    current_price = _to_valid_float(
+        info.get("currentPrice") or info.get("regularMarketPrice")
+    )
     if current_price is None and not hist.empty and "Close" in hist:
         valid_closes = hist["Close"].dropna()
         if not valid_closes.empty:
@@ -83,13 +90,20 @@ def fetch_technicals(
     ticker, hist = _get_yf_raw(symbol, exchange)
 
     if hist.empty:
-        return {"current_price": None, "error": f"No price data for {symbol}.{exchange}"}
+        return {
+            "current_price": None,
+            "error": f"No price data for {symbol}.{exchange}",
+        }
 
     info = ticker.info or {}
-    current_price = _to_valid_float(info.get("currentPrice") or info.get("regularMarketPrice"))
+    current_price = _to_valid_float(
+        info.get("currentPrice") or info.get("regularMarketPrice")
+    )
     if current_price is None:
         valid_closes = hist["Close"].dropna()
-        current_price = _to_valid_float(valid_closes.iloc[-1]) if not valid_closes.empty else None
+        current_price = (
+            _to_valid_float(valid_closes.iloc[-1]) if not valid_closes.empty else None
+        )
 
     technicals: Dict[str, Any] = {
         "current_price": current_price,
@@ -123,7 +137,9 @@ def fetch_technicals(
         if macd is not None and not macd.empty:
             for col in macd.columns:
                 label = col.lower()
-                if label.startswith("macd") and not any(c in label for c in ["macdh", "macds"]):
+                if label.startswith("macd") and not any(
+                    c in label for c in ["macdh", "macds"]
+                ):
                     _add("macd", macd[col])
                 elif "macdh" in label:
                     _add("macd_hist", macd[col])

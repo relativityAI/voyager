@@ -102,7 +102,11 @@ async def migrate_collection(db, old_name: str) -> int:
         if not docs:
             continue
 
-        ctx_str = ", ".join(sorted(ctx_types)) if ctx_types else base.get("source_endpoint", "")
+        ctx_str = (
+            ", ".join(sorted(ctx_types))
+            if ctx_types
+            else base.get("source_endpoint", "")
+        )
         for coll_name, doc in docs.items():
             doc["context_ref_type"] = ctx_str
             if len(doc) > 11:
@@ -146,7 +150,12 @@ async def main():
         n = await migrate_collection(db, old_name)
         total += n
     print(f"\nDone. {total} statement docs written to new collections.")
-    for coll_name in ("income_statements", "balance_sheets", "cash_flows", "shareholdings"):
+    for coll_name in (
+        "income_statements",
+        "balance_sheets",
+        "cash_flows",
+        "shareholdings",
+    ):
         cnt = await db[coll_name].count_documents({})
         print(f"  {coll_name}: {cnt}")
 

@@ -49,7 +49,19 @@ def compute_valuation(
     if not _is_valid_positive(current_price):
         return result
 
-    eps = ttm_eps if ttm_eps is not None else (single_eps if single_eps is not None else to_float(data.get("basic_earnings_loss_per_share_from_continuing_and_discontinued_operations")))
+    eps = (
+        ttm_eps
+        if ttm_eps is not None
+        else (
+            single_eps
+            if single_eps is not None
+            else to_float(
+                data.get(
+                    "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations"
+                )
+            )
+        )
+    )
     if _is_valid_number(eps) and eps != 0:
         result["pe_ratio"] = round(current_price / eps, 4)
 
@@ -63,12 +75,18 @@ def compute_valuation(
     if _is_valid_number(reserves_excl_reval) and _is_valid_number(share_capital):
         equity = share_capital + reserves_excl_reval
     else:
-        equity = (to_float(data.get("equity_share_capital")) or 0) + (to_float(data.get("other_equity")) or 0)
+        equity = (to_float(data.get("equity_share_capital")) or 0) + (
+            to_float(data.get("other_equity")) or 0
+        )
     bvps = safe_div(equity, shares_outstanding)
     if _is_valid_positive(bvps):
         result["pb_ratio"] = round(current_price / bvps, 4)
 
-    revenue = ttm_revenue if ttm_revenue is not None else to_float(data.get("revenue_from_operations"))
+    revenue = (
+        ttm_revenue
+        if ttm_revenue is not None
+        else to_float(data.get("revenue_from_operations"))
+    )
     sps = safe_div(revenue, shares_outstanding)
     if _is_valid_positive(sps):
         result["ps_ratio"] = round(current_price / sps, 4)
