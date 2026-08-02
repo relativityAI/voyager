@@ -68,8 +68,7 @@ def _scrub(record):
     record["message"] = message
 
 
-def setup_logging():
-    os.makedirs(_logs_dir, exist_ok=True)
+def setup_logging(file_sink: bool = True):
     logger.remove()
 
     level = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -78,14 +77,16 @@ def setup_logging():
 
     logger.add(_rich_sink, format="{message}", level=level)
 
-    logger.add(
-        os.path.join(_logs_dir, "app.json"),
-        level=level,
-        serialize=True,
-        rotation="1 day",
-        retention="14 days",
-        compression="zip",
-        enqueue=True,
-    )
+    if file_sink:
+        os.makedirs(_logs_dir, exist_ok=True)
+        logger.add(
+            os.path.join(_logs_dir, "app.json"),
+            level=level,
+            serialize=True,
+            rotation="1 day",
+            retention="14 days",
+            compression="zip",
+            enqueue=True,
+        )
 
     logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
