@@ -248,12 +248,17 @@ def test_process_xbrl_filters_annual(nse_india):
 
 
 def test_process_xbrl_skips_empty_after_filter(nse_india):
-    """process_xbrl should return None when no facts match the filter."""
-    sample = SAMPLE_XBRL.replace(b"2025-01-01", b"2025-07-01").replace(b"2025-12-31", b"2025-09-30")
+    """process_xbrl should return None when no annual-context or annual-duration facts match."""
+    sample = (
+        SAMPLE_XBRL
+        .replace(b"FourD", b"FiveD")
+        .replace(b"2025-01-01", b"2025-07-01")
+        .replace(b"2025-12-31", b"2025-09-30")
+    )
     mock_record = {"xbrl": MOCK_XBRL_URL, "consolidated": "Consolidated"}
     with unittest.mock.patch.object(nse_india.api, "fetch_xbrl_content", return_value=sample):
         result = nse_india.process_xbrl(mock_record, "TEST", "annual-results")
-    assert result is None, "Should skip XBRL with no annual duration facts"
+    assert result is None, "Should skip XBRL with no annual facts"
 
 def test_nse_financials_fetch():
     nseindia = NSEIndia()

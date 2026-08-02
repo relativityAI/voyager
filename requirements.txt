@@ -8,10 +8,10 @@ fake-useragent
 beautifulsoup4
 pypdf
 lxml
-pymongo
+pymongo>=4.9
 pydantic
 beanie
-motor
+motor>=3.7.1
 loguru
 yfinance
 pandas-ta

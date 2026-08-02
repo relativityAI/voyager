@@ -82,7 +82,7 @@ def _pull_with_existing_urls(existing_urls, refresh=False):
     def fake_call(url, symbol=None, **kwargs):
         return _OkResponse({"data": [{"xbrl": "http://x/one.xml", "consolidated": "Consolidated"}]})
 
-    async def fake_process(x, symbol, category):
+    def fake_process(x, symbol, category):
         processed["n"] += 1
         return {
             "income_statement": {
@@ -99,12 +99,20 @@ def _pull_with_existing_urls(existing_urls, refresh=False):
     class FakeCursor:
         def __init__(self, docs):
             self._docs = list(docs)
+            self._it = None
 
         def __aiter__(self):
-            return iter(self._docs).__aiter__()
+            self._it = iter(self._docs)
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._it)
+            except StopIteration:
+                raise StopAsyncIteration
 
     class FakeColl:
-        async def find(self, filt, projection=None):
+        def find(self, filt, projection=None):
             return FakeCursor(
                 [{"xbrl_url": u} for u in existing_urls] if filt.get("symbol") == "TEST" else []
             )
