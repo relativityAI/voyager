@@ -68,7 +68,8 @@ def _scrub(record):
     record["message"] = message
 
 
-def setup_logging(file_sink: bool = True):
+def setup_logging(file_sink: bool | None = None):
+    """Configure loguru. `file_sink=None` derives from LOG_FILE_SINK env (default on)."""
     logger.remove()
 
     level = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -76,6 +77,9 @@ def setup_logging(file_sink: bool = True):
     logger.configure(patcher=_scrub)
 
     logger.add(_rich_sink, format="{message}", level=level)
+
+    if file_sink is None:
+        file_sink = os.getenv("LOG_FILE_SINK", "true").lower() in ("1", "true", "yes")
 
     if file_sink:
         os.makedirs(_logs_dir, exist_ok=True)

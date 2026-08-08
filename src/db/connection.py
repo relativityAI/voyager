@@ -1,35 +1,40 @@
 import os
 from urllib.parse import urlparse
 
-# Motor 3.7.1 imports `_QUERY_OPTIONS` from `pymongo.cursor`, but newer pymongo
-# (>= 4.11) moved it to `pymongo.cursor_shared`. Re-expose it before motor loads.
-import pymongo.cursor
-
-if not hasattr(pymongo.cursor, "_QUERY_OPTIONS"):
-    try:
-        from pymongo.cursor_shared import _QUERY_OPTIONS
-
-        pymongo.cursor._QUERY_OPTIONS = _QUERY_OPTIONS
-    except ImportError:
-        pass
-
 from beanie import init_beanie
 from dotenv import load_dotenv
 from loguru import logger
-from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
+from pymongo import AsyncMongoClient
+from pymongo.asynchronous.database import AsyncDatabase
+
+from src.auth.models import APIKey
+from src.jobs import PullJob
 
 from .models import NSEStockMetadata
 
+DEFAULT_DB_NAME = "voyager"
+
 load_dotenv()
 
-_client: AsyncIOMotorClient | None = None
-_database: AsyncIOMotorDatabase | None = None
+_client: AsyncMongoClient | None = None
+_database: AsyncDatabase | None = None
 
 
-def get_database() -> AsyncIOMotorDatabase:
+def get_database() -> AsyncDatabase:
     if _database is None:
         raise RuntimeError("Database not initialized.")
     return _database
+
+
+async def ping_database() -> bool:
+    """Return True if the Mongo client can reach the server."""
+    if _client is None:
+        return False
+    try:
+        await _client.admin.command("ping")
+        return True
+    except Exception:
+        return False
 
 
 def hostname_from_url(url: str) -> str:
@@ -40,23 +45,22 @@ def hostname_from_url(url: str) -> str:
 async def init_db():
     global _client, _database
     mongodb_url = os.getenv("MONGODB_URL")
-    db_name = os.getenv("MONGODB_DB_NAME")
+    db_name = os.getenv("MONGODB_DB_NAME") or DEFAULT_DB_NAME
 
     if not mongodb_url:
-        logger.error("MONGODB_URL not found in environment variables")
-        return
+        raise RuntimeError(
+            "MONGODB_URL is not set. Refusing to start without a database."
+        )
 
     logger.info(f"Connecting to MongoDB at {hostname_from_url(mongodb_url)}...")
-    _client = AsyncIOMotorClient(mongodb_url)
-
-    # Motor 3.x attribute access returns a MotorDatabase, which Beanie tries to call.
-    # We explicitly set append_metadata to something non-callable to skip Beanie's check.
-    _client.append_metadata = None  # type: ignore
-
+    _client = AsyncMongoClient(mongodb_url)
     _database = _client[db_name]
+
+    # Ping to fail fast with a clear message when the DB is unreachable.
+    await _client.admin.command("ping")
 
     await init_beanie(
         database=_database,
-        document_models=[NSEStockMetadata],
+        document_models=[NSEStockMetadata, APIKey, PullJob],
     )
     logger.info("Beanie initialization complete.")

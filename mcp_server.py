@@ -23,7 +23,6 @@ from src.core import (
     fetch_screener_screen,
     fetch_stockscans_data,
     fetch_trendlyne_data,
-    process_annual_report_toc,
 )
 from src.db.connection import init_db
 from src.logging_config import setup_logging
@@ -365,39 +364,6 @@ async def nse_annual_reports(symbol: str, save: bool = False) -> str:
 async def nse_shareholdings_raw(symbol: str) -> str:
     """Fetch and parse raw NSE shareholding XBRL filings (no DB write)."""
     return await _call(fetch_nse_shareholdings, symbol, sync=True)
-
-
-@mcp.tool
-async def nse_process_annual_report(path_or_url: str, save: bool = False) -> str:
-    """Extract the table of contents of an annual report PDF; optionally store it."""
-    db = _get_db()
-    collection = db.get_collection("nse-annual-reports")
-    data = db.read(collection, {"fileName": path_or_url})
-    if not data:
-        raise RuntimeError(
-            f"NotFoundError: No annual report document found for {path_or_url}"
-        )
-    doc = data[0]
-    if "toc" in doc:
-        return _to_json_text({"status": "already_processed", **doc})
-    result = await asyncio.to_thread(process_annual_report_toc, path_or_url)
-    if save:
-        collection.update_one(
-            {"fileName": path_or_url},
-            {"$set": {"toc": result["toc"], "num_pages": result["num_pages"]}},
-        )
-    return _to_json_text(result)
-
-
-@mcp.tool
-async def nse_annual_report_sections(path_or_url: str) -> str:
-    """List the TOC sections of a stored annual report."""
-    db = _get_db()
-    collection = db.get_collection("nse-annual-reports")
-    data = db.read(collection, {"fileName": path_or_url})
-    if not data:
-        raise RuntimeError(f"NotFoundError: No document found for {path_or_url}")
-    return _to_json_text(data[0].get("toc"))
 
 
 @mcp.tool

@@ -1,24 +1,39 @@
-typer
-fastapi
-uvicorn
-requests
-pandas
-python-dotenv
-fake-useragent
-beautifulsoup4
-pypdf
-lxml
-pymongo>=4.9
-pydantic
-beanie
-motor>=3.7.1
-loguru
-yfinance
-pandas-ta
-numpy
-rich
-pytesseract
-pdf2image
-google-generativeai
-tavily-python
-fastmcp
+# Web / API framework
+fastapi==0.135.3
+uvicorn==0.42.0
+gunicorn==25.3.0
+pydantic==2.13.4
+
+# CLI
+typer==0.20.0
+rich==14.2.0
+
+# Data
+pandas==2.3.3
+numpy==2.2.6
+pandas-ta==0.4.71b0
+yfinance==1.4.1
+
+# MongoDB (async via pymongo's native driver, used by Beanie)
+pymongo==4.16.0
+beanie==2.1.0
+
+# HTTP / web scraping
+requests==2.34.2
+fake-useragent==2.2.0
+beautifulsoup4==4.13.5
+lxml==5.3.0
+
+# PDF text extraction (no OCR)
+pypdf==6.11.0
+
+# Config / logging
+python-dotenv==1.1.0
+loguru==0.7.3
+
+# MCP server
+fastmcp==3.4.5
+
+# Observability
+sentry-sdk==2.45.0
+prometheus-client==0.21.1

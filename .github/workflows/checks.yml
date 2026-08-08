@@ -39,8 +39,5 @@ jobs:
 
       - name: Run Ruff format check
         run: ruff format --check .
-      # temp only run 1 test, need fix
       - name: Run test suite
-        run: python -m pytest tests/test_rate_limiter.py
-      # - name: Run test suite
-      #   run: python -m pytest tests/test_*.py
+        run: python -m pytest tests/ -q

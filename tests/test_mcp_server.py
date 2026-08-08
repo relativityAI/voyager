@@ -54,8 +54,6 @@ def test_tool_registration(mock_db):
         "nse_annual_reports_list",
         "nse_annual_reports",
         "nse_shareholdings_raw",
-        "nse_process_annual_report",
-        "nse_annual_report_sections",
         "get_source_schema",
         "nse_full_download",
         "screener_fetch",

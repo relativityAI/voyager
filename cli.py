@@ -35,7 +35,6 @@ from src.core import (
     fetch_nse_annual_reports,
     fetch_nse_financials,
     fetch_nse_shareholdings,
-    process_annual_report_toc,
 )
 from src.db.connection import init_db
 from src.models import SOURCE_MODELS
@@ -471,50 +470,6 @@ def tools_nse_annual_reports(
 
 
 @tools_app.command("nse-shareholdings")
-def tools_nse_shareholdings(symbol: str):
-    """Fetch and parse raw NSE shareholding XBRL filings."""
-    render_json(fetch_nse_shareholdings(symbol))
-
-
-@tools_app.command("nse-process-annual-report")
-def tools_nse_process_annual_report(
-    path_or_url: str,
-    save: bool = typer.Option(False, "--save", help="Update DB with TOC"),
-):
-    """Extract the table of contents of an annual report PDF."""
-    db = _get_db()
-    collection = db.get_collection("nse-annual-reports")
-    data = db.read(collection, {"fileName": path_or_url})
-    if not data:
-        render_error("Process", f"No annual report document found for {path_or_url}")
-        raise typer.Exit(code=1)
-    data = data[0]
-    if "toc" not in data:
-        result = process_annual_report_toc(path_or_url)
-        if save:
-            collection.update_one(
-                {"fileName": path_or_url},
-                {"$set": {"toc": result["toc"], "num_pages": result["num_pages"]}},
-            )
-            logger.info("Done")
-        else:
-            render_json(result)
-    else:
-        logger.info("Done")
-
-
-@tools_app.command("nse-list-annual-report-section")
-def tools_nse_list_annual_report_section(path_or_url: str):
-    """List the TOC sections of a stored annual report."""
-    db = _get_db()
-    collection = db.get_collection("nse-annual-reports")
-    data = db.read(collection, {"fileName": path_or_url})
-    if not data:
-        render_error("List", f"No document found for {path_or_url}")
-        raise typer.Exit(code=1)
-    render_json(data[0].get("toc"))
-
-
 @tools_app.command("nse-full-download")
 def tools_nse_full_download(symbol: str):
     """Run the full legacy NSE scrape (financials, announcements, shareholdings, annual reports)."""

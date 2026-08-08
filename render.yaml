@@ -1,0 +1,29 @@
+# Render blueprint — deploy Voyager with `New + > Blueprint` (or `render.yaml` file).
+# See README.md -> "Deployment (Render)" for the full runbook.
+#
+# After first deploy, fill in the two sync:false secrets from the Dashboard:
+#   MONGODB_URL       your Atlas connection string
+#   VOYAGER_ADMIN_KEY a long random string (e.g. `openssl rand -hex 32`)
+#
+# Optional (add yourself): SENTRY_DSN, CORS_ORIGINS, LOG_LEVEL.
+
+services:
+  - type: web
+    name: voyager
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: oregon
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: MONGODB_DB_NAME
+        value: voyager
+      - key: ENVIRONMENT
+        value: production
+      - key: WEB_CONCURRENCY
+        value: "1"
+      - key: MONGODB_URL
+        sync: false
+      - key: VOYAGER_ADMIN_KEY
+        sync: false
