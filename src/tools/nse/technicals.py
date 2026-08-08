@@ -2,8 +2,10 @@ import math
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+import pandas as pd
 import pandas_ta as ta
 import yfinance as yf
+from loguru import logger
 
 _YF_SUFFIX_MAP = {
     "NSE": ".NS",
@@ -55,7 +57,11 @@ def _get_yf_raw(symbol: str, exchange: str) -> Tuple[Any, Any]:
 
     yf_symbol = _generate_yf_symbol(symbol, exchange)
     ticker = yf.Ticker(yf_symbol)
-    hist = ticker.history(period="1y")
+    try:
+        hist = ticker.history(period="1y")
+    except Exception as exc:  # noqa: BLE001 - rate limits should not crash callers
+        logger.debug(f"yfinance history failed for {yf_symbol}: {exc}")
+        hist = pd.DataFrame()
 
     _RAW_CACHE[key] = {
         "ts": time.time(),
@@ -66,7 +72,11 @@ def _get_yf_raw(symbol: str, exchange: str) -> Tuple[Any, Any]:
 
 def fetch_price_info(symbol: str, exchange: str = "NSE") -> Dict[str, Any]:
     ticker, hist = _get_yf_raw(symbol, exchange)
-    info = ticker.info or {}
+    try:
+        info = ticker.info or {}
+    except Exception as exc:  # noqa: BLE001 - rate limits should not crash callers
+        logger.debug(f"yfinance info failed for {symbol}.{exchange}: {exc}")
+        info = {}
     shares = _to_valid_float(info.get("sharesOutstanding"))
     current_price = _to_valid_float(
         info.get("currentPrice") or info.get("regularMarketPrice")
@@ -75,7 +85,9 @@ def fetch_price_info(symbol: str, exchange: str = "NSE") -> Dict[str, Any]:
         valid_closes = hist["Close"].dropna()
         if not valid_closes.empty:
             current_price = _to_valid_float(valid_closes.iloc[-1])
-    print(f"[PRICE] {symbol}.{exchange} current_price={current_price} shares={shares}")
+    logger.debug(
+        f"[PRICE] {symbol}.{exchange} current_price={current_price} shares={shares}"
+    )
     return {"current_price": current_price, "shares_outstanding": shares}
 
 
@@ -95,7 +107,11 @@ def fetch_technicals(
             "error": f"No price data for {symbol}.{exchange}",
         }
 
-    info = ticker.info or {}
+    info = {}
+    try:
+        info = ticker.info or {}
+    except Exception as exc:  # noqa: BLE001 - rate limits should not crash callers
+        logger.debug(f"yfinance info failed for {symbol}.{exchange}: {exc}")
     current_price = _to_valid_float(
         info.get("currentPrice") or info.get("regularMarketPrice")
     )

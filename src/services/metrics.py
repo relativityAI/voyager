@@ -2,6 +2,8 @@ import asyncio
 from datetime import datetime
 from typing import Any, Dict, Optional
 
+from loguru import logger
+
 from src.db.connection import get_database
 
 from ._common import InvalidRequestError, UnsupportedSourceError
@@ -65,6 +67,19 @@ def _find_record(records: list, ref_date: str, offset_months: int) -> Optional[d
     except ValueError:
         pass
     return None
+
+
+async def _safe_market_fetch(func, symbol: str, source: str) -> Dict[str, Any]:
+    """Run a market-data fetch, degrading to {} instead of crashing the request.
+
+    Live providers (Yahoo Finance) rate-limit datacenter IPs, so a 429 here must
+    never turn into an HTTP 500. Callers treat {} as "price data unavailable".
+    """
+    try:
+        return await asyncio.to_thread(func, symbol, source)
+    except Exception as exc:  # noqa: BLE001 - degrade, never crash
+        logger.warning(f"Market data fetch failed for {symbol}: {exc}")
+        return {}
 
 
 async def financial_metrics(
@@ -139,11 +154,11 @@ async def financial_metrics(
     records = merged_records
     latest = records[0]
 
-    price_info = await asyncio.to_thread(fetch_price_info, symbol, source)
+    price_info = await _safe_market_fetch(fetch_price_info, symbol, source)
     current_price = _to_float(price_info.get("current_price"))
     shares_outstanding = _to_float(price_info.get("shares_outstanding"))
 
-    technicals = await asyncio.to_thread(fetch_technicals, symbol, source)
+    technicals = await _safe_market_fetch(fetch_technicals, symbol, source)
 
     # ---- extract latest (point-in-time) balance-sheet values ----
     assets_t = _to_float(latest.get("assets"))
@@ -334,6 +349,7 @@ async def financial_metrics(
         "period_end_date": latest.get("period_end_date"),
         "consolidated": is_cons,
         "filing_type": filing_type,
+        "price_data": "live" if price_info else "unavailable",
     }
     for k in (
         "current_price",

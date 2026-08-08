@@ -45,12 +45,15 @@ Data endpoints are protected by service API keys (`X-API-Key` header). Health en
 
 A `/financial-metrics` response looks like this (values are examples; `null` means the data isn't in the filings):
 
+> `price_data` is `"live"` when the live quote provider (Yahoo Finance) was reachable and `"unavailable"` when it wasn't (e.g. rate-limited). When `"unavailable"`, the price-derived fields (`current_price`, market cap, valuation ratios, technicals) are omitted rather than crashing the request.
+
 ```json
 {
   "symbol": "VBL",
   "period_end_date": "2026-06-30",
   "consolidated": true,
   "filing_type": "ttm",
+  "price_data": "live",
 
   "current_price": 442.3,
   "rsi_14": 55.5,
