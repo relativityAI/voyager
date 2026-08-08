@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -175,6 +175,36 @@ class TestFinancialMetrics:
         assert data["price_to_earnings_ratio"] == pytest.approx(250.0)
         assert data["net_margin"] == pytest.approx(15.0)
         assert data["rsi_14"] == 55.5
+
+    def test_price_fetch_error_still_returns_metrics(self):
+        """A yfinance rate-limit must degrade to nulls, not raise a 500."""
+        from yfinance.exceptions import YFRateLimitError
+
+        self.mock_get_db.return_value = self._setup_db_mock(
+            [
+                {
+                    "period_end_date": "2024-12-31",
+                    "consolidated": True,
+                    "revenue_from_operations": "100000",
+                    "profit_loss_for_period": "15000",
+                    "profit_before_tax": "20000",
+                    "finance_costs": "3000",
+                    "equity_share_capital": "50000",
+                    "other_equity": "150000",
+                    "assets": "500000",
+                }
+            ]
+        )
+        self.mock_fetch_price.side_effect = YFRateLimitError()
+        self.mock_fetch_tech.side_effect = YFRateLimitError()
+
+        response = client.get("/financial-metrics?symbol=TEST&country=in&source=nse")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["price_data"] == "unavailable"
+        assert data.get("current_price") is None
+        assert data["net_margin"] == pytest.approx(15.0)
+        assert data["return_on_equity"] == pytest.approx(7.5)
 
     def test_empty_response_for_unknown_symbol(self):
         self.mock_get_db.return_value = self._setup_db_mock([])

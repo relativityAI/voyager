@@ -438,7 +438,7 @@ async def get_pull_status(
             },
         ]
         try:
-            cursor = coll.aggregate(breakdown_pipeline)
+            cursor = await coll.aggregate(breakdown_pipeline)
             groups = await cursor.to_list(length=10)
             if groups:
                 breakdown = {}
