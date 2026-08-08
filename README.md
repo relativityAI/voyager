@@ -31,10 +31,13 @@ GET /financial-metrics?symbol=VBL&filing_type=ttm
 Try it in your browser or with curl:
 
 ```bash
-curl "http://localhost:8001/financial-metrics?symbol=VBL&filing_type=ttm"
+curl -H "X-API-Key: $VOYAGER_API_KEY" \
+  "http://localhost:8001/financial-metrics?symbol=VBL&filing_type=ttm"
 ```
 
 `filing_type` can be `quarterly`, `annual`, or `ttm` (trailing twelve months). Full docs at `http://localhost:8001/docs`.
+
+Data endpoints are protected by service API keys (`X-API-Key` header). Health endpoints (`/`, `/healthz`, `/readyz`, `/metrics`) are public. See [API keys](#api-keys) and the [remote client](#remote-client-cli).
 
 ---
 
@@ -146,27 +149,127 @@ Notes:
 
 ```bash
 pip install -r requirements.txt
-python api.py                 # serves on 0.0.0.0:8001
+python api.py                 # serves on 0.0.0.0:8001 (reload on in dev)
 ```
 
-Configure via `.env`: `MONGODB_URL` (default `mongodb://root:example@localhost:27017/`), `MONGODB_DB_NAME` (default `relativity`).
+Configure via `.env` (copy from `.env.example`):
+
+| Variable | Default | Notes |
+|---|---|---|
+| `MONGODB_URL` | *(required)* | e.g. `mongodb://root:example@localhost:27017/` or your Atlas URI |
+| `MONGODB_DB_NAME` | `voyager` | |
+| `VOYAGER_ADMIN_KEY` | *(unset)* | Required to use `/admin/keys`. Generate with `openssl rand -hex 32`. |
+| `SENTRY_DSN` | *(unset)* | Enables Sentry error tracking when set |
+| `CORS_ORIGINS` | *(unset)* | Comma-separated list; CORS middleware only added when set |
+| `LOG_FILE_SINK` | *(unset)* | When set, logs also go to this file path |
+| `ENVIRONMENT` | `development` | `production` disables uvicorn reload |
+| `WEB_CONCURRENCY` | `2` | gunicorn workers (Render free: `1`) |
 
 ### Endpoints
 
+Data endpoints require an API key via the `X-API-Key` (or `Authorization: Bearer`) header. Auth: 🔓 public · 🔑 any valid key · ✍️ `data:write` scope · 🛡️ `VOYAGER_ADMIN_KEY`.
+
+| Endpoint | Auth | Description |
+|---|---|---|
+| `GET /` | 🔓 | Health check: `{"ok": 1}` |
+| `GET /healthz` | 🔓 | Liveness probe |
+| `GET /readyz` | 🔓 | Readiness probe — 503 when the DB is unreachable |
+| `GET /metrics` | 🔓 | Prometheus metrics (default on; disable with `METRICS_ENABLED=false`) |
+| `GET /list?category=sources` | 🔑 | Available categories: `sources`, `countries`, `industries`, `sectors`, `indices` |
+| `GET /financials?symbol=VBL` | 🔑 | Latest income + balance + cash-flow merged into one doc |
+| `GET /financials/income-statements` | 🔑 | Raw statement rows (also `balance-sheets`, `cash-flows`) |
+| `POST /pull?symbol=VBL&filing_type=quarterly` | ✍️ | Submit async pull job → `202` with `job_id` (see [Async pulls](#async-pulls)) |
+| `GET /pull?symbol=VBL` | 🔑 | Pull history, record counts, date coverage per collection |
+| `GET /pull/jobs/{job_id}` | ✍️ | Poll status of a pull job |
+| `GET /pull/jobs?limit=20` | ✍️ | Recent pull jobs |
+| `GET /financial-metrics?symbol=VBL` | 🔑 | Computed metrics (this repo's core) |
+| `GET /announcements?symbol=VBL&market=equities` | 🔑 | Corporate announcements (`equities` or `sme`) |
+| `GET /shareholdings?symbol=VBL` | 🔑 | Latest promoter / FII / DII / public holding pattern |
+| `GET /admin/keys` | 🛡️ | List API keys (prefixes only — hashes never returned) |
+| `POST /admin/keys` | 🛡️ | Create a key; body `{name, owner?, scopes?, rpm?, expires_in_days?}` |
+| `DELETE /admin/keys/{prefix}` | 🛡️ | Revoke a key |
+| `POST /admin/keys/{prefix}/enable` | 🛡️ | Re-enable a revoked key |
+| `GET /funds`, `/macro`, `/news` | 🔑 | Not yet implemented |
+
 All endpoints use `country=in` and `source=nse` (others return `501`).
 
-| Endpoint | Description |
-|---|---|
-| `GET /` | Health check: `{"ok": 1}` |
-| `GET /list?category=sources` | Available categories: `sources`, `countries`, `industries`, `sectors`, `indices` |
-| `GET /financials?symbol=VBL` | Latest income + balance + cash-flow merged into one doc |
-| `GET /financials/income-statements` | Raw statement rows (also `balance-sheets`, `cash-flows`) |
-| `POST /pull?symbol=VBL&filing_type=quarterly` | Pull & parse XBRL from NSE into the DB |
-| `GET /pull?symbol=VBL` | Pull history, record counts, date coverage per collection |
-| `GET /financial-metrics?symbol=VBL` | Computed metrics (this repo's core) |
-| `GET /announcements?symbol=VBL&market=equities` | Corporate announcements (`equities` or `sme`) |
-| `GET /shareholdings?symbol=VBL` | Latest promoter / FII / DII / public holding pattern |
-| `GET /funds`, `/macro`, `/news` | Not yet implemented |
+### API keys
+
+Service keys are created with `/admin/keys` (guarded by `VOYAGER_ADMIN_KEY`). The raw key is returned **once**; only its SHA-256 hash and 12-char prefix are stored.
+
+```bash
+# create a read-only key for your main app
+curl -X POST http://localhost:8001/admin/keys \
+  -H "X-Voyager-Admin-Key: $VOYAGER_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "main-app", "owner": "your-service", "scopes": ["data:read"], "rpm": 60}'
+```
+
+Scopes: `data:read` (all reads) and `data:write` (submit/list pull jobs). Optional `rpm` rate cap (default 60 req/min, enforced with a fixed-window counter in Mongo) and `expires_in_days`.
+
+### Async pulls
+
+`POST /pull` returns `202 Accepted` with a `job_id` — the XBRL download/parse runs in the background (avoids Render's 60s proxy timeout). Poll `GET /pull/jobs/{job_id}` until `status` is `done` or `failed`.
+
+```bash
+curl -X POST -H "X-API-Key: $VOYAGER_API_KEY" \
+  "http://localhost:8001/pull?symbol=VBL&filing_type=quarterly"
+# {"job_id": "...", "status": "queued", "status_url": "/pull/jobs/..."}
+
+curl -H "X-API-Key: $VOYAGER_API_KEY" "http://localhost:8001/pull/jobs/$JOB_ID"
+```
+
+Concurrency is capped (default `MAX_CONCURRENT_PULLS=2`, one active pull per symbol) and stale jobs are reaped on startup. Pulls mutate the database — that's why they need `data:write`.
+
+### Remote client CLI
+
+`client/` is a standalone Typer CLI that talks to any deployed Voyager over HTTPS. Install and use it from your main app or laptop:
+
+```bash
+pip install -r client/requirements.txt
+
+export VOYAGER_BASE_URL=https://voyager.onrender.com
+export VOYAGER_API_KEY=vgr_...          # created via `keys create`
+
+python -m client ping
+python -m client metrics VBL --filing-type ttm
+python -m client financials VBL --all-fields
+python -m client statements VBL income --limit 4
+python -m client announcements VBL
+python -m client shareholdings VBL
+python -m client list-categories
+python -m client pull VBL --watch        # submit + poll until done (needs data:write)
+python -m client pull-jobs
+python -m client pull-status VBL
+```
+
+Key management needs `VOYAGER_ADMIN_KEY`:
+
+```bash
+python -m client keys create "main-app" --scopes data:read --rpm 120
+python -m client keys list-keys
+python -m client keys revoke vgr_abCdEfGh
+python -m client keys enable vgr_abCdEfGh
+```
+
+### Deployment (Render)
+
+This repo ships a `render.yaml` blueprint for Render. The API runs on **Read Replicas** pattern: **Render serves reads**; **pulls run locally** (`scripts/cli.py --profile local pull ...` or the MCP/CLI tooling) and write into the same Atlas database. This keeps the Render instance cheap and stateless.
+
+1. **MongoDB Atlas** — create a free M0 cluster, add a DB user, get the connection string (Driver: Python). Add the app's server IP (or `0.0.0.0/0`) to Network Access.
+2. **Render** — New + → Blueprint, select this repo (it auto-detects `render.yaml`), or create a Web Service manually (Docker, `./Dockerfile`, plan: free, region near your users).
+3. **Secrets** — on the Render Dashboard set:
+   - `MONGODB_URL` = your Atlas URI (e.g. `mongodb+srv://user:pass@cluster.mongodb.net/`)
+   - `VOYAGER_ADMIN_KEY` = `openssl rand -hex 32`
+   - optionally `SENTRY_DSN`, `CORS_ORIGINS`
+4. **Deploy** — Render builds and starts gunicorn; the health check hits `/healthz`. Verify with `curl https://<service>.onrender.com/readyz` (should return `{"ok": true}`).
+5. **Create a key for your main app** (see [API keys](#api-keys)), then put `VOYAGER_BASE_URL` + `VOYAGER_API_KEY` in your app's config.
+6. **Load data** — run pulls locally: `python scripts/cli.py --profile local pull VBL --filing-type quarterly` (writes into Atlas; see `profiles/atlas.env.example` for the alternate profile).
+
+#### Monitoring
+
+- **Sentry** — set `SENTRY_DSN` and unhandled exceptions report automatically (environment-gated; skip for dev).
+- **Grafana Cloud** — add a Prometheus data source, then scrape `https://<service>.onrender.com/metrics`. Key metrics: `http_requests_total` and `http_request_duration_seconds` (both labeled by method/route/status), plus the standard Python/process collectors (`python_info`, `process_*`). Health probes already expose `/readyz` for uptime alerts.
 
 ### Key parameters
 

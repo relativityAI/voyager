@@ -2,7 +2,7 @@
 import hashlib
 import json
 import os
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 from typing import Any, Dict
 from urllib.parse import urlparse
@@ -14,6 +14,11 @@ from rich.console import Console
 from src.utils.web import generate_fake_headers
 
 console = Console()
+
+
+def utcnow() -> datetime:
+    """Naive UTC now (matches the rest of the codebase's naive datetimes)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def load_pdf(file_path: str) -> PdfReader:

@@ -141,16 +141,3 @@ def extract_pdf_content(path_or_url: str) -> str:
 
     logger.info(f"Extracting PDF: {path_or_url}")
     return read_pdf(path_or_url)
-
-
-def process_annual_report_toc(path_or_url: str) -> Dict[str, Any]:
-    """Process an annual report to extract its Table of Contents."""
-    from src.utils.annual_report_extraction import (
-        extract_first_pages,
-        extract_table_of_contents,
-    )
-
-    logger.info(f"Processing TOC for: {path_or_url}")
-    num_pages, text = extract_first_pages(path_or_url)
-    toc = extract_table_of_contents(text)
-    return {"toc": toc, "num_pages": num_pages}
