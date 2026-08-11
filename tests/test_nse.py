@@ -1,8 +1,10 @@
 import unittest
+from unittest.mock import MagicMock
 
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
-from src.tools.nse.client import CookieError, NSEApiClient, NSEDataParser, NSEIndia
+
+from src.scrapers.session import BlockedResponse, CookieError, SessionExhausted
+from src.tools.nse.client import NSEApiClient, NSEDataParser, NSEIndia
 
 # NSEFinancials model was removed; skip the test that imports it
 try:
@@ -47,152 +49,99 @@ def test_extract_xml_invalid(parser):
     assert result is None
 
 
-@patch("src.tools.nse.client.RateLimitedSession")
-def test_api_client_fetch_xbrl_content(mock_session_class, api_client):
-    mock_session = mock_session_class.return_value
+def test_api_client_fetch_xbrl_content(api_client):
+    mock_session = MagicMock()
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.content = b"fake content"
-    mock_session.get.return_value = mock_response
-
-    # Force inject the mocked session
+    mock_response.headers = {"content-type": "application/xml"}
+    mock_session.request.return_value = mock_response
     api_client.session = mock_session
-    api_client.session.cookies = {"fake": "cookie"}
 
     content = api_client.fetch_xbrl_content("http://fake.url", "TCS")
     assert content == b"fake content"
-    mock_session.get.assert_called()
+    mock_session.request.assert_called()
 
 
-@patch("src.tools.nse.client.RateLimitedSession")
-def test_api_client_json_decode_error(mock_session_class, api_client):
-    mock_session = mock_session_class.return_value
+def test_api_client_json_decode_error(api_client):
+    mock_session = MagicMock()
     mock_response = MagicMock()
     mock_response.status_code = 200
+    mock_response.headers = {"content-type": "application/json"}
     mock_response.json.side_effect = Exception("JSON Decode Error")
-    mock_session.get.return_value = mock_response
-
-    # Force inject the mocked session
+    mock_session.request.return_value = mock_response
     api_client.session = mock_session
-    api_client.session.cookies = {"fake": "cookie"}
 
     result = api_client.integrated_filing_xbrls("TCS")
     assert result == {}
-    mock_session.get.assert_called()
 
 
-@patch("src.tools.nse.client.RateLimitedSession")
-def test_api_client_non_200_recovers(mock_session_class, api_client):
-    mock_session = mock_session_class.return_value
-    fail_response = MagicMock()
-    fail_response.status_code = 401
-
-    success_response = MagicMock()
-    success_response.status_code = 200
-    success_response.json.return_value = {"data": "test_success"}
-
-    # Return 401 on first call, 200 on second call
-    mock_session.get.side_effect = [fail_response, success_response]
-
+def test_api_client_call_returns_none_when_exhausted(api_client):
+    mock_session = MagicMock()
+    mock_session.request.side_effect = SessionExhausted("out of retries")
     api_client.session = mock_session
-    api_client.session.cookies = {"fake": "cookie"}
-    api_client._set_cookies = MagicMock()
-
-    result = api_client.quarterly_results_xbrls("TCS")
-
-    assert result == {"data": "test_success"}
-    assert mock_session.get.call_count == 2
-
-
-def test_api_client_call_fails_fast_on_blocking_status(api_client):
-    api_client.session = MagicMock()
-    blocked = MagicMock()
-    blocked.status_code = 401
-    api_client.session.get.return_value = blocked
-    api_client.session.cookies = {"fake": "cookie"}
-    api_client._set_cookies = MagicMock()
 
     result = api_client._call("http://fake.url", symbol="TCS")
-
     assert result is None
-    assert api_client.session.get.call_count == 2
+    assert mock_session.request.call_count == 1
 
 
-@patch(
-    "src.tools.nse.client.generate_fake_headers", return_value={"User-Agent": "test"}
-)
-@patch("src.tools.nse.client.RateLimitedSession")
-def test_set_cookies_returns_true_with_cookies(
-    mock_session_class, mock_headers, api_client
-):
-    mock_session = mock_session_class.return_value
+def test_api_client_call_raises_cookie_error(api_client):
+    mock_session = MagicMock()
+    mock_session.request.side_effect = CookieError("no cookies")
     api_client.session = mock_session
-    api_client.session.cookies = {"fake": "cookie"}
-
-    assert api_client._set_cookies("TCS") is True
-    mock_session.get.assert_called_once()
-
-
-@patch(
-    "src.tools.nse.client.generate_fake_headers", return_value={"User-Agent": "test"}
-)
-@patch("src.tools.nse.client.RateLimitedSession")
-def test_set_cookies_returns_false_without_cookies(
-    mock_session_class, mock_headers, api_client
-):
-    mock_session = mock_session_class.return_value
-    api_client.session = mock_session
-    api_client.session.cookies = {}
-
-    assert api_client._set_cookies("TCS") is False
-    mock_session.get.assert_called_once()
-
-
-@patch(
-    "src.tools.nse.client.generate_fake_headers", return_value={"User-Agent": "test"}
-)
-@patch("src.tools.nse.client.RateLimitedSession")
-def test_set_cookies_returns_false_on_exception(
-    mock_session_class, mock_headers, api_client
-):
-    mock_session = mock_session_class.return_value
-    api_client.session = mock_session
-    api_client.session.cookies = {}
-    mock_session.get.side_effect = Exception("network down")
-
-    assert api_client._set_cookies("TCS") is False
-    mock_session.get.assert_called_once()
-
-
-@patch("src.tools.nse.client.RateLimitedSession")
-def test_call_raises_cookie_error_when_cookies_never_set(
-    mock_session_class, api_client
-):
-    mock_session = mock_session_class.return_value
-    api_client.session = mock_session
-    api_client.session.cookies = {}
-    api_client._set_cookies = MagicMock(return_value=False)
 
     with pytest.raises(CookieError):
         api_client._call("http://fake.url", symbol="TCS")
-    assert mock_session.get.call_count == 0
 
 
-@patch("src.tools.nse.client.RateLimitedSession")
-def test_call_returns_none_when_request_fails_despite_cookies(
-    mock_session_class, api_client
-):
-    mock_session = mock_session_class.return_value
+def test_api_client_call_returns_none_on_blocked_response(api_client):
+    mock_session = MagicMock()
+    mock_session.request.side_effect = BlockedResponse("text/html")
     api_client.session = mock_session
-    api_client.session.cookies = {"fake": "cookie"}
-    fail_response = MagicMock()
-    fail_response.status_code = 500
-    mock_session.get.return_value = fail_response
-    api_client._set_cookies = MagicMock(return_value=True)
 
     result = api_client._call("http://fake.url", symbol="TCS")
     assert result is None
-    assert mock_session.get.call_count == 3
+
+
+def test_set_cookies_delegates_to_prime(api_client):
+    mock_session = MagicMock()
+    mock_session.prime.return_value = True
+    api_client.session = mock_session
+
+    assert api_client._set_cookies("TCS") is True
+    mock_session.prime.assert_called_once_with(force=True)
+
+
+def test_set_cookies_false_when_prime_fails(api_client):
+    mock_session = MagicMock()
+    mock_session.prime.return_value = False
+    api_client.session = mock_session
+
+    assert api_client._set_cookies("TCS") is False
+
+
+def test_fetch_url_content_returns_none_on_exhaustion(api_client):
+    mock_session = MagicMock()
+    mock_session.request.side_effect = SessionExhausted("blocked")
+    api_client.session = mock_session
+
+    assert api_client.fetch_url_content("http://fake.url") is None
+
+
+def test_validate_download_rejects_html(api_client):
+    resp = MagicMock()
+    resp.headers = {"content-type": "text/html"}
+
+    with pytest.raises(BlockedResponse):
+        api_client._validate_download(resp)
+
+
+def test_validate_download_accepts_binary(api_client):
+    resp = MagicMock()
+    resp.headers = {"content-type": "application/zip"}
+
+    api_client._validate_download(resp)  # should not raise
 
 
 def test_nse_financials_schema():
@@ -201,7 +150,7 @@ def test_nse_financials_schema():
     fields = NSEFinancials.model_fields
     assert "financials" in fields
     assert "broadcast_date" in fields
-    assert fields["financials"].default_factory == list
+    assert fields["financials"].default_factory is list
 
 
 SAMPLE_XBRL = b"""<?xml version="1.0" encoding="utf-8"?>
