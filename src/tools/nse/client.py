@@ -73,20 +73,30 @@ import json
 import logging
 import os
 import random
-import threading
 import time
 from datetime import datetime
 from io import BytesIO
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 from urllib.parse import urlparse
 
 from lxml import etree
 from pypdf import PdfReader
 
+from src.scrapers.session import (
+    BlockedResponse,
+    CookieError,
+    SessionExhausted,
+    StealthSession,
+)
+from src.scrapers.sources.nse import (
+    NSE_ENDPOINTS as ENDPOINTS,
+)
+from src.scrapers.sources.nse import (
+    NSE_REFERER_BASE,
+    build_nse_config,
+)
 from src.tools.nse.ratios import FINANCIAL_FIELD_MAP
 from src.utils.case_converter import camel_to_snake
-from src.utils.rate_limiter import RateLimitedSession, get_rate_limiter
-from src.utils.web import generate_fake_headers
 
 XBRLI_NS = "http://www.xbrl.org/2003/instance"
 
@@ -155,18 +165,6 @@ def get_random_symbol():
     return random.choice(symbols)
 
 
-ENDPOINTS = {
-    "corp-info": "https://www.nseindia.com/api/corp-info?symbol={symbol}&corpType=corpInfo&market=equities",
-    "shareholding-pattern": "https://www.nseindia.com/api/corporate-share-holdings-master?index=equities&symbol={symbol}",
-    "announcements-equities": "https://www.nseindia.com/api/corporate-announcements?index=equities&symbol={symbol}",
-    "announcements-sme": "https://www.nseindia.com/api/corporate-announcements?index=sme&symbol={symbol}",
-    "annual-reports": "https://www.nseindia.com/api/annual-reports?index=equities&symbol={symbol}",
-    "event-calendar": "https://www.nseindia.com/api/event-calendar",
-    "quarterly-results": "https://www.nseindia.com/api/corporates-financial-results?index=equities&symbol={symbol}&period=Quarterly",
-    "annual-results": "https://www.nseindia.com/api/corporates-financial-results?index=equities&symbol={symbol}&period=Annual",
-    "integrated-filing": "https://www.nseindia.com/api/integrated-filing-results?&symbol={symbol}",
-}
-
 SH_PERCENTAGE_TAGS = {"ShareholdingAsAPercentageOfTotalNumberOfShares"}
 
 SH_CONTEXT_TO_FIELD = {
@@ -184,82 +182,66 @@ quarterly_context_ref_types = ["OneD", "OneI"]
 annual_context_ref_types = ["FourD"]
 
 
-class CookieError(Exception):
-    """Raised when an NSE session cookie could not be established."""
-
-
 class NSEApiClient:
+    """Thin facade over the stealth transport for NSE.
+
+    The public surface is unchanged from the pre-refactor client so callers
+    (services, core, CLI, MCP) keep working. All anti-detection behaviour
+    (TLS impersonation, cookie priming + persistence, throttling, retries,
+    response validation) lives in :class:`StealthSession` (D-01..D-08).
+    """
+
     def __init__(self, calls_per_second: float = 10.0):
         self.exchange = "nse"
         self.base = "https://www.nseindia.com"
-        self.share_url_format = (
-            "https://www.nseindia.com/get-quotes/equity?symbol={symbol}"
-        )
+        self.share_url_format = NSE_REFERER_BASE
         self.endpoints = ENDPOINTS
         self.quarterly_context_ref_types = quarterly_context_ref_types
         self.annual_context_ref_types = annual_context_ref_types
         self.shareholding_context_ref_types = shareholding_context_ref_types
-
-        # Use rate-limited session for API calls
-        self.session = RateLimitedSession(
-            calls_per_second=calls_per_second, service_name="nse_india"
-        )
-        self.rate_limiter = get_rate_limiter("nse_india", calls_per_second)
-        self.headers = generate_fake_headers()
-        self._cookie_lock = threading.Lock()
         self.logger = logging.getLogger(__name__)
 
+        config = build_nse_config(calls_per_second)
+        self.session = StealthSession(config)
+
+    def _referer_for(self, symbol: str) -> str:
+        """Real NSE page used as the in-page Referer for API calls (D-05)."""
+        return self.share_url_format.format(symbol=symbol or get_random_symbol())
+
     def _set_cookies(self, symbol: str, timeout=5) -> bool:
-        url = self.share_url_format.format(symbol=symbol)
-        try:
-            self.headers = generate_fake_headers()
-            self.session.get(url, headers=self.headers, timeout=timeout)
-        except Exception as e:
-            self.logger.error(f"Failed to set cookies: {e}")
-            return False
-        if not self.session.cookies:
-            self.logger.error(f"No cookies set by NSE for {symbol}")
-            return False
-        return True
+        """Prime the session cookie. Kept for API/test compatibility."""
+        return self.session.prime(force=True)
+
+    def _validate_api_response(self, resp) -> None:
+        ctype = resp.headers.get("content-type", "")
+        if "text/html" in ctype.lower():
+            raise BlockedResponse(f"API returned HTML (blocked/not-ready): {ctype}")
+
+    def _validate_download(self, resp) -> None:
+        ctype = resp.headers.get("content-type", "")
+        if "text/html" in ctype.lower():
+            raise BlockedResponse(f"Download returned HTML (blocked/not-ready): {ctype}")
 
     def _call(self, url, symbol=None, max_call_attempts=3, timeout=5, referer=None):
         if not symbol:
             symbol = get_random_symbol()
-        cookies_established = False
-        for attempt in range(max_call_attempts):
-            with self._cookie_lock:
-                if not self.session.cookies:
-                    if not self._set_cookies(symbol):
-                        self.logger.warning(
-                            f"Could not establish NSE cookies for {symbol}, skipping request"
-                        )
-                        continue
-                cookies_established = True
-            headers = self.headers.copy()
-            if referer:
-                headers["Referer"] = referer
-            try:
-                response = self.session.get(url, headers=headers, timeout=timeout)
-            except Exception as e:
-                self.logger.error(f"Request failed: {e}")
-                with self._cookie_lock:
-                    self.session.cookies.clear()
-                continue
-            if response.status_code == 200:
-                return response
-            self.logger.warning(f"Got {response.status_code} from {url}")
-            if response.status_code in (401, 403, 429):
-                with self._cookie_lock:
-                    self.session.cookies.clear()
-                if attempt == 0:
-                    continue
-                break
-        if not cookies_established:
-            raise CookieError(
-                f"Could not establish NSE session cookies for {symbol} "
-                f"after {max_call_attempts} attempts"
+        referer = referer or self._referer_for(symbol)
+        try:
+            return self.session.request(
+                "GET",
+                url,
+                referer=referer,
+                timeout=timeout,
+                validate=self._validate_api_response,
             )
-        return None
+        except CookieError:
+            raise
+        except SessionExhausted as exc:
+            self.logger.warning(f"NSE request exhausted retries: {exc}")
+            return None
+        except Exception as exc:  # noqa: BLE001 - surface as None, like before
+            self.logger.error(f"NSE request failed for {url}: {exc}")
+            return None
 
     def fetch_xbrl_content(self, url, symbol):
         if not url or url in (
@@ -268,9 +250,9 @@ class NSEApiClient:
             "https://nsearchives.nseindia.com/corporate/xbrl/-",
         ):
             return None
-        response = self._call(url, symbol=symbol)
-        if response and response.status_code == 200:
-            return response.content
+        response = self.fetch_url_content(url, symbol=symbol)
+        if response:
+            return response
         return None
 
     # API wrappers
@@ -320,9 +302,20 @@ class NSEApiClient:
     def fetch_url_content(self, url, symbol=None, referer=None):
         if not url:
             return None
-        response = self._call(url, symbol=symbol, referer=referer)
-        if response and response.status_code == 200:
-            return response.content
+        try:
+            resp = self.session.request(
+                "GET",
+                url,
+                referer=referer or f"{self.base}/",
+                timeout=self.session.timeout,
+                validate=self._validate_download,
+            )
+        except (CookieError, SessionExhausted) as exc:
+            self.logger.error(f"Failed to fetch {url}: {exc}")
+            return None
+        if resp.status_code == 200:
+            return resp.content
+        self.logger.warning(f"Got {resp.status_code} fetching {url}")
         return None
 
 
