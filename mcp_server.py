@@ -4,9 +4,8 @@ import argparse
 import asyncio
 import json
 import os
-import re
 from datetime import date, datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from fastmcp import FastMCP
 from loguru import logger
@@ -24,7 +23,11 @@ from src.core import (
     fetch_stockscans_data,
     fetch_trendlyne_data,
 )
+from sqlalchemy import select
+
 from src.db.connection import init_db
+from src.db.engine import get_session_factory
+from src.db.models import NSEAnnouncement, NSEAnnualReport
 from src.logging_config import setup_logging
 from src.models import SOURCE_MODELS
 from src.services import (
@@ -41,25 +44,23 @@ from src.services import (
 from src.services import (
     get_financials as get_merged_financials,
 )
-from src.utils.mongodb import DB
 
 # No file sink: loguru writes a JSON log into the project's logs/ dir, which the
 # fastmcp dev-server file watcher sees and treats as a change -> restart loop.
 setup_logging(file_sink=False)
 
 _db_ready = False
-_db: Optional[DB] = None
 
 
 async def _ensure_db() -> None:
-    """Initialise MongoDB once per process, lazily, on first DB-backed call."""
+    """Initialise the database once per process, lazily, on first DB-backed call."""
     global _db_ready
     if not _db_ready:
         try:
             await init_db()
             _db_ready = True
         except Exception as e:
-            logger.warning(f"MongoDB unavailable; DB-backed tools will fail: {e}")
+            logger.warning(f"Database unavailable; DB-backed tools will fail: {e}")
 
 
 mcp = FastMCP("Voyager", version=__version__)
@@ -99,12 +100,11 @@ async def _call(fn, *args, sync: bool = False, **kwargs) -> str:
     return _to_json_text(result)
 
 
-def _get_db() -> DB:
-    """Lazily create the legacy (pymongo) DB handle used by the tools commands."""
-    global _db
-    if _db is None:
-        _db = DB()
-    return _db
+
+async def _db_session():
+    """Get an async SQLAlchemy session."""
+    factory = get_session_factory()
+    return factory()
 
 
 # ---------------------------------------------------------------------------
@@ -298,11 +298,22 @@ async def nse_announcements(symbol: str, save: bool = False) -> str:
     """Fetch raw NSE announcements; optionally save them to the DB."""
     results = await asyncio.to_thread(fetch_nse_announcements, symbol)
     if save:
-        db = _get_db()
-        collection = db.get_collection("nse-announcements")
-        db.create_index(collection, ["attchmntFile"])
-        for item in results:
-            db.insert(collection, item)
+        await _ensure_db()
+        async with get_session_factory()() as session:
+            for item in results:
+                ann = NSEAnnouncement(
+                    symbol=symbol,
+                    an_dt=item.get("an_dt"),
+                    attchmnt_text=item.get("attchmntText"),
+                    desc=item.get("desc"),
+                    attchmnt_file=item.get("attchmntFile"),
+                    att_file_size=item.get("attFileSize"),
+                    has_xbrl=item.get("hasXbrl", False),
+                    sort_date=item.get("sort_date"),
+                    raw_data=item,
+                )
+                session.add(ann)
+            await session.commit()
     return _to_json_text(results)
 
 
@@ -313,27 +324,29 @@ async def nse_announcements_search(
     cutoff_date: str = "2026-01-01",
 ) -> str:
     """Search announcements stored in the DB by keyword in the attachment text."""
-    db = _get_db()
-    collection = db.get_collection("nse-announcements")
-    docs = list(
-        collection.find(
-            {
-                "symbol": symbol,
-                "attchmntText": {"$regex": re.compile(keywords, re.IGNORECASE)},
-                "sort_date": {"$lte": cutoff_date},
-            }
+    await _ensure_db()
+    async with get_session_factory()() as session:
+        result = await session.execute(
+            select(NSEAnnouncement).where(
+                NSEAnnouncement.symbol == symbol,
+                NSEAnnouncement.attchmnt_text.ilike(f"%{keywords}%"),
+                NSEAnnouncement.sort_date <= cutoff_date,
+            )
         )
-    )
+        docs = [dict(r._mapping) for r in result]
     return _to_json_text(docs)
 
 
 @mcp.tool
 async def nse_announcements_extract(path_or_url: str) -> str:
     """Extract text content of a stored announcement PDF (path or URL)."""
-    db = _get_db()
-    collection = db.get_collection("nse-announcements")
-    data = db.read(collection, {"attchmntFile": path_or_url})
-    if not data:
+    await _ensure_db()
+    async with get_session_factory()() as session:
+        result = await session.execute(
+            select(NSEAnnouncement).where(NSEAnnouncement.attchmnt_file == path_or_url)
+        )
+        data = result.scalars().first()
+    if data is None:
         raise RuntimeError(f"NotFoundError: No document found in DB for {path_or_url}")
     text = await asyncio.to_thread(extract_pdf_content, path_or_url)
     return _to_json_text({"path_or_url": path_or_url, "content": text})
@@ -342,9 +355,13 @@ async def nse_announcements_extract(path_or_url: str) -> str:
 @mcp.tool
 async def nse_annual_reports_list(symbol: str) -> str:
     """List annual reports for a symbol stored in the DB."""
-    db = _get_db()
-    collection = db.get_collection("nse-annual-reports")
-    return _to_json_text(list(collection.find({"symbol": symbol})))
+    await _ensure_db()
+    async with get_session_factory()() as session:
+        result = await session.execute(
+            select(NSEAnnualReport).where(NSEAnnualReport.symbol == symbol)
+        )
+        docs = [dict(r._mapping) for r in result]
+    return _to_json_text(docs)
 
 
 @mcp.tool
@@ -352,11 +369,16 @@ async def nse_annual_reports(symbol: str, save: bool = False) -> str:
     """Fetch annual report metadata from NSE; optionally save to the DB."""
     results = await asyncio.to_thread(fetch_nse_annual_reports, symbol)
     if save:
-        db = _get_db()
-        collection = db.get_collection("nse-annual-reports")
-        db.create_index(collection, ["fileName"])
-        for item in results:
-            db.insert(collection, item)
+        await _ensure_db()
+        async with get_session_factory()() as session:
+            for item in results:
+                report = NSEAnnualReport(
+                    symbol=symbol,
+                    file_name=item.get("fileName"),
+                    raw_data=item,
+                )
+                session.add(report)
+            await session.commit()
     return _to_json_text(results)
 
 

@@ -29,6 +29,9 @@ from src.cli.render import (
     render_shareholdings,
     render_statements,
 )
+from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
 from src.core import (
     extract_pdf_content,
     fetch_nse_announcements,
@@ -37,6 +40,8 @@ from src.core import (
     fetch_nse_shareholdings,
 )
 from src.db.connection import init_db
+from src.db.engine import get_session_factory
+from src.db.models import NSEAnnouncement, NSEAnnualReport
 from src.models import SOURCE_MODELS
 from src.services import (
     ServiceError,
@@ -49,17 +54,6 @@ from src.services import (
     list_category,
     pull_nse_data,
 )
-from src.utils.mongodb import DB
-
-_db: Optional[DB] = None
-
-
-def _get_db() -> DB:
-    """Lazily create the legacy (pymongo) DB handle used by the tools commands."""
-    global _db
-    if _db is None:
-        _db = DB()
-    return _db
 
 
 def _show_help(ctx: typer.Context) -> None:
@@ -395,15 +389,30 @@ def tools_nse_announcements(
     save: bool = typer.Option(False, "--save", help="Save to DB"),
 ):
     """Fetch raw NSE announcements."""
-    db = _get_db()
-    collection = db.get_collection("nse-announcements")
-    db.create_index(collection, ["attchmntFile"])
     results = fetch_nse_announcements(symbol)
     if not save:
         render_json(results)
         return
-    for x in results:
-        db.insert(collection, x)
+
+    async def _save():
+        factory = get_session_factory()
+        async with factory() as session:
+            for x in results:
+                ann = NSEAnnouncement(
+                    symbol=symbol,
+                    an_dt=x.get("an_dt"),
+                    attchmnt_text=x.get("attchmntText"),
+                    desc=x.get("desc"),
+                    attchmnt_file=x.get("attchmntFile"),
+                    att_file_size=x.get("attFileSize"),
+                    has_xbrl=x.get("hasXbrl", False),
+                    sort_date=x.get("sort_date"),
+                    raw_data=x,
+                )
+                session.add(ann)
+            await session.commit()
+
+    asyncio.run(_save())
     logger.info("Scrape and save complete")
 
 
@@ -414,29 +423,37 @@ def tools_nse_announcements_search(
     cutoff_date: str = typer.Option("2026-01-01", help="Max sort_date (YYYY-MM-DD)"),
 ):
     """Search announcements stored in the DB."""
-    import re
+    import re as re_mod
 
-    db = _get_db()
-    collection = db.get_collection("nse-announcements")
-    docs = list(
-        collection.find(
-            {
-                "symbol": symbol,
-                "attchmntText": {"$regex": re.compile(keywords, re.IGNORECASE)},
-                "sort_date": {"$lte": cutoff_date},
-            }
-        )
-    )
+    async def _search():
+        factory = get_session_factory()
+        async with factory() as session:
+            result = await session.execute(
+                select(NSEAnnouncement).where(
+                    NSEAnnouncement.symbol == symbol,
+                    NSEAnnouncement.attchmnt_text.ilike(f"%{keywords}%"),
+                    NSEAnnouncement.sort_date <= cutoff_date,
+                )
+            )
+            return [dict(r._mapping) for r in result]
+
+    docs = asyncio.run(_search())
     render_json(docs)
 
 
 @tools_app.command("nse-announcements-extract")
 def tools_nse_announcements_extract(path_or_url: str):
     """Extract text content of a stored announcement PDF."""
-    db = _get_db()
-    collection = db.get_collection("nse-announcements")
-    data = db.read(collection, {"attchmntFile": path_or_url})
-    if len(data) == 0:
+    async def _check():
+        factory = get_session_factory()
+        async with factory() as session:
+            result = await session.execute(
+                select(NSEAnnouncement).where(NSEAnnouncement.attchmnt_file == path_or_url)
+            )
+            return result.scalars().first()
+
+    data = asyncio.run(_check())
+    if data is None:
         render_error("Extract", "No document found in DB")
         raise typer.Exit(code=1)
     text = extract_pdf_content(path_or_url)
@@ -446,9 +463,15 @@ def tools_nse_announcements_extract(path_or_url: str):
 @tools_app.command("nse-list-annual-reports")
 def tools_nse_list_annual_reports(symbol: str):
     """List annual reports for a symbol stored in the DB."""
-    db = _get_db()
-    collection = db.get_collection("nse-annual-reports")
-    render_json(list(collection.find({"symbol": symbol})))
+    async def _list():
+        factory = get_session_factory()
+        async with factory() as session:
+            result = await session.execute(
+                select(NSEAnnualReport).where(NSEAnnualReport.symbol == symbol)
+            )
+            return [dict(r._mapping) for r in result]
+
+    render_json(asyncio.run(_list()))
 
 
 @tools_app.command("nse-annual-reports")
@@ -457,15 +480,24 @@ def tools_nse_annual_reports(
     save: bool = typer.Option(False, "--save", help="Save to DB"),
 ):
     """Fetch annual report metadata from NSE."""
-    db = _get_db()
-    collection = db.get_collection("nse-annual-reports")
-    db.create_index(collection, ["fileName"])
     results = fetch_nse_annual_reports(symbol)
     if not save:
         render_json(results)
         return
-    for x in results:
-        db.insert(collection, x)
+
+    async def _save():
+        factory = get_session_factory()
+        async with factory() as session:
+            for x in results:
+                report = NSEAnnualReport(
+                    symbol=symbol,
+                    file_name=x.get("fileName"),
+                    raw_data=x,
+                )
+                session.add(report)
+            await session.commit()
+
+    asyncio.run(_save())
     logger.info("Scrape and save complete")
 
 

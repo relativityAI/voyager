@@ -6,7 +6,7 @@ base URL (e.g. the Render deployment). Use it to:
 
 - health-check the deployment (`ping`)
 - read data (`metrics`, `financials`, `statements`, `announcements`, `shareholdings`, `list-categories`, `pull-status`)
-- submit **async** data pulls on the server (`pull`, `pull-jobs`)
+- submit **async** data pulls on the server (`pull`, `pull-jobs`, `pull-job`)
 - manage service API keys (`keys`)
 
 It lives in the [`client/`](../../client) package and is invoked as
@@ -90,7 +90,7 @@ Top-level commands:
 
 ```
 ping  metrics  financials  statements  announcements  shareholdings
-list-categories  pull-status  pull  pull-jobs  keys
+list-categories  pull-status  pull  pull-jobs  pull-job  keys
 ```
 
 ---
@@ -272,6 +272,26 @@ Prints a table of `job_id | symbol | filing_type | status | time`.
 python -m client pull-jobs --limit 10
 ```
 
+### 6.3 `pull-job`
+
+Show one pull job in full — status, timing, and the per-endpoint breakdown
+(`GET /pull/jobs/{job_id}`). Requires `data:write`.
+
+| Argument | Description |
+| --- | --- |
+| `JOB_ID` | Job id (from `pull-jobs` or the `pull` output) — **required** |
+
+Prints a summary table, then the pull result: `status` (colored), record/XBRL
+counts, the `endpoint_breakdown` table (numeric counts green, `no data` dim,
+failures like `cookie failed` red), and per-phase timings.
+
+```bash
+python -m client pull-job 502f69b4-9930-4189-abf6-4e34a80df532
+```
+
+Use this to see *why* a pull ended `partial`/`failed` — each NSE endpoint row
+shows either a record count (worked) or the failure reason.
+
 ---
 
 ## 7. `keys` group — API key management
@@ -363,7 +383,7 @@ python -m client keys enable vgr_abc
 
 - All read commands print the API response as **JSON** (indented, `default=str`
   for non-JSON values).
-- `pull` prints a green status line; `pull-jobs`, `keys list-keys` print Rich tables.
+- `pull` prints a green status line; `pull-job`, `pull-jobs`, `keys list-keys` print Rich tables.
 - Any non-2xx response raises a `VoyagerError` printed in **red**
   (e.g. `403: This key requires the 'data:write' scope`, `401: ...` for revoked
   keys, `404: ...`) and exits with code 1.
@@ -393,6 +413,7 @@ python -m client pull-status VBL
 # 4. Submit a server-side pull
 python -m client pull VBL --no-watch
 python -m client pull-jobs
+python -m client pull-job <job_id>   # inspect status + endpoint breakdown
 
 # 5. Revoke a leaked/old key
 python -m client keys revoke vgr_abc

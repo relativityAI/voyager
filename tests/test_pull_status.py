@@ -9,7 +9,7 @@ try:
     from src.services.nse import pull_nse_data
 except ImportError:
     pytest.skip(
-        "Skipping pull status tests: api import unavailable (motor/pymongo issue)",
+        "Skipping pull status tests: api import unavailable",
         allow_module_level=True,
     )
 
@@ -26,18 +26,40 @@ class _OkResponse:
         return self.data
 
 
-def _fake_meta_cls():
-    cls = MagicMock()
-    cls.find_one = AsyncMock(return_value=None)
-    instance = MagicMock()
-    instance.insert = AsyncMock()
-    cls.return_value = instance
-    return cls
+def _make_session_cm(mock_session):
+    mock_cm = AsyncMock()
+    mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_cm.__exit__ = AsyncMock(return_value=False)
+    return mock_cm
+
+
+def _mock_factory(mock_session):
+    cm = _make_session_cm(mock_session)
+    factory = MagicMock(return_value=cm)
+    return factory
+
+
+def _make_execute_mock(urls=None):
+    """Return an AsyncMock for session.execute that returns scalars().all() = urls."""
+    mock_scalars = MagicMock()
+    mock_scalars.all.return_value = urls or []
+    mock_result = MagicMock()
+    mock_result.scalars.return_value = mock_scalars
+    return AsyncMock(return_value=mock_result)
+
+
+def _make_session(urls=None):
+    """Create a mock async session with execute and commit wired up."""
+    session = AsyncMock()
+    session.execute = _make_execute_mock(urls)
+    return session
 
 
 def test_pull_status_failed_when_all_endpoints_cookie_fail():
+    mock_session = _make_session()
+    factory = _mock_factory(mock_session)
     with (
-        patch("src.services.nse.get_database", return_value=MagicMock()),
+        patch("src.services.nse.get_session_factory", return_value=factory),
         patch(
             "src.services.nse.nse_scraper.api._call",
             side_effect=CookieError("no cookies"),
@@ -58,9 +80,10 @@ def test_pull_status_partial_when_some_endpoints_cookie_fail():
             return _OkResponse([{"e": 2}])
         raise CookieError("no cookies")
 
+    mock_session = _make_session()
+    factory = _mock_factory(mock_session)
     with (
-        patch("src.services.nse.get_database", return_value=MagicMock()),
-        patch("src.services.nse.NSEStockMetadata", _fake_meta_cls()),
+        patch("src.services.nse.get_session_factory", return_value=factory),
         patch("src.services.nse.nse_scraper.api._call", side_effect=fake_call),
     ):
         result = asyncio.run(pull_nse_data("TEST"))
@@ -76,9 +99,10 @@ def test_pull_status_completed_without_cookie_failures():
             return _OkResponse({"data": [{"a": 1}]})
         return _OkResponse({})
 
+    mock_session = _make_session()
+    factory = _mock_factory(mock_session)
     with (
-        patch("src.services.nse.get_database", return_value=MagicMock()),
-        patch("src.services.nse.NSEStockMetadata", _fake_meta_cls()),
+        patch("src.services.nse.get_session_factory", return_value=factory),
         patch("src.services.nse.nse_scraper.api._call", side_effect=fake_call),
     ):
         result = asyncio.run(pull_nse_data("TEST"))
@@ -109,39 +133,12 @@ def _pull_with_existing_urls(existing_urls, refresh=False):
             "shareholding": None,
         }
 
-    class FakeCursor:
-        def __init__(self, docs):
-            self._docs = list(docs)
-            self._it = None
-
-        def __aiter__(self):
-            self._it = iter(self._docs)
-            return self
-
-        async def __anext__(self):
-            try:
-                return next(self._it)
-            except StopIteration:
-                raise StopAsyncIteration
-
-    class FakeColl:
-        def find(self, filt, projection=None):
-            return FakeCursor(
-                [{"xbrl_url": u} for u in existing_urls]
-                if filt.get("symbol") == "TEST"
-                else []
-            )
-
-        async def bulk_write(self, ops, ordered=False):
-            return MagicMock()
-
-    class FakeDB:
-        def __getitem__(self, name):
-            return FakeColl()
-
+    mock_session = _make_session(
+        list(existing_urls) if existing_urls else []
+    )
+    factory = _mock_factory(mock_session)
     with (
-        patch("src.services.nse.get_database", return_value=FakeDB()),
-        patch("src.services.nse.NSEStockMetadata", _fake_meta_cls()),
+        patch("src.services.nse.get_session_factory", return_value=factory),
         patch("src.services.nse.nse_scraper.api._call", side_effect=fake_call),
         patch("src.services.nse.nse_scraper.process_xbrl", side_effect=fake_process),
     ):

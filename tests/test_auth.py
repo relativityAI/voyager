@@ -1,7 +1,7 @@
 """Tests for API-key auth: admin key guard, key resolution, scope checks."""
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -44,7 +44,39 @@ def test_hash_is_deterministic_and_irreversible():
 
 def test_public_dict_never_leaks_hash():
     raw = generate_api_key()
-    key = APIKey.model_construct(
+    key = APIKey(
+        name="svc",
+        prefix=raw[:12],
+        key_hash=hash_key(raw),
+        scopes=["data:read"],
+        rpm=60,
+        label="user:abc123",
+    )
+    pub = key.to_public_dict()
+    assert pub["prefix"] == raw[:12]
+    assert pub["label"] == "user:abc123"
+    assert "key_hash" not in pub
+    assert "hash" not in pub
+    assert raw not in str(pub)
+
+
+def test_public_dict_includes_is_admin():
+    raw = generate_api_key()
+    key = APIKey(
+        name="svc",
+        prefix=raw[:12],
+        key_hash=hash_key(raw),
+        scopes=["data:read"],
+        rpm=60,
+        is_admin=True,
+    )
+    pub = key.to_public_dict()
+    assert pub["is_admin"] is True
+
+
+def test_public_dict_label_defaults_to_none():
+    raw = generate_api_key()
+    key = APIKey(
         name="svc",
         prefix=raw[:12],
         key_hash=hash_key(raw),
@@ -52,10 +84,7 @@ def test_public_dict_never_leaks_hash():
         rpm=60,
     )
     pub = key.to_public_dict()
-    assert pub["prefix"] == raw[:12]
-    assert "key_hash" not in pub
-    assert "hash" not in pub
-    assert raw not in str(pub)
+    assert pub["label"] is None
 
 
 def test_is_revoked_and_expired():
@@ -108,7 +137,7 @@ def test_admin_key_rejects_missing_header(monkeypatch):
 @patch("src.auth.security.check_rate_limit", new=AsyncMock(return_value=True))
 async def _resolve(header=None, bearer=None, find_result=None):
     with patch(
-        "src.auth.security.APIKey.find_by_key", new=AsyncMock(return_value=find_result)
+        "src.auth.security.find_by_key", new=AsyncMock(return_value=find_result)
     ):
         return await get_current_api_key(x_api_key=header, authorization=bearer)
 
@@ -171,3 +200,30 @@ def test_require_scope_rejects_missing():
         asyncio.run(dep(key=key))
     assert exc.value.status_code == 403
     assert "data:write" in str(exc.value.detail)
+
+
+# ---------------------------------------------------------------------------
+# Rate limiter
+# ---------------------------------------------------------------------------
+
+
+@patch("src.auth.rate_limit.get_session_factory")
+def test_admin_key_rate_limit(mock_factory):
+    from src.auth.rate_limit import check_admin_key_rate_limit
+
+    mock_result = MagicMock()
+    mock_result.scalar_one.return_value = 5
+    mock_session = AsyncMock()
+    mock_session.execute.return_value = mock_result
+
+    mock_cm = AsyncMock()
+    mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_cm.__exit__ = AsyncMock(return_value=False)
+    mock_factory.return_value = MagicMock(return_value=mock_cm)
+
+    asyncio.run(check_admin_key_rate_limit(now=0))
+
+    mock_result.scalar_one.return_value = 11
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(check_admin_key_rate_limit(now=0))
+    assert exc.value.status_code == 429

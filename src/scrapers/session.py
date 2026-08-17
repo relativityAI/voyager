@@ -126,6 +126,10 @@ class StealthSession:
                 last_error = f"{url} -> {resp.status_code}"
             except RequestException as exc:
                 last_error = f"{url} -> {exc}"
+                if "INTERNAL_ERROR" in str(exc) or "HTTP/2" in str(exc):
+                    self.logger.info("Stale HTTP/2 session detected; clearing cookies and retrying")
+                    self._invalidate_cookies()
+                    continue
             except Exception as exc:  # noqa: BLE001 - any failure means "not primed"
                 last_error = f"{url} -> {exc}"
         self.logger.warning(f"Cookie priming failed for {self.config.name}: {last_error}")

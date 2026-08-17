@@ -40,8 +40,7 @@ def current_cfg() -> config_mod.PanelConfig:
         api_base_url=st.session_state.get("inp_api_base", config_mod.DEFAULTS["api_base_url"]).rstrip("/"),
         api_key=st.session_state.get("inp_api_key", ""),
         admin_key=st.session_state.get("inp_admin_key", ""),
-        mongodb_url=st.session_state.get("inp_mongo_url", ""),
-        mongodb_db_name=st.session_state.get("inp_mongo_db", "voyager"),
+        database_url=st.session_state.get("inp_database_url", ""),
     )
 
 
@@ -111,7 +110,7 @@ def parse_symbols(text: str) -> list:
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def load_symbol_index(mongo_url: str, db_name: str) -> list:
+def load_symbol_index(database_url: str) -> list:
     """Autocomplete index: Nifty 150 CSV + symbols already in the DB."""
     entries = {}
     if NIFTY_CSV.exists():
@@ -123,10 +122,10 @@ def load_symbol_index(mongo_url: str, db_name: str) -> list:
                     entries[sym] = str(row.get("Company Name", "")).strip()
         except Exception:  # noqa: BLE001
             pass
-    if mongo_url:
+    if database_url:
         try:
-            _, db = db_stats.connect(mongo_url, db_name)
-            for sym in db_stats.distinct_symbols(db):
+            engine = db_stats.connect(database_url)
+            for sym in db_stats.distinct_symbols(engine):
                 entries.setdefault(sym, "")
         except Exception:  # noqa: BLE001
             pass
@@ -279,15 +278,14 @@ def render_sidebar():
                 help="X-Voyager-Admin-Key for /admin routes (key management).",
             )
 
-        with st.expander("**MongoDB Atlas**", expanded=True):
+        with st.expander("**PostgreSQL**", expanded=True):
             st.text_input(
-                "Connection string",
+                "DATABASE_URL",
                 type="password",
-                key="inp_mongo_url",
-                placeholder="mongodb+srv://user:pass@cluster.mongodb.net/",
+                key="inp_database_url",
+                placeholder="postgresql+asyncpg://user:pass@host:5432/voyager",
                 help="Used read-only for the Database Stats tab.",
             )
-            st.text_input("Database name", key="inp_mongo_db")
 
         c1, c2 = st.columns(2)
         if c1.button("💾 Save config", width='stretch'):
@@ -298,8 +296,7 @@ def render_sidebar():
             st.session_state["inp_api_base"] = env.api_base_url
             st.session_state["inp_api_key"] = env.api_key
             st.session_state["inp_admin_key"] = env.admin_key
-            st.session_state["inp_mongo_url"] = env.mongodb_url
-            st.session_state["inp_mongo_db"] = env.mongodb_db_name
+            st.session_state["inp_database_url"] = env.database_url
             st.rerun()
 
         st.divider()
@@ -385,8 +382,7 @@ def tab_overview(client: VoyagerClient):
             "api_endpoint": cfg.api_base_url,
             "api_key_set": bool(cfg.api_key),
             "admin_key_set": bool(cfg.admin_key),
-            "mongodb_url_set": bool(cfg.mongodb_url),
-            "mongodb_db": cfg.mongodb_db_name,
+            "database_url_set": bool(cfg.database_url),
             "api_version": client.version(),
         }
     )
@@ -397,7 +393,7 @@ def tab_pull_manager(client: VoyagerClient):
     st.caption("Submit async NSE XBRL pulls. Requires an API key with `data:write` scope.")
 
     symbols = load_symbol_index(
-        current_cfg().mongodb_url, current_cfg().mongodb_db_name
+        current_cfg().database_url
     )
 
     c1, c2 = st.columns([2, 1])
@@ -718,41 +714,33 @@ def render_param(p: dict):
 def tab_db_stats():
     st.subheader("Database Stats")
     cfg = current_cfg()
-    if not cfg.mongodb_url:
+    if not cfg.database_url:
         st.info(
-            "No MongoDB connection string set. Add `MONGODB_URL` (Atlas) in the "
-            "sidebar — the panel connects read-only for these stats. Your machine "
-            "must be on the Atlas Network Access allowlist."
+            "No DATABASE_URL set. Add `DATABASE_URL` in the "
+            "sidebar — the panel connects read-only for these stats."
         )
         return
 
     @st.cache_resource(show_spinner=False)
-    def connect_db(url: str, name: str):
-        return db_stats.connect(url, name)
+    def connect_db(url: str):
+        return db_stats.connect(url)
 
     try:
-        _client, db = connect_db(cfg.mongodb_url, cfg.mongodb_db_name)
+        engine = connect_db(cfg.database_url)
     except db_stats.DBError as exc:
-        st.error(f"Could not connect to Atlas: {exc}")
-        st.caption(
-            "Check the connection string, that your IP is on the Atlas Network "
-            "Access allowlist, and that the database name is right."
-        )
+        st.error(f"Could not connect to PostgreSQL: {exc}")
         return
 
-    info = db_stats.server_info(db)
+    info = db_stats.server_info(engine)
     if isinstance(info, dict) and "error" in info:
         st.error(f"Stats failed: {info['error']}")
         return
 
-    st.caption(f"Connected to `{cfg.mongodb_db_name}` on MongoDB {info['server_version']} ({info['engine']})")
+    st.caption(f"Connected to PostgreSQL {info['server_version']} ({info['engine']})")
     m = st.columns(6)
-    m[0].metric("Collections", info["collections"])
-    m[1].metric("Documents", f"{info['total_documents']:,}")
-    m[2].metric("Data", f"{info['data_size_mb']} MB")
-    m[3].metric("Storage", f"{info['storage_size_mb']} MB")
-    m[4].metric("Indexes", f"{info['index_size_mb']} MB")
-    m[5].metric("DB", info["db_name"])
+    m[0].metric("Tables", info["tables"])
+    m[1].metric("Rows", f"{info['total_rows']:,}")
+    m[2].metric("DB", info["db_name"])
 
     st.divider()
     st.markdown("**Collections**")
@@ -1032,8 +1020,7 @@ def main():
         st.session_state["inp_api_base"] = defaults.api_base_url
         st.session_state["inp_api_key"] = defaults.api_key
         st.session_state["inp_admin_key"] = defaults.admin_key
-        st.session_state["inp_mongo_url"] = defaults.mongodb_url
-        st.session_state["inp_mongo_db"] = defaults.mongodb_db_name
+        st.session_state["inp_database_url"] = defaults.database_url
 
     render_sidebar()
 
