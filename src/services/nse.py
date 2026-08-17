@@ -1,14 +1,21 @@
 import asyncio
 import os
 import time
-from datetime import datetime
+from datetime import datetime, date
 from typing import Any, Dict, Optional
 
 from loguru import logger
-from pymongo.operations import ReplaceOne
+from sqlalchemy import select, func, update, and_
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.db.connection import get_database
-from src.db.models import NSEStockMetadata
+from src.db.engine import get_session_factory
+from src.db.models import (
+    IncomeStatement,
+    BalanceSheet,
+    CashFlow,
+    Shareholding,
+    NSEStockMetadata,
+)
 from src.tools.nse.client import ENDPOINTS, CookieError, NSEIndia
 
 from ._common import (
@@ -44,6 +51,13 @@ ROUTE_TO_PRIORITY_KEY: Dict[str, str] = {
     "cash-flows": "cash_flows",
 }
 
+STATEMENT_MODELS = {
+    "income_statements": IncomeStatement,
+    "balance_sheets": BalanceSheet,
+    "cash_flows": CashFlow,
+    "shareholdings": Shareholding,
+}
+
 nse_scraper = NSEIndia(calls_per_second=float(os.getenv("NSE_CALLS_PER_SECOND", "10")))
 
 NSE_MAX_XBRL_CONCURRENCY = int(os.getenv("NSE_MAX_XBRL_CONCURRENCY", "6"))
@@ -57,6 +71,12 @@ XBRL_PARSE_MAP: Dict[str, str] = {
 
 ALL_NSE_COLLECTIONS: Dict[str, str] = {**STATEMENT_COLLECTIONS}
 
+METADATA_COLUMNS = {
+    "symbol", "period_end_date", "period_start_date", "xbrl_url", "broadcast_date",
+    "consolidated", "filing_type", "measure", "entity_identifier", "fiscal_period",
+    "source_endpoint", "context_ref_type", "pulled_at", "_content_hash",
+}
+
 
 def _fetch_endpoint_json(url: str, symbol: str):
     res = nse_scraper.api._call(url, symbol=symbol)
@@ -65,10 +85,89 @@ def _fetch_endpoint_json(url: str, symbol: str):
     return nse_scraper.api._safe_json(res)
 
 
+def _parse_date(date_str):
+    if date_str is None:
+        return None
+    if isinstance(date_str, (date, datetime)):
+        return date_str if isinstance(date_str, date) else date_str.date()
+    try:
+        return datetime.strptime(str(date_str), "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_datetime(dt_str):
+    if dt_str is None:
+        return None
+    if isinstance(dt_str, datetime):
+        return dt_str
+    try:
+        return datetime.strptime(str(dt_str), "%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        pass
+    try:
+        return datetime.strptime(str(dt_str), "%Y-%m-%dT%H:%M:%S")
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_numeric(val):
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return val
+    try:
+        cleaned = str(val).replace(",", "")
+        if cleaned == "" or cleaned.lower() == "null" or cleaned.lower() == "none":
+            return None
+        return float(cleaned)
+    except (ValueError, TypeError):
+        return None
+
+
+def _doc_to_row(doc: Dict[str, Any], model_class) -> Dict[str, Any]:
+    row = {}
+    for col in model_class.__table__.columns:
+        key = col.key
+        if key == "id":
+            continue
+        if key in doc:
+            val = doc[key]
+            if key in ("period_end_date", "period_start_date"):
+                row[key] = _parse_date(val)
+            elif key == "pulled_at":
+                row[key] = _parse_datetime(val) if isinstance(val, str) else val
+            elif key in ("consolidated", "refresh", "enabled", "has_xbrl", "is_admin"):
+                row[key] = val
+            elif key == "_content_hash":
+                row[key] = val
+            elif key in ("previous_pulls",):
+                row[key] = val or []
+            elif key == "scopes":
+                row[key] = val or []
+            else:
+                row[key] = _parse_numeric(val) if col.type.__class__.__name__ == "Numeric" else val
+    return row
+
+
+async def _upsert_rows(session, model_class, rows: list, on_conflict_cols: list):
+    if not rows:
+        return
+    for row_data in rows:
+        stmt = (
+            pg_insert(model_class)
+            .values(**row_data)
+            .on_conflict_do_update(
+                index_elements=on_conflict_cols,
+                set_={k: v for k, v in row_data.items() if k not in ("id",) + tuple(on_conflict_cols)},
+            )
+        )
+        await session.execute(stmt)
+
+
 async def pull_nse_data(
     symbol: str, filing_type: Optional[str] = None, refresh: bool = False
 ) -> Dict[str, Any]:
-    database = get_database()
     total_records = 0
     total_parsed = 0
     endpoint_breakdown: Dict[str, Any] = {}
@@ -105,7 +204,6 @@ async def pull_nse_data(
 
     _tick("setup")
 
-    # ---- Phase 1: fetch all endpoints (parallel) ----
     urls = [
         url.format(symbol=symbol) if "{symbol}" in url else url for _, url in selected
     ]
@@ -158,17 +256,17 @@ async def pull_nse_data(
         _count("endpoint_records", count)
         logger.info(f"Pulled {count} records for {ep_key} ({symbol})")
 
-    # ---- Phase 2: skip XBRL already stored (unless refresh) ----
     existing_urls: set = set()
     if not refresh:
-        for coll_name in STATEMENT_COLLECTIONS.values():
-            cursor = database[coll_name].find(
-                {"symbol": symbol}, {"xbrl_url": 1, "_id": 0}
-            )
-            async for d in cursor:
-                u = d.get("xbrl_url")
-                if u:
-                    existing_urls.add(u)
+        factory = get_session_factory()
+        async with factory() as session:
+            for model_class in (IncomeStatement, BalanceSheet, CashFlow, Shareholding):
+                result = await session.execute(
+                    select(model_class.xbrl_url).where(model_class.symbol == symbol)
+                )
+                for row in result.scalars().all():
+                    if row:
+                        existing_urls.add(row)
     _tick("existing_scan")
 
     STMT_TO_COLLECTION = {
@@ -208,7 +306,6 @@ async def pull_nse_data(
 
     _tick("dedup")
 
-    # ---- Phase 3: parse XBRL with bounded concurrency ----
     sem = asyncio.Semaphore(NSE_MAX_XBRL_CONCURRENCY)
 
     async def _parse(record, ep_key):
@@ -223,8 +320,7 @@ async def pull_nse_data(
     )
     _tick("xbrl")
 
-    # ---- Phase 4: batch DB upserts ----
-    ops_by_coll: Dict[str, list] = {}
+    rows_by_coll: Dict[str, list] = {}
     for (record, ep_key), parsed in zip(pending, parsed_results):
         if isinstance(parsed, Exception):
             logger.error(f"Error parsing XBRL for {symbol} {ep_key}: {parsed}")
@@ -239,25 +335,23 @@ async def pull_nse_data(
             if doc is None:
                 continue
             doc["pulled_at"] = datetime.utcnow()
-            ops_by_coll.setdefault(coll_name, []).append(
-                ReplaceOne(
-                    {
-                        "symbol": doc["symbol"],
-                        "period_end_date": doc["period_end_date"],
-                        "consolidated": doc["consolidated"],
-                        "source_endpoint": ep_key,
-                    },
-                    doc,
-                    upsert=True,
-                )
-            )
+            model_class = STATEMENT_MODELS[coll_name]
+            row = _doc_to_row(doc, model_class)
+            rows_by_coll.setdefault(coll_name, []).append(row)
             parsed_counts[coll_name] = parsed_counts.get(coll_name, 0) + 1
             total_parsed += 1
 
-    for coll_name, ops in ops_by_coll.items():
-        if ops:
-            await database[coll_name].bulk_write(ops, ordered=False)
-            logger.info(f"Upserted {len(ops)} {coll_name} docs for {symbol}")
+    factory = get_session_factory()
+    async with factory() as session:
+        for coll_name, rows in rows_by_coll.items():
+            if rows:
+                model_class = STATEMENT_MODELS[coll_name]
+                await _upsert_rows(
+                    session, model_class, rows,
+                    on_conflict_cols=["symbol", "period_end_date", "consolidated", "source_endpoint"],
+                )
+                logger.info(f"Upserted {len(rows)} {coll_name} docs for {symbol}")
+        await session.commit()
     _tick("db")
 
     for coll_name, count in parsed_counts.items():
@@ -280,18 +374,28 @@ async def pull_nse_data(
 
     if pull_status != "failed":
         now = datetime.utcnow()
-        meta = await NSEStockMetadata.find_one(NSEStockMetadata.symbol == symbol)
-        if meta:
-            if meta.last_pull:
-                meta.previous_pulls.append(meta.last_pull)
-            meta.last_pull = now
-            meta.updated_at = now
-            await meta.save()
-            logger.info(f"Updated metadata for {symbol}")
-        else:
-            meta = NSEStockMetadata(symbol=symbol, last_pull=now, previous_pulls=[])
-            await meta.insert()
-            logger.info(f"Created metadata for {symbol}")
+        factory = get_session_factory()
+        async with factory() as session:
+            result = await session.execute(
+                select(NSEStockMetadata).where(NSEStockMetadata.symbol == symbol)
+            )
+            meta = result.scalar_one_or_none()
+            if meta:
+                if meta.last_pull:
+                    prev = list(meta.previous_pulls or [])
+                    prev.append(meta.last_pull)
+                    meta.previous_pulls = prev
+                meta.last_pull = now
+                meta.updated_at = now
+                logger.info(f"Updated metadata for {symbol}")
+            else:
+                meta = NSEStockMetadata(
+                    symbol=symbol, last_pull=now, previous_pulls=[], source="NSE",
+                    created_at=now, updated_at=now,
+                )
+                session.add(meta)
+                logger.info(f"Created metadata for {symbol}")
+            await session.commit()
     else:
         logger.error(f"All NSE endpoints failed for {symbol}; skipping metadata update")
 
@@ -336,20 +440,25 @@ async def get_financials(
     for s in priority_config.values():
         all_priority |= s
 
-    query: Dict[str, Any] = {"symbol": symbol, "consolidated": consolidated}
-    query["filing_type"] = filing_type
-
-    database = get_database()
+    factory = get_session_factory()
     merged: Dict[str, Any] = {"symbol": symbol, "consolidated": consolidated}
 
-    for coll_name in ("income_statements", "balance_sheets", "cash_flows"):
-        coll = database[coll_name]
-        cursor = coll.find(query, {"_id": 0}).sort("period_end_date", -1).limit(1)
-        async for doc in cursor:
-            for k, v in doc.items():
-                if k in ("symbol", "consolidated", "pulled_at", "_content_hash"):
-                    continue
-                merged[k] = v
+    async with factory() as session:
+        for model_class in (IncomeStatement, BalanceSheet, CashFlow):
+            result = await session.execute(
+                select(model_class).where(
+                    model_class.symbol == symbol,
+                    model_class.consolidated == consolidated,
+                    model_class.filing_type == filing_type,
+                ).order_by(model_class.period_end_date.desc()).limit(1)
+            )
+            doc = result.scalar_one_or_none()
+            if doc:
+                d = doc.to_dict()
+                for k, v in d.items():
+                    if k in ("symbol", "consolidated", "pulled_at", "_content_hash", "id"):
+                        continue
+                    merged[k] = v
 
     if len(merged) <= 2:
         raise NotFoundError(f"No financial data found for {symbol}")
@@ -379,22 +488,25 @@ async def get_statement_data(
     priority_key = ROUTE_TO_PRIORITY_KEY.get(route_name)
     priority_set = _load_priority_metrics().get(priority_key, set())
 
-    query: Dict[str, Any] = {"symbol": symbol, "filing_type": filing_type}
-    if consolidated is not None:
-        query["consolidated"] = consolidated
+    model_class = STATEMENT_MODELS[coll_name]
 
-    database = get_database()
-    coll = database[coll_name]
-    cursor = coll.find(query, {"_id": 0}).sort("period_end_date", -1)
-    if limit > 0:
-        cursor = cursor.limit(limit)
+    factory = get_session_factory()
+    async with factory() as session:
+        stmt = select(model_class).where(
+            model_class.symbol == symbol,
+            model_class.filing_type == filing_type,
+        )
+        if consolidated is not None:
+            stmt = stmt.where(model_class.consolidated == consolidated)
+        stmt = stmt.order_by(model_class.period_end_date.desc())
+        if limit > 0:
+            stmt = stmt.limit(limit)
 
-    records: list = []
-    async for doc in cursor:
-        records.append(_filter_priority_fields(doc, priority_set, all_fields))
+        result = await session.execute(stmt)
+        docs = result.scalars().all()
 
-    response_key = priority_key
-    return {response_key: records}
+    records = [_filter_priority_fields(d.to_dict(), priority_set, all_fields) for d in docs]
+    return {priority_key: records}
 
 
 async def get_pull_status(
@@ -408,52 +520,56 @@ async def get_pull_status(
             f"Source '{source}' for country '{country}' is not yet supported"
         )
 
-    meta = await NSEStockMetadata.find_one(NSEStockMetadata.symbol == symbol)
-    if not meta:
-        raise NotFoundError(f"No data found for {symbol}")
+    factory = get_session_factory()
+    async with factory() as session:
+        result = await session.execute(
+            select(NSEStockMetadata).where(NSEStockMetadata.symbol == symbol)
+        )
+        meta = result.scalar_one_or_none()
+        if not meta:
+            raise NotFoundError(f"No data found for {symbol}")
 
-    database = get_database()
-    record_counts: Dict[str, Any] = {}
-    for label, coll_name in ALL_NSE_COLLECTIONS.items():
-        try:
-            record_counts[label] = await database[coll_name].count_documents(
-                {"symbol": symbol}
-            )
-        except Exception as e:
-            record_counts[label] = str(e)
-
-    financial_breakdown: Dict[str, Any] = {}
-    for coll_name in STATEMENT_COLLECTIONS.values():
-        coll = database[coll_name]
-        breakdown_pipeline = [
-            {"$match": {"symbol": symbol}},
-            {
-                "$group": {
-                    "_id": "$consolidated",
-                    "count": {"$sum": 1},
-                    "periods": {"$addToSet": "$period_end_date"},
-                    "min_date": {"$min": "$period_end_date"},
-                    "max_date": {"$max": "$period_end_date"},
-                }
-            },
-        ]
-        try:
-            cursor = await coll.aggregate(breakdown_pipeline)
-            groups = await cursor.to_list(length=10)
-            if groups:
-                breakdown = {}
-                for g in groups:
-                    cons_label = {True: "consolidated", False: "standalone"}.get(
-                        g["_id"], "unknown"
+        record_counts: Dict[str, Any] = {}
+        for label, coll_name in ALL_NSE_COLLECTIONS.items():
+            model_class = STATEMENT_MODELS.get(coll_name)
+            if model_class:
+                count_result = await session.execute(
+                    select(func.count()).select_from(model_class).where(
+                        model_class.symbol == symbol
                     )
-                    breakdown[cons_label] = {
-                        "count": g["count"],
-                        "periods": len(g["periods"]),
-                        "date_range": f"{g['min_date']} to {g['max_date']}",
-                    }
-                financial_breakdown[coll_name] = breakdown
-        except Exception as e:
-            financial_breakdown[coll_name] = str(e)
+                )
+                record_counts[label] = count_result.scalar() or 0
+
+        financial_breakdown: Dict[str, Any] = {}
+        for coll_name in STATEMENT_COLLECTIONS.values():
+            model_class = STATEMENT_MODELS[coll_name]
+            try:
+                group_result = await session.execute(
+                    select(
+                        model_class.consolidated,
+                        func.count().label("count"),
+                        func.count(func.distinct(model_class.period_end_date)).label("periods"),
+                        func.min(model_class.period_end_date).label("min_date"),
+                        func.max(model_class.period_end_date).label("max_date"),
+                    )
+                    .where(model_class.symbol == symbol)
+                    .group_by(model_class.consolidated)
+                )
+                groups = group_result.all()
+                if groups:
+                    breakdown = {}
+                    for g in groups:
+                        cons_label = {True: "consolidated", False: "standalone"}.get(
+                            g.consolidated, "unknown"
+                        )
+                        breakdown[cons_label] = {
+                            "count": g.count,
+                            "periods": g.periods,
+                            "date_range": f"{g.min_date} to {g.max_date}",
+                        }
+                    financial_breakdown[coll_name] = breakdown
+            except Exception as e:
+                financial_breakdown[coll_name] = str(e)
 
     record_total = sum(v for v in record_counts.values() if isinstance(v, int))
 
@@ -461,8 +577,8 @@ async def get_pull_status(
         "symbol": meta.symbol,
         "source": meta.source,
         "last_pull": meta.last_pull,
-        "total_pulls": len(meta.previous_pulls) + (1 if meta.last_pull else 0),
-        "previous_pulls_count": len(meta.previous_pulls),
+        "total_pulls": len(meta.previous_pulls or []) + (1 if meta.last_pull else 0),
+        "previous_pulls_count": len(meta.previous_pulls or []),
         "total_records": record_total,
         "available": record_total > 0,
         "record_counts": record_counts,
@@ -544,20 +660,22 @@ async def get_shareholdings(
             f"Source '{source}' for country '{country}' is not yet supported"
         )
 
-    database = get_database()
-    coll = database["shareholdings"]
+    factory = get_session_factory()
+    async with factory() as session:
+        result = await session.execute(
+            select(Shareholding).where(
+                Shareholding.symbol == symbol,
+                Shareholding.filing_type == "shareholding",
+            ).order_by(Shareholding.period_end_date.desc()).limit(1)
+        )
+        existing = result.scalar_one_or_none()
 
-    existing = await coll.find_one(
-        {"symbol": symbol, "filing_type": "shareholding"},
-        {"_id": 0},
-        sort=[("period_end_date", -1)],
-    )
     if existing:
         priority = _load_priority_metrics().get("shareholdings", set())
         return {
             "symbol": symbol,
             "source": source,
-            "shareholdings": _filter_priority_fields(existing, priority, False),
+            "shareholdings": _filter_priority_fields(existing.to_dict(), priority, False),
         }
 
     try:
@@ -575,16 +693,20 @@ async def get_shareholdings(
                 continue
             doc = parsed["shareholding"]
             doc["pulled_at"] = datetime.utcnow()
-            await coll.replace_one(
-                {
-                    "symbol": doc["symbol"],
-                    "period_end_date": doc["period_end_date"],
-                    "consolidated": doc["consolidated"],
-                    "source_endpoint": "shareholding-pattern",
-                },
-                doc,
-                upsert=True,
-            )
+
+            row = _doc_to_row(doc, Shareholding)
+            async with factory() as session:
+                stmt = (
+                    pg_insert(Shareholding)
+                    .values(**row)
+                    .on_conflict_do_update(
+                        index_elements=["symbol", "period_end_date", "consolidated", "source_endpoint"],
+                        set_={k: v for k, v in row.items() if k not in ("id", "symbol", "period_end_date", "consolidated", "source_endpoint")},
+                    )
+                )
+                await session.execute(stmt)
+                await session.commit()
+
             logger.info(f"Saved shareholding for {symbol} - {doc['period_end_date']}")
             priority = _load_priority_metrics().get("shareholdings", set())
             return {

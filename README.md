@@ -231,7 +231,7 @@ Concurrency is capped (default `MAX_CONCURRENT_PULLS=2`, one active pull per sym
 ```bash
 pip install -r client/requirements.txt
 
-export VOYAGER_BASE_URL=https://voyager.onrender.com
+export VOYAGER_BASE_URL=https://voyager-1hpq.onrender.com
 export VOYAGER_API_KEY=vgr_...          # created via `keys create`
 
 python -m client ping
@@ -243,6 +243,7 @@ python -m client shareholdings VBL
 python -m client list-categories
 python -m client pull VBL --watch        # submit + poll until done (needs data:write)
 python -m client pull-jobs
+python -m client pull-job <job_id>      # status + endpoint breakdown
 python -m client pull-status VBL
 ```
 
@@ -257,7 +258,7 @@ python -m client keys enable vgr_abCdEfGh
 
 ### Deployment (Render)
 
-This repo ships a `render.yaml` blueprint for Render. The API runs on **Read Replicas** pattern: **Render serves reads**; **pulls run locally** (`scripts/cli.py --profile local pull ...` or the MCP/CLI tooling) and write into the same Atlas database. This keeps the Render instance cheap and stateless.
+This repo ships a `render.yaml` blueprint for Render. The API runs on **Read Replicas** pattern: **Render serves reads**; **pulls run locally** (`scripts/cli.py --profile atlas pull ...` or the MCP/CLI tooling) and write into the same Atlas database. This keeps the Render instance cheap and stateless.
 
 1. **MongoDB Atlas** — create a free M0 cluster, add a DB user, get the connection string (Driver: Python). Add the app's server IP (or `0.0.0.0/0`) to Network Access.
 2. **Render** — New + → Blueprint, select this repo (it auto-detects `render.yaml`), or create a Web Service manually (Docker, `./Dockerfile`, plan: free, region near your users).
@@ -267,7 +268,7 @@ This repo ships a `render.yaml` blueprint for Render. The API runs on **Read Rep
    - optionally `SENTRY_DSN`, `CORS_ORIGINS`
 4. **Deploy** — Render builds and starts gunicorn; the health check hits `/healthz`. Verify with `curl https://<service>.onrender.com/readyz` (should return `{"ok": true}`).
 5. **Create a key for your main app** (see [API keys](#api-keys)), then put `VOYAGER_BASE_URL` + `VOYAGER_API_KEY` in your app's config.
-6. **Load data** — run pulls locally: `python scripts/cli.py --profile local pull VBL --filing-type quarterly` (writes into Atlas; see `profiles/atlas.env.example` for the alternate profile).
+6. **Load data** — run pulls locally: `python scripts/cli.py --profile atlas pull VBL --filing-type quarterly` (writes into the Atlas DB that Render serves; the default `--profile local` targets a local MongoDB).
 
 #### Monitoring
 

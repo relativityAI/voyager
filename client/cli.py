@@ -93,6 +93,70 @@ def _fatal(exc: VoyagerError) -> None:
     raise typer.Exit(code=1)
 
 
+def _job_status_style(status: str) -> str:
+    """Color a job status: done green, queued/running yellow, else red."""
+    if status in ("done", "completed"):
+        return f"[green]{status}[/green]"
+    if status in ("queued", "running"):
+        return f"[yellow]{status}[/yellow]"
+    return f"[red]{status}[/red]"
+
+
+def _endpoint_style(value) -> str:
+    """Color an endpoint breakdown cell: counts green, 'no data' dim, else red."""
+    if isinstance(value, int):
+        return f"[green]{value}[/green]"
+    text = str(value)
+    if text.lower() in ("no data", "no_data"):
+        return f"[dim]{text}[/dim]"
+    if len(text) > 80:
+        text = text[:77] + "..."
+    return f"[red]{text}[/red]"
+
+
+def _render_pull_job(job) -> None:
+    """Render a single pull job: summary, result status, endpoint breakdown."""
+    console.print(
+        f"[bold cyan]Pull job {job.get('job_id')}[/bold cyan]  "
+        f"{job.get('symbol')}  {_job_status_style(job.get('status', 'unknown'))}"
+    )
+    _table(
+        ["field", "value"],
+        [
+            ("symbol", job.get("symbol")),
+            ("filing_type", job.get("filing_type")),
+            ("refresh", str(job.get("refresh", False)).lower()),
+            ("created_at", job.get("created_at")),
+            ("started_at", job.get("started_at")),
+            ("finished_at", job.get("finished_at")),
+        ],
+    )
+    if job.get("error"):
+        console.print(f"[red]error: {job['error']}[/red]")
+    result = job.get("result")
+    if not result:
+        return
+    console.print(
+        f"[bold cyan]Result:[/bold cyan] "
+        f"status={_job_status_style(result.get('status'))}  "
+        f"records={result.get('records_pulled')}  "
+        f"xbrl_parsed={result.get('xbrl_parsed')}"
+    )
+    breakdown = result.get("endpoint_breakdown") or {}
+    if breakdown:
+        _table(
+            ["endpoint", "result"],
+            [(k, _endpoint_style(v)) for k, v in breakdown.items()],
+        )
+    timing = result.get("timing") or {}
+    total = timing.get("total_ms")
+    phases = timing.get("phases") or {}
+    if total is not None:
+        phases = {**phases, "total": total}
+    if phases:
+        _table(["phase", "ms"], [(k, str(v)) for k, v in phases.items()])
+
+
 # ---------------------------------------------------------------------------
 # Read commands
 # ---------------------------------------------------------------------------
@@ -331,6 +395,18 @@ def pull_jobs(
         for j in jobs
     ]
     _table(["job_id", "symbol", "filing_type", "status", "time"], rows)
+
+
+@app.command()
+def pull_job(
+    job_id: str,
+):
+    """Show one pull job's status, result, and endpoint breakdown."""
+    try:
+        job = _client().get(f"/pull/jobs/{job_id}")
+    except VoyagerError as exc:
+        _fatal(exc)
+    _render_pull_job(job)
 
 
 # ---------------------------------------------------------------------------

@@ -6,31 +6,21 @@ services:
     ports:
       - "8001:8001"
     environment:
-      MONGODB_URL: mongodb://root:example@db:27017/
-      MONGODB_DB_NAME: voyager
+      DATABASE_URL: postgresql+asyncpg://postgres:example@db:5432/voyager
       PORT: 8001
     depends_on:
       - db
 
   db:
-    image: mongo:latest
+    image: postgres:16
     ports:
-      - "27017:27017"
+      - "5432:5432"
     environment:
-      MONGO_INITDB_ROOT_USERNAME: root
-      MONGO_INITDB_ROOT_PASSWORD: example
+      POSTGRES_DB: voyager
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: example
     volumes:
-      - voyagerdb:/data/db
-
-  mongo-express:
-    image: mongo-express:latest
-    ports:
-      - "8081:8081"
-    environment:
-      ME_CONFIG_MONGODB_URL: mongodb://root:example@db:27017/
-      ME_CONFIG_BASICAUTH_ENABLED: true
-      ME_CONFIG_BASICAUTH_USERNAME: mongoexpressuser
-      ME_CONFIG_BASICAUTH_PASSWORD: mongoexpresspass
+      - pgdata:/var/lib/postgresql/data
 
 volumes:
-  voyagerdb:
+  pgdata:

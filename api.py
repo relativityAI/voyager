@@ -50,7 +50,7 @@ init_observability()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Initializing Beanie via root /db...")
+    logger.info("Initializing database...")
     await init_db()
     await reap_stale_jobs()
     yield
@@ -58,8 +58,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Voyager", version=__version__, lifespan=lifespan)
 
-# CORS (optional). The main app calls Voyager server-to-server, but a browser
-# client can be enabled by setting CORS_ORIGINS to a comma-separated list.
 _cors_origins = [
     o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()
 ]
@@ -80,11 +78,6 @@ app.include_router(admin_router)
 @app.exception_handler(ServiceError)
 async def service_error_handler(request: Request, exc: ServiceError):
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
-
-
-# ---------------------------------------------------------------
-# Public endpoints (no API key required)
-# ---------------------------------------------------------------
 
 
 @app.get("/", summary="Health check")
@@ -111,11 +104,6 @@ if metrics_enabled():
         return metrics_response()
 
 
-# ---------------------------------------------------------------
-# /list — merged listing for sources, countries, industries, etc.
-# ---------------------------------------------------------------
-
-
 @app.get(
     "/list",
     summary="List available categories",
@@ -130,11 +118,6 @@ def list_category_endpoint(
     source: str = Query("nse", description="Data source"),
 ):
     return list_category(category, country, source)
-
-
-# ---------------------------------------------------------------
-# /financials — raw data & financial statement endpoints
-# ---------------------------------------------------------------
 
 
 @app.get(
@@ -240,11 +223,6 @@ async def financials_cash_flows(
     )
 
 
-# ---------------------------------------------------------------
-# /pull — submit async pull jobs (admin/data:write only) & status
-# ---------------------------------------------------------------
-
-
 @app.post(
     "/pull",
     summary="Pull raw stock data from exchange into DB (async job)",
@@ -318,11 +296,6 @@ async def pull_job_list(limit: int = Query(20, ge=1, le=100)):
     return [j.to_public_dict() for j in jobs]
 
 
-# ---------------------------------------------------------------
-# /financial-metrics — computed financial metrics
-# ---------------------------------------------------------------
-
-
 @app.get(
     "/financial-metrics",
     summary="Retrieve computed financial metrics for a stock",
@@ -340,11 +313,6 @@ async def financial_metrics_endpoint(
     return await financial_metrics(symbol, country, source, consolidated, filing_type)
 
 
-# ---------------------------------------------------------------
-# /announcements — dedicated endpoint
-# ---------------------------------------------------------------
-
-
 @app.get(
     "/announcements",
     summary="Fetch corporate announcements for a stock",
@@ -357,11 +325,6 @@ async def announcements(
     market: str = Query("equities", description="Market segment: equities or sme"),
 ):
     return await get_announcements(symbol, country, source, market)
-
-
-# ---------------------------------------------------------------
-# /shareholdings — dedicated endpoint
-# ---------------------------------------------------------------
 
 
 @app.get(
@@ -377,11 +340,6 @@ async def shareholdings(
     return await get_shareholdings(symbol, country, source)
 
 
-# ---------------------------------------------------------------
-# /funds — dummy
-# ---------------------------------------------------------------
-
-
 @app.get(
     "/funds",
     summary="Fund data (not yet implemented)",
@@ -389,11 +347,6 @@ async def shareholdings(
 )
 def funds():
     return {"status": "not_implemented", "note": "Fund data not yet implemented"}
-
-
-# ---------------------------------------------------------------
-# /macro — dummy
-# ---------------------------------------------------------------
 
 
 @app.get(
@@ -406,11 +359,6 @@ def macro():
         "status": "not_implemented",
         "note": "Macroeconomic data not yet implemented",
     }
-
-
-# ---------------------------------------------------------------
-# /news — dummy
-# ---------------------------------------------------------------
 
 
 @app.get(

@@ -3,8 +3,10 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 from loguru import logger
+from sqlalchemy import select
 
-from src.db.connection import get_database
+from src.db.engine import get_session_factory
+from src.db.models import IncomeStatement, BalanceSheet, CashFlow
 
 from ._common import InvalidRequestError, UnsupportedSourceError
 
@@ -59,7 +61,12 @@ def _find_record(records: list, ref_date: str, offset_months: int) -> Optional[d
             if not rd:
                 continue
             try:
-                od = datetime.strptime(rd, "%Y-%m-%d")
+                if isinstance(rd, str):
+                    od = datetime.strptime(rd, "%Y-%m-%d")
+                elif isinstance(rd, datetime):
+                    od = rd
+                else:
+                    continue
                 if od.year == ty and od.month == tm:
                     return r
             except ValueError:
@@ -70,14 +77,9 @@ def _find_record(records: list, ref_date: str, offset_months: int) -> Optional[d
 
 
 async def _safe_market_fetch(func, symbol: str, source: str) -> Dict[str, Any]:
-    """Run a market-data fetch, degrading to {} instead of crashing the request.
-
-    Live providers (Yahoo Finance) rate-limit datacenter IPs, so a 429 here must
-    never turn into an HTTP 500. Callers treat {} as "price data unavailable".
-    """
     try:
         return await asyncio.to_thread(func, symbol, source)
-    except Exception as exc:  # noqa: BLE001 - degrade, never crash
+    except Exception as exc:
         logger.warning(f"Market data fetch failed for {symbol}: {exc}")
         return {}
 
@@ -101,30 +103,34 @@ async def financial_metrics(
 
     from src.tools.nse.technicals import fetch_price_info, fetch_technicals
 
-    database = get_database()
     is_cons = consolidated
 
     income_docs: dict = {}
     balance_docs: dict = {}
     cashflow_docs: dict = {}
 
-    db_query: Dict[str, Any] = {
-        "symbol": symbol,
-        "consolidated": is_cons,
-        "filing_type": "quarterly" if filing_type == "ttm" else filing_type,
-    }
+    db_ft = "quarterly" if filing_type == "ttm" else filing_type
 
-    for coll_name, dest in (
-        ("income_statements", income_docs),
-        ("balance_sheets", balance_docs),
-        ("cash_flows", cashflow_docs),
-    ):
-        coll = database[coll_name]
-        cursor = coll.find(db_query, {"_id": 0}).sort("period_end_date", -1)
-        async for doc in cursor:
-            key = doc.get("period_end_date")
-            if key and key not in dest:
-                dest[key] = doc
+    factory = get_session_factory()
+    async with factory() as session:
+        for model_class, dest in (
+            (IncomeStatement, income_docs),
+            (BalanceSheet, balance_docs),
+            (CashFlow, cashflow_docs),
+        ):
+            result = await session.execute(
+                select(model_class).where(
+                    model_class.symbol == symbol,
+                    model_class.consolidated == is_cons,
+                    model_class.filing_type == db_ft,
+                ).order_by(model_class.period_end_date.desc())
+            )
+            for doc in result.scalars().all():
+                d = doc.to_dict()
+                key = d.get("period_end_date")
+                if key and key not in dest:
+                    key_str = key.isoformat() if hasattr(key, "isoformat") else str(key)
+                    dest[key_str] = d
 
     all_dates = sorted(
         set(income_docs.keys()) | set(balance_docs.keys()) | set(cashflow_docs.keys()),
@@ -144,6 +150,7 @@ async def financial_metrics(
                         "symbol",
                         "pulled_at",
                         "_content_hash",
+                        "id",
                     ):
                         merged[k] = v
         merged_records.append(merged)
@@ -160,7 +167,6 @@ async def financial_metrics(
 
     technicals = await _safe_market_fetch(fetch_technicals, symbol, source)
 
-    # ---- extract latest (point-in-time) balance-sheet values ----
     assets_t = _to_float(latest.get("assets"))
     equity_sc = _to_float(latest.get("equity_share_capital"))
     other_eq = _to_float(latest.get("other_equity"))
@@ -170,7 +176,6 @@ async def financial_metrics(
     cash_eq = _to_float(latest.get("cash_and_cash_equivalents"))
     debt_eq_ratio = _to_float(latest.get("debt_equity_ratio"))
 
-    # ---- TTM / effective flow values ----
     is_ttm = filing_type == "ttm"
     flow_fields = [
         "revenue_from_operations",
@@ -219,7 +224,6 @@ async def financial_metrics(
         )
     ebit = (pbt or 0) + (fc or 0) if pbt is not None or fc is not None else None
 
-    # ---- derive values ----
     total_debt = (borrowings_c or 0) + (borrowings_nc or 0)
     total_equity = (equity_sc or 0) + (other_eq or 0)
     market_cap = (
@@ -233,13 +237,14 @@ async def financial_metrics(
         else None
     )
 
-    # ---- growth rates ----
     def _growth_rate(current_val, previous_val):
         if current_val is not None and previous_val is not None and previous_val != 0:
             return _pct(_safe_div(current_val - previous_val, previous_val))
         return None
 
     latest_date = records[0].get("period_end_date")
+    if hasattr(latest_date, "isoformat"):
+        latest_date = latest_date.isoformat()
     yoy_rec = _find_record(records, latest_date, 12) if latest_date else None
 
     if is_ttm:
@@ -310,9 +315,8 @@ async def financial_metrics(
         if yoy_rec
         else None,
     )
-    ebitda_growth = op_income_growth  # placeholder — same as operating income growth if no depreciation data
+    ebitda_growth = op_income_growth
 
-    # ---- CAGR ----
     if is_ttm:
         eps_vals = [
             _ttm_window(
@@ -343,7 +347,6 @@ async def financial_metrics(
 
     peg_growth = cagr if cagr is not None and cagr > 0 else eps_growth
 
-    # --- Technicals ---
     result: Dict[str, Any] = {
         "symbol": symbol,
         "period_end_date": latest.get("period_end_date"),
@@ -374,11 +377,9 @@ async def financial_metrics(
     ):
         if k in technicals:
             result[k] = technicals[k]
-    # override when price_info gives a better price
     if current_price is not None:
         result["current_price"] = current_price
 
-    # --- Valuation ---
     result["enterprise_value"] = enterprise_value
     val_eps = ttm_eps if ttm_eps is not None else eps
     val_rev = ttm_rev if ttm_rev is not None else rev
@@ -408,7 +409,7 @@ async def financial_metrics(
     result["enterprise_value_to_revenue_ratio"] = (
         _safe_div(enterprise_value, val_rev) if enterprise_value is not None else None
     )
-    fcf = val_ocf or 0  # no capex data, so approximate with OCF
+    fcf = val_ocf or 0
     result["free_cash_flow_yield"] = (
         _pct(_safe_div(fcf, market_cap)) if market_cap else None
     )
@@ -418,8 +419,7 @@ async def financial_metrics(
         else None
     )
 
-    # --- Profitability ---
-    result["gross_margin"] = None  # need COGS
+    result["gross_margin"] = None
     result["operating_margin"] = _pct(_safe_div(ebit, rev)) if rev else None
     result["net_margin"] = _pct(_safe_div(pat, rev)) if rev else None
     result["return_on_equity"] = (
@@ -432,23 +432,20 @@ async def financial_metrics(
         else None
     )
 
-    # --- Efficiency ---
     result["asset_turnover"] = _safe_div(rev, assets_t) if assets_t else None
-    result["inventory_turnover"] = None  # need COGS and inventory
-    result["receivables_turnover"] = None  # need trade_receivables
+    result["inventory_turnover"] = None
+    result["receivables_turnover"] = None
     result["days_sales_outstanding"] = None
     result["operating_cycle"] = None
     result["working_capital_turnover"] = None
 
-    # --- Liquidity ---
-    result["current_ratio"] = None  # need current_assets and current_liabilities
+    result["current_ratio"] = None
     result["quick_ratio"] = None
     result["cash_ratio"] = _safe_div(cash_eq, borrowings_c) if borrowings_c else None
     result["operating_cash_flow_ratio"] = (
         _safe_div(ocf, borrowings_c) if borrowings_c else None
     )
 
-    # --- Solvency ---
     result["debt_to_equity"] = (
         debt_eq_ratio
         if debt_eq_ratio is not None
@@ -457,7 +454,6 @@ async def financial_metrics(
     result["debt_to_assets"] = _safe_div(total_debt, assets_t) if assets_t else None
     result["interest_coverage"] = _safe_div(ebit, fc) if fc else None
 
-    # --- Growth ---
     result["revenue_growth"] = revenue_growth
     result["earnings_growth"] = earnings_growth
     result["book_value_growth"] = book_value_growth
@@ -466,15 +462,13 @@ async def financial_metrics(
     result["operating_income_growth"] = op_income_growth
     result["ebitda_growth"] = ebitda_growth
 
-    # --- Per Share ---
     result["earnings_per_share"] = eps
     result["book_value_per_share"] = bvps
     result["free_cash_flow_per_share"] = (
         _safe_div(fcf, shares_outstanding) if shares_outstanding else None
     )
 
-    # --- Other ---
-    result["payout_ratio"] = None  # need dividends
+    result["payout_ratio"] = None
     result["market_capitalization"] = market_cap
     result["total_debt"] = total_debt if total_debt else None
     result["total_equity"] = total_equity if total_equity else None

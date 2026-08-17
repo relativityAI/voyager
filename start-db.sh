@@ -1,18 +1,17 @@
 #!/bin/bash
-# Start MongoDB and Mongo Express only (no API)
+# Start PostgreSQL only (no API)
 
 set -e
 
-echo "Starting MongoDB and Mongo Express..."
+echo "Starting PostgreSQL..."
 
-docker compose up -d db mongo-express
+docker compose up -d db
 
 echo ""
-echo "Waiting for MongoDB to be ready..."
+echo "Waiting for PostgreSQL to be ready..."
 sleep 3
 
 echo ""
-echo "MongoDB: mongodb://root:example@localhost:27017/"
-echo "Mongo Express: http://localhost:8081 (user: mongoexpressuser, pass: mongoexpresspass)"
+echo "PostgreSQL: postgresql://postgres:postgres@localhost:5432/voyager"
 echo ""
 echo "Run ./start.sh later to also start the API locally."

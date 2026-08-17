@@ -1,6 +1,6 @@
-"""Launch the Voyager CLI against a MongoDB profile.
+"""Launch the Voyager CLI against a database profile.
 
-Lets you switch between your local MongoDB and MongoDB Atlas for writes:
+Lets you switch between your local PostgreSQL and Supabase for writes:
 
     python scripts/cli.py --profile local  pull VBL
     python scripts/cli.py --profile atlas  pull VBL

@@ -4,7 +4,7 @@ Precedence (highest wins):
     1. Sidebar runtime input (handled in app.py via session_state)
     2. Saved config file (~/.config/voyager/panel.json)
     3. Environment / repo .env (VOYAGER_BASE_URL, VOYAGER_API_KEY,
-       VOYAGER_ADMIN_KEY, MONGODB_URL, MONGODB_DB_NAME)
+       VOYAGER_ADMIN_KEY, DATABASE_URL)
     4. Hardcoded fallbacks
 
 The config file only stores what the user explicitly saves; env values are
@@ -27,8 +27,7 @@ DEFAULTS = {
     "api_base_url": "http://localhost:8001",
     "api_key": "",
     "admin_key": "",
-    "mongodb_url": "",
-    "mongodb_db_name": "voyager",
+    "database_url": "",
 }
 
 
@@ -37,12 +36,10 @@ class PanelConfig:
     api_base_url: str = DEFAULTS["api_base_url"]
     api_key: str = DEFAULTS["api_key"]
     admin_key: str = DEFAULTS["admin_key"]
-    mongodb_url: str = DEFAULTS["mongodb_url"]
-    mongodb_db_name: str = DEFAULTS["mongodb_db_name"]
+    database_url: str = DEFAULTS["database_url"]
 
 
 def env_defaults() -> PanelConfig:
-    """Defaults = hardcoded fallbacks overlaid with env/.env vars that are set."""
     cfg = PanelConfig()
     for f in fields(PanelConfig):
         val = _env_value(f.name)
@@ -53,7 +50,6 @@ def env_defaults() -> PanelConfig:
 
 
 def load() -> PanelConfig:
-    """Merge precedence: env/.env > saved config file > hardcoded fallbacks."""
     cfg = _load_file() or PanelConfig()
     for f in fields(PanelConfig):
         val = _env_value(f.name)
@@ -91,8 +87,7 @@ _ENV_VARS = {
     "api_base_url": "VOYAGER_BASE_URL",
     "api_key": "VOYAGER_API_KEY",
     "admin_key": "VOYAGER_ADMIN_KEY",
-    "mongodb_url": "MONGODB_URL",
-    "mongodb_db_name": "MONGODB_DB_NAME",
+    "database_url": "DATABASE_URL",
 }
 
 

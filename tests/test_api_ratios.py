@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -12,7 +12,7 @@ try:
 except ImportError:
     HAS_API = False
     pytest.skip(
-        "Skipping API tests: motor/pymongo import issue", allow_module_level=True
+        "Skipping API tests: import issue", allow_module_level=True
     )
 
 
@@ -23,17 +23,17 @@ class TestFinancialMetrics:
 
         price_patcher = patch("src.tools.nse.technicals.fetch_price_info")
         tech_patcher = patch("src.tools.nse.technicals.fetch_technicals")
-        db_patcher = patch("src.services.metrics.get_database")
+        factory_patcher = patch("src.services.metrics.get_session_factory")
 
         self.mock_fetch_price = price_patcher.start()
         self.mock_fetch_tech = tech_patcher.start()
-        self.mock_get_db = db_patcher.start()
+        self.mock_factory = factory_patcher.start()
 
         yield
 
         price_patcher.stop()
         tech_patcher.stop()
-        db_patcher.stop()
+        factory_patcher.stop()
 
     def _make_records(self, records_list):
         """Convert flat dict list into per-collection iterables."""
@@ -87,41 +87,49 @@ class TestFinancialMetrics:
             )
         return income, balance, cashflow
 
+    def _make_mock_model(self, data):
+        """Create a mock SQLAlchemy model with a to_dict() method."""
+        mock = MagicMock()
+        mock.to_dict.return_value = data
+        return mock
+
     def _setup_db_mock(self, records_list):
-        mock_db = MagicMock()
         income, balance, cashflow = self._make_records(records_list)
 
-        def db_getitem(name):
-            colls = {
-                "income_statements": self._make_cursor(income),
-                "balance_sheets": self._make_cursor(balance),
-                "cash_flows": self._make_cursor(cashflow),
-            }
-            mock = MagicMock()
-            mock.find.return_value = colls.get(name, self._make_empty_cursor())
-            return mock
+        data_map = {
+            "income_statements": income,
+            "balance_sheets": balance,
+            "cash_flows": cashflow,
+        }
+        query_count = {"n": 0}
 
-        mock_db.__getitem__.side_effect = db_getitem
-        return mock_db
+        def _make_result(items):
+            mock_result = MagicMock()
+            mock_scalars = MagicMock()
+            mock_scalars.all.return_value = [self._make_mock_model(d) for d in items]
+            mock_result.scalars.return_value = mock_scalars
+            return mock_result
 
-    def _make_cursor(self, items):
-        async def _agen():
-            for i in items:
-                yield i
+        mock_session = AsyncMock()
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cm.__exit__ = AsyncMock(return_value=False)
+        self.mock_factory.return_value = MagicMock(return_value=mock_cm)
 
-        cur = MagicMock()
-        cur.sort.return_value = cur
-        cur.__aiter__.side_effect = _agen
-        return cur
+        def execute_side_effect(stmt):
+            # The metrics code queries in order: IncomeStatement, BalanceSheet, CashFlow
+            idx = query_count["n"]
+            query_count["n"] += 1
+            keys = list(data_map.keys())
+            if idx < len(keys):
+                return _make_result(data_map[keys[idx]])
+            return _make_result([])
 
-    def _make_empty_cursor(self):
-        cur = MagicMock()
-        cur.sort.return_value = cur
-        cur.__aiter__.return_value = iter([])
-        return cur
+        mock_session.execute = AsyncMock(side_effect=execute_side_effect)
+        return mock_session
 
     def test_successful_response(self):
-        self.mock_get_db.return_value = self._setup_db_mock(
+        self._setup_db_mock(
             [
                 {
                     "period_end_date": "2024-12-31",
@@ -180,7 +188,7 @@ class TestFinancialMetrics:
         """A yfinance rate-limit must degrade to nulls, not raise a 500."""
         from yfinance.exceptions import YFRateLimitError
 
-        self.mock_get_db.return_value = self._setup_db_mock(
+        self._setup_db_mock(
             [
                 {
                     "period_end_date": "2024-12-31",
@@ -207,14 +215,14 @@ class TestFinancialMetrics:
         assert data["return_on_equity"] == pytest.approx(7.5)
 
     def test_empty_response_for_unknown_symbol(self):
-        self.mock_get_db.return_value = self._setup_db_mock([])
+        self._setup_db_mock([])
 
         response = client.get("/financial-metrics?symbol=UNKNOWN&country=in&source=nse")
         assert response.status_code == 200
         assert response.json() == {}
 
     def test_no_nan_in_json_response(self):
-        self.mock_get_db.return_value = self._setup_db_mock(
+        self._setup_db_mock(
             [
                 {
                     "period_end_date": "2024-12-31",
@@ -276,7 +284,7 @@ class TestFinancialMetrics:
         ]
 
     def test_ttm_filing_type(self):
-        self.mock_get_db.return_value = self._setup_db_mock(
+        self._setup_db_mock(
             self._make_ttm_quarterly_records()
         )
         self.mock_fetch_price.return_value = {
@@ -300,7 +308,7 @@ class TestFinancialMetrics:
         assert data["operating_margin"] == pytest.approx(22.9412, abs=0.01)
 
     def test_annual_does_not_sum_ttm(self):
-        self.mock_get_db.return_value = self._setup_db_mock(
+        self._setup_db_mock(
             [
                 {
                     "period_end_date": "2024-12-31",
@@ -365,7 +373,7 @@ class TestFinancialMetrics:
         assert data["revenue_growth"] == pytest.approx(25.0)
 
     def test_invalid_filing_type(self):
-        self.mock_get_db.return_value = self._setup_db_mock([])
+        self._setup_db_mock([])
 
         response = client.get(
             "/financial-metrics?symbol=TEST&country=in&source=nse&filing_type=foo"

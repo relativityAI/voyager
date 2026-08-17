@@ -14,9 +14,10 @@ numpy==2.2.6
 pandas-ta==0.4.71b0
 yfinance==1.4.1
 
-# MongoDB (async via pymongo's native driver, used by Beanie)
-pymongo==4.16.0
-beanie==2.1.0
+# PostgreSQL (async via asyncpg, ORM via SQLAlchemy)
+sqlalchemy[asyncio]>=2.0.35
+asyncpg>=0.30.0
+alembic>=1.14.0
 
 # HTTP / web scraping
 requests==2.34.2
