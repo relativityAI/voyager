@@ -12,11 +12,14 @@
 - Retry semantics: 401/403 → re-prime, 429 → backoff without clearing cookies
   (D-07); optional per-request ``validate`` hook for body/content-type checks
   (D-08).
+- Dynamic proxy rotation from a free proxy pool (D-11): on Render the pool
+  is tried first; locally direct is tried first with pool as fallback.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import random
 import threading
 import time
@@ -49,6 +52,10 @@ DEFAULT_PRIME_TIMEOUT = 15.0
 DEFAULT_PRIME_TTL = 1800.0  # 30 minutes
 
 
+def _is_render() -> bool:
+    return os.getenv("RENDER") is not None
+
+
 class StealthSession:
     """Thread-safe stealth transport for one source."""
 
@@ -66,6 +73,8 @@ class StealthSession:
         self._lock = threading.RLock()
         self._primed_at: Optional[float] = None
         self._cookies_loaded = False
+        self._current_proxy: Optional[str] = None
+        self._used_proxy_this_request: bool = False
 
     # ------------------------------------------------------------------ setup
 
@@ -87,6 +96,62 @@ class StealthSession:
                     except Exception as exc:  # noqa: BLE001 - a bad cookie must not block startup
                         self.logger.debug(f"Ignoring invalid persisted cookie {name}: {exc}")
             return self._session
+
+    # ----------------------------------------------------------------- proxy resolution
+
+    def _resolve_initial_proxy(self) -> Optional[str]:
+        """Determine the starting proxy for a request.
+
+        - Static ``config.proxy`` always wins.
+        - On Render with a pool: start with a pool proxy (direct is known
+          to fail).
+        - Locally: start direct (``None``). Fallback to pool happens on
+          blocked responses.
+        """
+        if self.config.proxy:
+            return self.config.proxy
+        if self.config.proxy_pool is None:
+            return None
+        if _is_render():
+            proxy = self.config.proxy_pool.get_proxy()
+            if proxy:
+                self.logger.info("Render detected; starting with pool proxy %s", proxy)
+            return proxy
+        return None
+
+    def _switch_to_proxy(self, reason: str) -> Optional[str]:
+        """Switch from direct/no-proxy to a pool proxy. Returns the new proxy URL or None."""
+        if self.config.proxy_pool is None:
+            return None
+        proxy = self.config.proxy_pool.get_proxy()
+        if proxy:
+            self.logger.info(
+                "Switching to pool proxy %s (%s); invalidating cookies",
+                proxy,
+                reason,
+            )
+            self._invalidate_cookies()
+            self._current_proxy = proxy
+            self._used_proxy_this_request = True
+        return proxy
+
+    def _rotate_proxy(self, failed_proxy: str, reason: str) -> Optional[str]:
+        """Rotate to the next pool proxy after a failure. Returns the new proxy URL or None."""
+        if self.config.proxy_pool is None:
+            return None
+        self.config.proxy_pool.mark_failed(failed_proxy)
+        proxy = self.config.proxy_pool.get_proxy()
+        if proxy and proxy != failed_proxy:
+            self.logger.info(
+                "Rotating from %s to %s (%s); invalidating cookies",
+                failed_proxy,
+                proxy,
+                reason,
+            )
+            self._invalidate_cookies()
+            self._current_proxy = proxy
+            return proxy
+        return None
 
     # ----------------------------------------------------------------- cookie lifecycle
 
@@ -118,6 +183,7 @@ class StealthSession:
                     url,
                     headers=self.fingerprint.page_load_headers(),
                     timeout=self.prime_timeout,
+                    proxies=self._current_proxy,
                 )
                 if resp.status_code == 200 and dict(self.session.cookies):
                     self._primed_at = time.monotonic()
@@ -168,17 +234,24 @@ class StealthSession:
         allow_redirects: bool = True,
         validate: Optional[Callable] = None,
     ):
-        """Perform a throttled, primed, retried request (D-06/D-07/D-08).
+        """Perform a throttled, primed, retried request (D-06/D-07/D-08/D-11).
 
         Returns the response on success. Raises :class:`CookieError` if the
         session cookie cannot be established, or :class:`SessionExhausted` if
         all attempts fail. Callers that want ``None`` on exhaustion catch
         ``SessionExhausted`` (the NSE facade does exactly this).
+
+        Proxy behaviour (D-11):
+          - On Render, starts with a pool proxy.
+          - Locally, starts direct. On 403/blocked, falls back to pool.
+          - On repeated blocks, rotates to the next pool proxy.
         """
         request_timeout = timeout if timeout is not None else self.timeout
         last_failure: str = ""
         reprimed = False
-        proxies = self.config.proxy or None
+
+        self._current_proxy = self._resolve_initial_proxy()
+        self._used_proxy_this_request = self._current_proxy is not None
 
         for attempt in range(self.config.retries):
             self.throttle.wait()
@@ -195,11 +268,13 @@ class StealthSession:
                     headers=req_headers,
                     timeout=request_timeout,
                     allow_redirects=allow_redirects,
-                    proxies=proxies,
+                    proxies=self._current_proxy,
                 )
             except RequestException as exc:
                 last_failure = f"network error: {exc}"
                 self.logger.warning(f"{method} {url} failed ({last_failure}); retrying")
+                if self._current_proxy:
+                    self._rotate_proxy(self._current_proxy, f"network error: {exc}")
                 self._backoff(attempt)
                 continue
 
@@ -215,6 +290,17 @@ class StealthSession:
             status = resp.status_code
 
             if status in (401, 403):
+                if self.config.proxy_pool and not self._used_proxy_this_request:
+                    if self._switch_to_proxy(f"blocked {status}"):
+                        self._backoff(attempt)
+                        continue
+                if self.config.proxy_pool and self._current_proxy:
+                    new_proxy = self._rotate_proxy(
+                        self._current_proxy, f"blocked {status}"
+                    )
+                    if new_proxy:
+                        self._backoff(attempt)
+                        continue
                 if not reprimed:
                     reprimed = True
                     self.logger.warning(
@@ -242,6 +328,8 @@ class StealthSession:
                 self._backoff(attempt)
                 continue
 
+            if self._current_proxy and self.config.proxy_pool:
+                self.config.proxy_pool.mark_success(self._current_proxy)
             return resp
 
         raise SessionExhausted(

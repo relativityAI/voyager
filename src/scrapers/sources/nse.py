@@ -8,6 +8,13 @@ See D-03 for why the warm-up page (option-chain) differs from the API-call
 Referer (get-quotes page): option-chain is only a cookie farm; Voyager's
 product is financials/XBRL, and NSE's API expects the get-quotes page as the
 in-page Referer.
+
+Proxy strategy (D-11):
+  - ``NSE_PROXY`` env var: static proxy, always used when set.
+  - Free proxy pool: used when ``NSE_PROXY`` is not set AND
+    ``NSE_USE_FREE_PROXIES`` is true (default). On Render, the pool is
+    tried first. Locally, direct connection is tried first; the pool is
+    used as fallback on 403/blocked responses.
 """
 
 from __future__ import annotations
@@ -46,12 +53,35 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _is_render() -> bool:
+    """Detect Render deployment (Render sets RENDER env var)."""
+    return os.getenv("RENDER") is not None
+
+
 def build_nse_config(calls_per_second: Optional[float] = None) -> SourceConfig:
     """Build the NSE source config, honoring env knobs.
 
     ``calls_per_second`` (passed by callers like ``NSEIndia``) takes
     precedence; otherwise ``NSE_CALLS_PER_SECOND`` is used.
+
+    Proxy resolution order:
+      1. ``NSE_PROXY`` env var → static proxy (always wins).
+      2. ``NSE_USE_FREE_PROXIES`` env var (default ``true``) → proxy pool.
+         On Render the pool is used directly. Locally it's a fallback.
     """
+    static_proxy = os.getenv("NSE_PROXY")
+    use_free_proxies = os.getenv("NSE_USE_FREE_PROXIES", "true").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
+
+    pool = None
+    if not static_proxy and use_free_proxies:
+        from src.scrapers.proxy_pool import get_proxy_pool
+
+        pool = get_proxy_pool()
+
     return SourceConfig(
         name="nse",
         country="in",
@@ -68,6 +98,8 @@ def build_nse_config(calls_per_second: Optional[float] = None) -> SourceConfig:
         backoff_base=0.5,
         cookie_store=os.getenv("NSE_COOKIE_STORE", "file"),
         cookie_path=os.getenv("NSE_COOKIE_PATH"),
+        proxy=static_proxy,
+        proxy_pool=pool,
     )
 
 
