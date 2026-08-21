@@ -488,7 +488,9 @@ class NSEIndia:
             if not xbrl_url or xbrl_url in ("-", "null"):
                 return None
 
-            broadcast_date = x.get("broadcast_Date") or x.get("broadCastDate")
+            broadcast_date = (
+                x.get("broadcastDate") or x.get("broadcast_Date") or x.get("broadCastDate")
+            )
 
             self.logger.debug(f"Processing XBRL for {symbol} ({category}): {xbrl_url}")
             extension = xbrl_url.split(".")[-1]
@@ -509,6 +511,10 @@ class NSEIndia:
                         )
 
                         if category == "shareholding-pattern":
+                            for f in data["financials"]:
+                                cr = f.get("contextRef") or ""
+                                if "_Context" in cr:
+                                    f["contextRef"] = cr.replace("_Context", "")
                             data["financials"] = [
                                 f
                                 for f in data["financials"]

@@ -1,10 +1,18 @@
+import asyncio
 import unittest
-from unittest.mock import MagicMock
+from datetime import datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.scrapers.session import BlockedResponse, CookieError, SessionExhausted
 from src.tools.nse.client import NSEApiClient, NSEDataParser, NSEIndia
+
+try:
+    from src.services.nse import get_shareholdings
+except ImportError:
+    get_shareholdings = None
 
 # NSEFinancials model was removed; skip the test that imports it
 try:
@@ -182,6 +190,21 @@ SAMPLE_XBRL = b"""<?xml version="1.0" encoding="utf-8"?>
 
 MOCK_XBRL_URL = "https://nsearchives.nseindia.com/corporate/xbrl/test.xml"
 
+# NSE shareholding template in use since the Jun-2025 filings: context ids
+# carry a "_Context" infix ("..._ContextI") instead of the legacy "...I".
+SAMPLE_SHP_XBRL_NEW_FORMAT = b"""<?xml version="1.0" encoding="utf-8"?>
+<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"
+            xmlns:in-bse-shp="http://www.bseindia.com/xbrl/shp/2025-06-30">
+    <in-bse-shp:endDate>2026-06-30</in-bse-shp:endDate>
+    <in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares contextRef="ShareholdingOfPromoterAndPromoterGroup_ContextI">0.7177</in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares>
+    <in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares contextRef="PublicShareholding_ContextI">0.2823</in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares>
+    <in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares contextRef="InstitutionsForeign_ContextI">0.0906</in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares>
+    <in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares contextRef="InstitutionsDomestic_ContextI">0.1347</in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares>
+    <in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares contextRef="NonInstitutions_ContextI">0.0569</in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares>
+    <in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares contextRef="Indian_ContextI">0.7177</in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares>
+</xbrli:xbrl>
+"""
+
 
 def test_process_xbrl_filters_quarterly(nse_india):
     """process_xbrl should classify quarterly (OneD/OneI) facts into correct statement docs."""
@@ -234,6 +257,25 @@ def test_process_xbrl_skips_empty_after_filter(nse_india):
     assert result is None, "Should skip XBRL with no annual facts"
 
 
+def test_process_xbrl_shareholding_new_context_format(nse_india):
+    """NSE's post-Jun-2025 shareholding template uses '..._ContextI' context ids."""
+    mock_record = {"xbrl": MOCK_XBRL_URL, "consolidated": "Shareholding"}
+    with unittest.mock.patch.object(
+        nse_india.api,
+        "fetch_xbrl_content",
+        return_value=SAMPLE_SHP_XBRL_NEW_FORMAT,
+    ):
+        result = nse_india.process_xbrl(mock_record, "TEST", "shareholding-pattern")
+    assert result is not None
+    doc = result["shareholding"]
+    assert doc["period_end_date"] == "2026-06-30"
+    assert doc["promoters_and_promoter_group"] == "0.7177"
+    assert doc["public_shareholding"] == "0.2823"
+    assert doc["foreign_institutional_investors"] == "0.0906"
+    assert doc["domestic_institutional_investors"] == "0.1347"
+    assert doc["non_institutions"] == "0.0569"
+
+
 def test_nse_financials_fetch():
     nseindia = NSEIndia()
     try:
@@ -280,3 +322,74 @@ def test_nse_financials_fetch():
             break
 
     assert found_parsed, "Could not fetch and parse XBRL data for SKYGOLD"
+
+
+# --- get_shareholdings freshness (DB-first cache) ---
+
+
+def _shareholding_factory(existing):
+    session = AsyncMock()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = existing
+    session.execute = AsyncMock(return_value=result)
+    cm = AsyncMock()
+    cm.__aenter__ = AsyncMock(return_value=session)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return MagicMock(return_value=cm)
+
+
+def _shareholding_row(pulled_at):
+    return SimpleNamespace(
+        pulled_at=pulled_at,
+        to_dict=lambda: {"symbol": "TEST", "period_end_date": "2026-06-30"},
+    )
+
+
+@pytest.mark.skipif(get_shareholdings is None, reason="services.nse unavailable")
+def test_shareholdings_fresh_cache_skips_live_fetch():
+    factory = _shareholding_factory(_shareholding_row(datetime.utcnow()))
+    with (
+        patch("src.services.nse.get_session_factory", return_value=factory),
+        patch(
+            "src.services.nse.nse_scraper.api.shareholding_xbrls",
+            side_effect=AssertionError("live fetch should not happen"),
+        ),
+    ):
+        result = asyncio.run(get_shareholdings("TEST"))
+
+    assert result["shareholdings"]["period_end_date"] == "2026-06-30"
+
+
+@pytest.mark.skipif(get_shareholdings is None, reason="services.nse unavailable")
+def test_shareholdings_stale_cache_triggers_live_fetch():
+    factory = _shareholding_factory(
+        _shareholding_row(datetime.utcnow() - timedelta(days=8))
+    )
+
+    def fake_process(x, symbol, category):
+        return {
+            "shareholding": {
+                "symbol": symbol,
+                "period_end_date": "2026-06-30",
+                "consolidated": False,
+                "source_endpoint": category,
+            },
+            "income_statement": None,
+            "balance_sheet": None,
+            "cash_flow": None,
+        }
+
+    with (
+        patch("src.services.nse.get_session_factory", return_value=factory),
+        patch(
+            "src.services.nse.nse_scraper.api.shareholding_xbrls",
+            return_value=[{"xbrl": "http://x/one.xml", "date": "30-JUN-2026"}],
+        ),
+        patch(
+            "src.services.nse.nse_scraper.process_xbrl",
+            side_effect=fake_process,
+        ),
+    ):
+        result = asyncio.run(get_shareholdings("TEST"))
+
+    assert result["shareholdings"]["period_end_date"] == "2026-06-30"
