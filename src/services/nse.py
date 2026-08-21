@@ -1,7 +1,7 @@
 import asyncio
 import os
 import time
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Any, Dict, Optional
 
 from loguru import logger
@@ -649,6 +649,9 @@ async def get_announcements(
         raise UpstreamError(str(e))
 
 
+_SH_FRESHNESS = timedelta(days=7)
+
+
 async def get_shareholdings(
     symbol: str, country: str = "in", source: str = "nse"
 ) -> Dict[str, Any]:
@@ -670,7 +673,11 @@ async def get_shareholdings(
         )
         existing = result.scalar_one_or_none()
 
-    if existing:
+    if (
+        existing
+        and existing.pulled_at
+        and datetime.utcnow() - existing.pulled_at < _SH_FRESHNESS
+    ):
         priority = _load_priority_metrics().get("shareholdings", set())
         return {
             "symbol": symbol,
@@ -685,7 +692,7 @@ async def get_shareholdings(
         if not isinstance(records, list) or not records:
             raise NotFoundError(f"No shareholding data found for {symbol}")
 
-        for record in records:
+        for i, record in enumerate(records):
             parsed = await asyncio.to_thread(
                 nse_scraper.process_xbrl, record, symbol, "shareholding-pattern"
             )
@@ -693,6 +700,12 @@ async def get_shareholdings(
                 continue
             doc = parsed["shareholding"]
             doc["pulled_at"] = datetime.utcnow()
+            if i > 0:
+                logger.warning(
+                    f"Shareholding for {symbol}: serving older period "
+                    f"{doc['period_end_date']} (newest filing "
+                    f"{records[0].get('date')} unparseable)"
+                )
 
             row = _doc_to_row(doc, Shareholding)
             async with factory() as session:
