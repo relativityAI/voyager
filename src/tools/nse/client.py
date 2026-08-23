@@ -453,10 +453,15 @@ class NSEIndia:
                 result.append(f)
                 continue
 
+            # Q4 integrated filings publish the cash-flow statement only as a
+            # full-year figure; dropping it left the cash_flows table empty.
+            is_cash_flow_fact = f.get("tag", "").startswith("CashFlowsFromUsedIn")
             ctx_type = NSEIndia._get_context_ref_type(f.get("contextRef"))
 
             if ctx_type in ("quarterly", "annual"):
-                if period_tag == "quarterly" and ctx_type == "quarterly":
+                if period_tag == "quarterly" and (
+                    ctx_type == "quarterly" or is_cash_flow_fact
+                ):
                     result.append(f)
                 elif period_tag == "annual" and ctx_type == "annual":
                     result.append(f)
@@ -473,7 +478,9 @@ class NSEIndia:
                     is_quarterly = False
                     is_annual = False
 
-                if period_tag == "quarterly" and is_quarterly:
+                if period_tag == "quarterly" and (
+                    is_quarterly or (is_annual and is_cash_flow_fact)
+                ):
                     result.append(f)
                 elif period_tag == "annual" and is_annual:
                     result.append(f)

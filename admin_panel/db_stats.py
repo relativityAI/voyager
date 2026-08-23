@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, List
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.pool import QueuePool
+from sqlalchemy.engine import make_url
 
 from src.db.models import (
     IncomeStatement,
@@ -48,10 +48,13 @@ class DBError(Exception):
 def connect(url: str):
     if not url:
         raise DBError("No DATABASE_URL configured.")
+    db_url = make_url(url)
+    if db_url.drivername == "postgresql+asyncpg":
+        # This module is sync; asyncpg only works with asyncio engines.
+        db_url = db_url.set(drivername="postgresql+psycopg2")
     try:
         engine = create_engine(
-            url,
-            poolclass=QueuePool,
+            db_url,
             pool_size=2,
             max_overflow=1,
             pool_pre_ping=True,

@@ -379,3 +379,122 @@ class TestFinancialMetrics:
             "/financial-metrics?symbol=TEST&country=in&source=nse&filing_type=foo"
         )
         assert response.status_code == 400
+
+    def test_interim_quarter_carries_forward_balance_sheet(self):
+        """Interim quarters publish P&L-only XBRLs; stock fields must come
+        from the nearest older balance sheet instead of nulling out."""
+        income, balance, cashflow = [], [], []
+        # latest quarter: P&L only, no balance sheet facts at all
+        income.append({"period_end_date": "2025-09-30", "consolidated": True,
+                       "revenue_from_operations": "100000",
+                       "profit_loss_for_period": "15000",
+                       "profit_before_tax": "20000", "finance_costs": "3000"})
+        cashflow.append({"period_end_date": "2025-09-30", "consolidated": True})
+        # prior year-end: full balance sheet
+        income.append({"period_end_date": "2025-03-31", "consolidated": True})
+        balance.append({"period_end_date": "2025-03-31", "consolidated": True,
+                        "equity_share_capital": "50000", "other_equity": "150000",
+                        "assets": "500000", "borrowings_current": "20000",
+                        "cash_and_cash_equivalents": "10000"})
+        cashflow.append({"period_end_date": "2025-03-31", "consolidated": True})
+
+        data_map = {
+            "income_statements": income,
+            "balance_sheets": balance,
+            "cash_flows": [c for c in cashflow if c],
+        }
+        query_count = {"n": 0}
+
+        def _make_result(items):
+            mock_result = MagicMock()
+            mock_scalars = MagicMock()
+            mock_scalars.all.return_value = [self._make_mock_model(d) for d in items]
+            mock_result.scalars.return_value = mock_scalars
+            return mock_result
+
+        mock_session = AsyncMock()
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cm.__exit__ = AsyncMock(return_value=False)
+        self.mock_factory.return_value = MagicMock(return_value=mock_cm)
+
+        keys = list(data_map.keys())
+
+        def execute_side_effect(stmt):
+            idx = query_count["n"]
+            query_count["n"] += 1
+            return _make_result(data_map[keys[idx]]) if idx < len(keys) else _make_result([])
+
+        mock_session.execute = AsyncMock(side_effect=execute_side_effect)
+        self.mock_fetch_price.return_value = {
+            "current_price": 2500.0,
+            "shares_outstanding": 50000000,
+        }
+        self.mock_fetch_tech.return_value = {}
+
+        response = client.get("/financial-metrics?symbol=TEST&country=in&source=nse")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total_equity"] == 200000
+        assert data["book_value_per_share"] == pytest.approx(200000 / 50000000)
+        assert data["price_to_book_ratio"] is not None
+        assert data["return_on_equity"] == pytest.approx(15000 / 200000 * 100)
+        assert data["cash_and_equivalents"] == 10000
+
+    def test_missing_cash_flow_returns_null_not_zero(self):
+        self._setup_db_mock(
+            [
+                {
+                    "period_end_date": "2024-12-31",
+                    "consolidated": True,
+                    "revenue_from_operations": "100000",
+                    "profit_loss_for_period": "15000",
+                }
+            ]
+        )
+        self.mock_fetch_price.return_value = {"current_price": 2500.0}
+        self.mock_fetch_tech.return_value = {}
+
+        response = client.get("/financial-metrics?symbol=TEST&country=in&source=nse")
+        data = response.json()
+        assert data["free_cash_flow_yield"] is None
+        assert data["free_cash_flow_per_share"] is None
+
+    def test_shares_fallback_from_paid_up_and_face_value(self):
+        self._setup_db_mock(
+            [
+                {
+                    "period_end_date": "2024-12-31",
+                    "consolidated": True,
+                    "revenue_from_operations": "100000",
+                    "profit_loss_for_period": "15000",
+                    "paid_up_value_of_equity_share_capital": "500000",
+                    "face_value_of_equity_share_capital": "10",
+                    "equity_share_capital": "50000",
+                    "other_equity": "150000",
+                }
+            ]
+        )
+        # yfinance rate-limited on shares but price is known
+        self.mock_fetch_price.return_value = {"current_price": 2500.0}
+        self.mock_fetch_tech.return_value = {}
+
+        response = client.get("/financial-metrics?symbol=TEST&country=in&source=nse")
+        data = response.json()
+        # shares = 500000 / 10 = 50000 -> bvps = 200000 / 50000 = 4
+        assert data["price_to_book_ratio"] == pytest.approx(625.0)
+        assert data["book_value_per_share"] == pytest.approx(4.0)
+
+    def test_return_ratios_use_ttm_flows_for_quarterly(self):
+        records = self._make_ttm_quarterly_records()
+        self._setup_db_mock(records)
+        self.mock_fetch_price.return_value = {"current_price": 2500.0}
+        self.mock_fetch_tech.return_value = {}
+
+        response = client.get("/financial-metrics?symbol=TEST&country=in&source=nse")
+        data = response.json()
+        ttm_pat = 15 + 13 + 11 + 9  # last four quarters' PAT
+        ttm_rev = 100 + 90 + 80 + 70
+        equity = (50000 + 150000)
+        assert data["return_on_equity"] == pytest.approx(ttm_pat / equity * 100)
+        assert data["asset_turnover"] == pytest.approx(ttm_rev / 500000)
