@@ -396,6 +396,22 @@ def tab_pull_manager(client: VoyagerClient):
         current_cfg().database_url
     )
 
+    def _pick_symbol():
+        sym = st.session_state["inp_quick_pick"].split(" — ")[0]
+        existing = st.session_state.get("inp_pull_symbols", "")
+        if sym not in parse_symbols(existing):
+            st.session_state["inp_pull_symbols"] = (
+                existing + (", " if existing else "") + sym
+            )
+
+    def _merge_upload():
+        text = st.session_state["inp_pull_file"].getvalue().decode(
+            "utf-8", errors="replace"
+        )
+        fresh = parse_symbols(text)
+        existing = parse_symbols(st.session_state.get("inp_pull_symbols", ""))
+        st.session_state["inp_pull_symbols"] = ", ".join(sorted(set(existing) | set(fresh)))
+
     c1, c2 = st.columns([2, 1])
     with c1:
         st.markdown("**Symbols** (comma / space / newline separated)")
@@ -408,30 +424,17 @@ def tab_pull_manager(client: VoyagerClient):
         )
     with c2:
         st.markdown("**Quick pick**")
-        picked = st.selectbox(
+        st.selectbox(
             "Quick pick",
             [""] + symbols,
             key="inp_quick_pick",
             label_visibility="collapsed",
+            on_change=_pick_symbol,
         )
-        if picked:
-            sym = picked.split(" — ")[0]
-            existing = st.session_state.get("inp_pull_symbols", "")
-            if sym not in parse_symbols(existing):
-                st.session_state["inp_pull_symbols"] = (
-                    existing + (", " if existing else "") + sym
-                )
-                st.rerun()
-        upload = st.file_uploader(
-            "Upload list (.txt/.csv)", type=["txt", "csv"], key="inp_pull_file"
+        st.file_uploader(
+            "Upload list (.txt/.csv)", type=["txt", "csv"], key="inp_pull_file",
+            on_change=_merge_upload,
         )
-        if upload is not None:
-            text = upload.getvalue().decode("utf-8", errors="replace")
-            fresh = parse_symbols(text)
-            existing = parse_symbols(st.session_state.get("inp_pull_symbols", ""))
-            merged = sorted(set(existing) | set(fresh))
-            st.session_state["inp_pull_symbols"] = ", ".join(merged)
-            st.rerun()
 
     c1, c2, c3 = st.columns([1, 1, 2])
     filing_type = c1.selectbox(
@@ -744,7 +747,7 @@ def tab_db_stats():
 
     st.divider()
     st.markdown("**Collections**")
-    rows = db_stats.collection_table(db)
+    rows = db_stats.collection_table(engine)
     if isinstance(rows, dict) and "error" in rows:
         st.error(rows["error"])
     else:
@@ -756,7 +759,7 @@ def tab_db_stats():
             [r["collection"] for r in rows],
             key="inp_db_coll",
         )
-        detail = db_stats.collection_detail(db, chosen)
+        detail = db_stats.collection_detail(engine, chosen)
         if isinstance(detail, dict) and "error" in detail:
             st.error(detail["error"])
         else:
@@ -785,7 +788,7 @@ def tab_db_stats():
 
     st.divider()
     st.markdown("**Pull job analytics**")
-    jstats = db_stats.job_stats(db)
+    jstats = db_stats.job_stats(engine)
     if isinstance(jstats, dict) and "error" in jstats:
         st.error(jstats["error"])
     else:
@@ -817,7 +820,7 @@ def tab_db_stats():
 
     st.divider()
     st.markdown("**API key analytics**")
-    kstats = db_stats.key_stats(db)
+    kstats = db_stats.key_stats(engine)
     if isinstance(kstats, dict) and "error" in kstats:
         st.error(kstats["error"])
     else:

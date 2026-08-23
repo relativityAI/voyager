@@ -148,6 +148,7 @@ class IncomeStatement(Base):
     other_income = Column(Numeric, nullable=True)
     income = Column(Numeric, nullable=True)
     finance_costs = Column(Numeric, nullable=True)
+    depreciation_depletion_and_amortisation_expense = Column(Numeric, nullable=True)
     other_expenses = Column(Numeric, nullable=True)
     expenses = Column(Numeric, nullable=True)
     profit_before_exceptional_items_and_tax = Column(Numeric, nullable=True)
@@ -230,6 +231,7 @@ class BalanceSheet(Base):
     cash_and_cash_equivalents = Column(Numeric, nullable=True)
     bank_balance_other_than_cash_and_cash_equivalents = Column(Numeric, nullable=True)
     reserve_excluding_revaluation_reserves = Column(Numeric, nullable=True)
+    current_liabilities = Column(Numeric, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("symbol", "period_end_date", "consolidated", "source_endpoint",

@@ -242,6 +242,40 @@ def test_process_xbrl_filters_annual(nse_india):
     assert doc["diluted_earnings_loss_per_share_from_continuing_operations"] == "2.10"
 
 
+def test_process_xbrl_keeps_full_year_cash_flow_for_quarterly(nse_india):
+    """Q4 integrated filings publish only full-year cash-flow figures; the
+    quarterly filter must keep them or cash_flows ends up empty."""
+    sample = SAMPLE_XBRL.replace(
+        b"</xbrli:xbrl>",
+        b'    <in-bse-fin:CashFlowsFromUsedInOperatingActivities contextRef="FourD">4200000'
+        b"</in-bse-fin:CashFlowsFromUsedInOperatingActivities>\n"
+        b'    <in-bse-fin:CashFlowsFromUsedInOperations contextRef="YearCtx">3900000'
+        b"</in-bse-fin:CashFlowsFromUsedInOperations>\n"
+        b'    <xbrli:context id="YearCtx">\n'
+        b"        <xbrli:entity><xbrli:identifier scheme=\"http://www.bseindia.com\">TEST"
+        b"</xbrli:identifier></xbrli:entity>\n"
+        b"        <xbrli:period>\n"
+        b"            <xbrli:startDate>2025-01-01</xbrli:startDate>\n"
+        b"            <xbrli:endDate>2025-12-31</xbrli:endDate>\n"
+        b"        </xbrli:period>\n"
+        b"    </xbrli:context>\n"
+        b"</xbrli:xbrl>",
+    )
+    mock_record = {"xbrl": MOCK_XBRL_URL, "consolidated": "Consolidated"}
+    with unittest.mock.patch.object(
+        nse_india.api, "fetch_xbrl_content", return_value=sample
+    ):
+        result = nse_india.process_xbrl(mock_record, "TEST", "integrated-filing")
+    assert result is not None
+    assert result["cash_flow"] is not None
+    doc = result["cash_flow"]
+    assert doc["cash_flows_from_used_in_operating_activities"] == "4200000"
+    assert doc["cash_flows_from_used_in_operations"] == "3900000"
+    # annual-duration P&L facts must still be excluded from the income statement
+    assert doc is not result["income_statement"]
+    assert result["income_statement"]["revenue_from_operations"] == "5000000"
+
+
 def test_process_xbrl_skips_empty_after_filter(nse_india):
     """process_xbrl should return None when no annual-context or annual-duration facts match."""
     sample = (

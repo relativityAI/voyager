@@ -340,6 +340,12 @@ FINANCIAL_FIELDS: List[FinancialField] = [
         "category": "income_statement",
     },
     {
+        "id": "DepreciationDepletionAndAmortisationExpense",
+        "name": "Depreciation, Depletion and Amortisation",
+        "type": "currency",
+        "category": "income_statement",
+    },
+    {
         "id": "OtherExpenses",
         "name": "Other Expenses",
         "type": "currency",
@@ -552,6 +558,12 @@ FINANCIAL_FIELDS: List[FinancialField] = [
     {
         "id": "CashAndCashEquivalents",
         "name": "Cash & Cash Equivalents",
+        "type": "currency",
+        "category": "balance_sheet",
+    },
+    {
+        "id": "CurrentLiabilities",
+        "name": "Total Current Liabilities",
         "type": "currency",
         "category": "balance_sheet",
     },

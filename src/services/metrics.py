@@ -44,6 +44,50 @@ def _ttm_window(
     return sum(available)
 
 
+_BS_META_FIELDS = frozenset({
+    "id", "symbol", "pulled_at", "_content_hash",
+    "period_end_date", "period_start_date", "xbrl_url", "broadcast_date",
+    "consolidated", "filing_type", "measure", "entity_identifier",
+    "fiscal_period", "source_endpoint", "context_ref_type",
+})
+
+
+def _carry_forward_balance_sheets(records: list, balance_docs: dict) -> None:
+    """Interim quarters publish P&L-only XBRLs; fill missing stock fields from
+    the nearest older balance sheet (NSE reports BS instants at year-end).
+    """
+    # ponytail: fixed 380-day lookback; widen only if NSE skips a year-end filing
+    if not balance_docs:
+        return
+    bs_dates = sorted(balance_docs.keys(), reverse=True)
+    fields = [
+        k for k in next(iter(balance_docs.values()))
+        if k not in _BS_META_FIELDS
+    ]
+    for r in records:
+        d = r.get("period_end_date")
+        if not isinstance(d, str):
+            continue
+        try:
+            dt = datetime.strptime(d, "%Y-%m-%d")
+        except ValueError:
+            continue
+        for bd in bs_dates:
+            try:
+                bdt = datetime.strptime(bd, "%Y-%m-%d")
+            except ValueError:
+                continue
+            gap = (dt - bdt).days
+            if gap < 0:
+                continue
+            if gap > 380:
+                break
+            src = balance_docs[bd]
+            for k in fields:
+                if r.get(k) is None and src.get(k) is not None:
+                    r[k] = src[k]
+
+
 def _find_record(records: list, ref_date: str, offset_months: int) -> Optional[dict]:
     try:
         ref = datetime.strptime(ref_date, "%Y-%m-%d")
@@ -159,11 +203,16 @@ async def financial_metrics(
         return {}
 
     records = merged_records
+    _carry_forward_balance_sheets(records, balance_docs)
     latest = records[0]
 
     price_info = await _safe_market_fetch(fetch_price_info, symbol, source)
     current_price = _to_float(price_info.get("current_price"))
     shares_outstanding = _to_float(price_info.get("shares_outstanding"))
+    if shares_outstanding is None:
+        from src.tools.nse.valuation import compute_shares_outstanding
+
+        shares_outstanding = compute_shares_outstanding(latest)
 
     technicals = await _safe_market_fetch(fetch_technicals, symbol, source)
 
@@ -182,6 +231,7 @@ async def financial_metrics(
         "profit_before_tax",
         "profit_loss_for_period",
         "finance_costs",
+        "depreciation_depletion_and_amortisation_expense",
         "cash_flows_from_used_in_operating_activities",
         "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations",
     ]
@@ -200,6 +250,7 @@ async def financial_metrics(
     ttm_pbt = ttm_values.get("profit_before_tax")
     ttm_fc = ttm_values.get("finance_costs")
     ttm_ocf = ttm_values.get("cash_flows_from_used_in_operating_activities")
+    ttm_dep = ttm_values.get("depreciation_depletion_and_amortisation_expense")
     ttm_eps = ttm_values.get(
         "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations"
     )
@@ -210,12 +261,13 @@ async def financial_metrics(
     )
 
     if is_ttm:
-        rev, pbt, pat, fc, ocf, eps = [ttm_values[f] for f in flow_fields]
+        rev, pbt, pat, fc, dep, ocf, eps = [ttm_values[f] for f in flow_fields]
     else:
         rev = _to_float(latest.get("revenue_from_operations"))
         pbt = _to_float(latest.get("profit_before_tax"))
         pat = _to_float(latest.get("profit_loss_for_period"))
         fc = _to_float(latest.get("finance_costs"))
+        dep = _to_float(latest.get("depreciation_depletion_and_amortisation_expense"))
         ocf = _to_float(latest.get("cash_flows_from_used_in_operating_activities"))
         eps = _to_float(
             latest.get(
@@ -385,6 +437,7 @@ async def financial_metrics(
     val_rev = ttm_rev if ttm_rev is not None else rev
     val_ebit = ttm_ebit if ttm_ebit is not None else ebit
     val_ocf = ttm_ocf if ttm_ocf is not None else ocf
+    val_dep = ttm_dep if ttm_dep is not None else dep
     result["price_to_earnings_ratio"] = (
         _safe_div(current_price, val_eps)
         if current_price is not None and val_eps is not None and val_eps != 0
@@ -409,9 +462,9 @@ async def financial_metrics(
     result["enterprise_value_to_revenue_ratio"] = (
         _safe_div(enterprise_value, val_rev) if enterprise_value is not None else None
     )
-    fcf = val_ocf or 0
+    fcf = val_ocf
     result["free_cash_flow_yield"] = (
-        _pct(_safe_div(fcf, market_cap)) if market_cap else None
+        _pct(_safe_div(fcf, market_cap)) if fcf is not None and market_cap else None
     )
     result["peg_ratio"] = (
         _safe_div(pe, peg_growth)
@@ -420,19 +473,30 @@ async def financial_metrics(
     )
 
     result["gross_margin"] = None
+    result["ebitda_margin"] = (
+        _pct(_safe_div(val_ebit + val_dep, val_rev))
+        if val_ebit is not None and val_dep is not None and val_rev
+        else None
+    )
     result["operating_margin"] = _pct(_safe_div(ebit, rev)) if rev else None
     result["net_margin"] = _pct(_safe_div(pat, rev)) if rev else None
+    # Return ratios compare TTM flows against point-in-time stocks; a single
+    # quarter's PAT over equity understates ROE ~4x.
+    ret_pat = ttm_pat if ttm_pat is not None else pat
+    ret_ebit = ttm_ebit if ttm_ebit is not None else ebit
     result["return_on_equity"] = (
-        _pct(_safe_div(pat, total_equity)) if total_equity else None
+        _pct(_safe_div(ret_pat, total_equity)) if total_equity else None
     )
-    result["return_on_assets"] = _pct(_safe_div(pat, assets_t)) if assets_t else None
+    result["return_on_assets"] = (
+        _pct(_safe_div(ret_pat, assets_t)) if assets_t else None
+    )
     result["return_on_invested_capital"] = (
-        _pct(_safe_div(ebit, (assets_t or 0) - (ncl or 0)))
-        if ebit is not None and assets_t is not None
+        _pct(_safe_div(ret_ebit, (assets_t or 0) - (ncl or 0)))
+        if ret_ebit is not None and assets_t is not None
         else None
     )
 
-    result["asset_turnover"] = _safe_div(rev, assets_t) if assets_t else None
+    result["asset_turnover"] = _safe_div(val_rev, assets_t) if assets_t else None
     result["inventory_turnover"] = None
     result["receivables_turnover"] = None
     result["days_sales_outstanding"] = None
@@ -441,9 +505,13 @@ async def financial_metrics(
 
     result["current_ratio"] = None
     result["quick_ratio"] = None
-    result["cash_ratio"] = _safe_div(cash_eq, borrowings_c) if borrowings_c else None
+    # True cash/OCF ratios use current liabilities; fall back to current
+    # borrowings for older filings that don't carry the CurrentLiabilities tag.
+    current_liab = _to_float(latest.get("current_liabilities"))
+    liq_base = current_liab if current_liab else borrowings_c
+    result["cash_ratio"] = _safe_div(cash_eq, liq_base) if liq_base else None
     result["operating_cash_flow_ratio"] = (
-        _safe_div(ocf, borrowings_c) if borrowings_c else None
+        _safe_div(val_ocf, liq_base) if val_ocf is not None and liq_base else None
     )
 
     result["debt_to_equity"] = (
@@ -465,7 +533,9 @@ async def financial_metrics(
     result["earnings_per_share"] = eps
     result["book_value_per_share"] = bvps
     result["free_cash_flow_per_share"] = (
-        _safe_div(fcf, shares_outstanding) if shares_outstanding else None
+        _safe_div(fcf, shares_outstanding)
+        if fcf is not None and shares_outstanding
+        else None
     )
 
     result["payout_ratio"] = None

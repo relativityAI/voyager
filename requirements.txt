@@ -17,6 +17,7 @@ yfinance==1.4.1
 # PostgreSQL (async via asyncpg, ORM via SQLAlchemy)
 sqlalchemy[asyncio]>=2.0.35
 asyncpg>=0.30.0
+psycopg2-binary>=2.9.9
 alembic>=1.14.0
 
 # HTTP / web scraping
