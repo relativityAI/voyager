@@ -354,3 +354,155 @@ class NSEAnnualReport(Base):
     symbol = Column(Text, nullable=False)
     file_name = Column(Text, nullable=True)
     raw_data = Column(JSONB, nullable=True)
+
+
+class Setting(Base):
+    """Key-value settings table (active pipeline, etc.). Editable by admin."""
+
+    __tablename__ = "settings"
+
+    key = Column(Text, primary_key=True)
+    value = Column(JSONB, nullable=False, default=dict)
+    updated_at = Column(DateTime, nullable=False, default=_utcnow)
+
+
+class Instrument(Base):
+    """A tradable security across exchanges/markets (NSE, BSE, SEC, ...)."""
+
+    __tablename__ = "instruments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(Text, nullable=False)
+    name = Column(Text, nullable=True)
+    country = Column(Text, default="in")
+    source = Column(Text, default="NSE")
+    exchange = Column(Text, nullable=True)
+    ticker = Column(Text, nullable=True)
+    isin = Column(Text, nullable=True)
+    cik = Column(Text, nullable=True)
+    figi = Column(Text, nullable=True)
+    currency = Column(Text, nullable=True)
+    listing_date = Column(Date, nullable=True)
+    is_active = Column(Boolean, default=True)
+    extra_data = Column(JSONB, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=_utcnow)
+    updated_at = Column(DateTime, nullable=False, default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "source", "country", name="uq_instrument"),
+    )
+
+    def to_dict(self) -> dict:
+        return {c.key: getattr(self, c.key) for c in self.__table__.columns}
+
+
+class Statement(Base):
+    """A normalized financial document (income/balance/cash-flow/shareholding).
+
+    Generic across markets: SEC 10-K / 10-Q map to filing_type='10k'/'10q'.
+    """
+
+    __tablename__ = "statements"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    instrument_id = Column(Integer, nullable=False)
+    source = Column(Text, default="nse")
+    statement_type = Column(Text, nullable=False)  # income|balance|cash_flow|shareholding
+    filing_type = Column(Text, nullable=False)     # quarterly|annual|10k|10q|...
+    period_start_date = Column(Date, nullable=True)
+    period_end_date = Column(Date, nullable=True)
+    fiscal_year = Column(Integer, nullable=True)
+    fiscal_period = Column(Text, nullable=True)
+    currency = Column(Text, nullable=True)
+    consolidated = Column(Boolean, nullable=False)
+    document_url = Column(Text, nullable=True)
+    source_endpoint = Column(Text, nullable=True)
+    fetched_at = Column(DateTime, nullable=True)
+    content_hash = Column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "instrument_id", "statement_type", "filing_type", "period_end_date",
+            "consolidated", "document_url", name="uq_statement",
+        ),
+    )
+
+    def to_dict(self) -> dict:
+        result = {}
+        for c in self.__table__.columns:
+            val = getattr(self, c.key)
+            if isinstance(val, (datetime, date)):
+                val = val.isoformat()
+            result[c.key] = val
+        return result
+
+
+class Fact(Base):
+    """A single named metric value scoped to a Statement.
+
+    The Fact table is the generic, market-agnostic measure store: NSE tags and
+    SEC concepts both map onto `concept` keys, so all markets share a query
+    surface without per-market tables.
+    """
+
+    __tablename__ = "facts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    statement_id = Column(Integer, nullable=False)
+    concept = Column(Text, nullable=False)
+    label = Column(Text, nullable=True)
+    amount = Column(Numeric, nullable=True)
+    unit = Column(Text, nullable=True)
+    aspect = Column(Text, nullable=True)
+    context_ref = Column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("statement_id", "concept", "aspect", name="uq_fact"),
+    )
+
+    def to_dict(self) -> dict:
+        result = {}
+        for c in self.__table__.columns:
+            val = getattr(self, c.key)
+            if isinstance(val, (datetime, date)):
+                val = val.isoformat()
+            result[c.key] = val
+        return result
+
+
+class MarketDataPoint(Base):
+    """One day of OHLC/volume (or an intraday point) for a symbol."""
+
+    __tablename__ = "market_data"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(Text, nullable=False)
+    exchange = Column(Text, default="NSE")
+    trade_date = Column(Date, nullable=False)
+    open = Column(Numeric, nullable=True)
+    high = Column(Numeric, nullable=True)
+    low = Column(Numeric, nullable=True)
+    close = Column(Numeric, nullable=True)
+    adjusted_close = Column(Numeric, nullable=True)
+    volume = Column(BigInteger, nullable=True)
+    delivery_percentage = Column(Numeric, nullable=True)
+    turnover = Column(Numeric, nullable=True)
+    source = Column(Text, default="nse")
+    interval = Column(Text, default="EOD")
+    fetched_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "symbol", "exchange", "trade_date", "source", "interval",
+            name="uq_market_data",
+        ),
+    )
+
+    def to_dict(self) -> dict:
+        result = {}
+        for c in self.__table__.columns:
+            val = getattr(self, c.key)
+            if isinstance(val, (datetime, date)):
+                val = val.isoformat()
+            result[c.key] = val
+        return result

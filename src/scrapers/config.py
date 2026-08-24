@@ -13,14 +13,11 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from src.scrapers.cookies import create_cookie_store
 from src.scrapers.fingerprint import Fingerprint, get_impersonate
 from src.scrapers.throttle import get_throttle
-
-if TYPE_CHECKING:
-    from src.scrapers.proxy_pool import ProxyPool
 
 
 @dataclass
@@ -42,7 +39,6 @@ class SourceConfig:
     cookie_store: str = "file"
     cookie_path: Optional[str] = None
     proxy: Optional[str] = None
-    proxy_pool: Optional["ProxyPool"] = None
     extra_headers: Dict[str, str] = field(default_factory=dict)
 
 

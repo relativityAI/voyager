@@ -112,9 +112,18 @@ async def _run_job(job: PullJobModel) -> None:
         await session.commit()
 
         try:
-            from src.services import pull_nse_data
+            from src.services import pull_nse_data, pull_market_data
 
             pull_result = await pull_nse_data(db_job.symbol, db_job.filing_type, db_job.refresh)
+
+            # Market data is a best-effort add-on; never break the main pull.
+            try:
+                market_result = await pull_market_data(db_job.symbol)
+                pull_result["market_data"] = market_result
+            except Exception as market_exc:
+                logger.warning(f"Market data pull failed for {db_job.symbol}: {market_exc}")
+                pull_result["market_data"] = {"error": str(market_exc)}
+
             db_job.result = pull_result
             db_job.status = "done"
         except Exception as exc:
