@@ -9,11 +9,12 @@ Referer (get-quotes page): option-chain is only a cookie farm; Voyager's
 product is financials/XBRL, and NSE's API expects the get-quotes page as the
 in-page Referer.
 
-Proxy strategy (S-04):
-  - The scraping pipeline decides the proxy: Pipeline 1 (direct) uses the
-    optional static ``NSE_PROXY`` env var; Pipeline 2 (residential) routes
-    through a configured residential gateway. The active pipeline is chosen
-    via settings / ``SCRAPING_PIPELINE`` (see ``src/scrapers/pipeline.py``).
+Proxy strategy (D-11):
+  - ``NSE_PROXY`` env var: static proxy, always used when set.
+  - Free proxy pool: used when ``NSE_PROXY`` is not set AND
+    ``NSE_USE_FREE_PROXIES`` is true (default). On Render, the pool is
+    tried first. Locally, direct connection is tried first; the pool is
+    used as fallback on 403/blocked responses.
 """
 
 from __future__ import annotations
@@ -44,11 +45,6 @@ NSE_ENDPOINTS = {
     "integrated-filing": "https://www.nseindia.com/api/integrated-filing-results?&symbol={symbol}",
 }
 
-NSE_MARKET_ENDPOINTS = {
-    "quote-equity": "https://www.nseindia.com/api/quote-equity?symbol={symbol}",
-    "historical-equity": "https://www.nseindia.com/api/historical/cm/equity?symbol={symbol}&from={from_date}&to={to_date}&select=normal",
-}
-
 
 def _env_float(name: str, default: float) -> float:
     try:
@@ -68,10 +64,23 @@ def build_nse_config(calls_per_second: Optional[float] = None) -> SourceConfig:
     ``calls_per_second`` (passed by callers like ``NSEIndia``) takes
     precedence; otherwise ``NSE_CALLS_PER_SECOND`` is used.
 
-    A static ``NSE_PROXY`` env proxy is carried as ``config.proxy`` and used
-    by the direct pipeline (S-04).
+    Proxy resolution order:
+      1. ``NSE_PROXY`` env var → static proxy (always wins).
+      2. ``NSE_USE_FREE_PROXIES`` env var (default ``true``) → proxy pool.
+         On Render the pool is used directly. Locally it's a fallback.
     """
     static_proxy = os.getenv("NSE_PROXY")
+    use_free_proxies = os.getenv("NSE_USE_FREE_PROXIES", "true").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
+
+    pool = None
+    if not static_proxy and use_free_proxies:
+        from src.scrapers.proxy_pool import get_proxy_pool
+
+        pool = get_proxy_pool()
 
     return SourceConfig(
         name="nse",
@@ -90,6 +99,7 @@ def build_nse_config(calls_per_second: Optional[float] = None) -> SourceConfig:
         cookie_store=os.getenv("NSE_COOKIE_STORE", "file"),
         cookie_path=os.getenv("NSE_COOKIE_PATH"),
         proxy=static_proxy,
+        proxy_pool=pool,
     )
 
 

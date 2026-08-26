@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from __version__ import __version__
-from src.auth import APIKey, require_admin_key, require_api_key, require_scope
+from src.auth import APIKey, require_api_key, require_scope
 from src.auth.routes import router as admin_router
 from src.db.connection import init_db, ping_database
 from src.jobs import (
@@ -35,14 +35,11 @@ from src.services import (
     financial_metrics,
     get_announcements,
     get_financials,
-    get_market_data,
     get_pull_status,
     get_shareholdings,
     get_statement_data,
     list_category,
 )
-from src.services.settings import get_setting, load_settings_from_db, set_setting
-from src.scrapers.pipeline import get_active_pipeline, list_pipelines, set_active_pipeline
 
 load_dotenv()
 
@@ -56,10 +53,6 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing database...")
     await init_db()
     await reap_stale_jobs()
-    try:
-        await load_settings_from_db()
-    except Exception as exc:
-        logger.warning(f"Failed to load settings from DB: {exc}")
     yield
 
 
@@ -80,50 +73,6 @@ if _cors_origins:
 app.add_middleware(PrometheusMiddleware)
 
 app.include_router(admin_router)
-
-
-@app.get(
-    "/admin/pipelines",
-    summary="List scraping pipelines and the active one",
-    dependencies=[Depends(require_admin_key)],
-)
-async def list_pipelines_endpoint():
-    return {
-        "pipelines": list_pipelines(),
-        "active": get_active_pipeline(),
-    }
-
-
-@app.put(
-    "/admin/pipelines/active",
-    summary="Set the active scraping pipeline",
-    dependencies=[Depends(require_admin_key)],
-)
-async def set_active_pipeline_endpoint(
-    name: str,
-    proxy_url: Optional[str] = Query(None, description="Residential proxy URL"),
-    proxy_host: Optional[str] = Query(None, description="Residential proxy host"),
-    proxy_port: Optional[int] = Query(None, description="Residential proxy port"),
-    proxy_user: Optional[str] = Query(None, description="Residential proxy username"),
-    proxy_pass: Optional[str] = Query(None, description="Residential proxy password"),
-):
-    config = {}
-    if proxy_url:
-        config["url"] = proxy_url
-    if proxy_host:
-        config["host"] = proxy_host
-    if proxy_port:
-        config["port"] = proxy_port
-    if proxy_user:
-        config["username"] = proxy_user
-    if proxy_pass:
-        config["password"] = proxy_pass
-    try:
-        set_active_pipeline(name, config)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    await set_setting("scraping.active_pipeline", {"name": name, "config": config})
-    return {"active": get_active_pipeline()}
 
 
 @app.exception_handler(ServiceError)
@@ -389,20 +338,6 @@ async def shareholdings(
     source: str = Query("nse"),
 ):
     return await get_shareholdings(symbol, country, source)
-
-
-@app.get(
-    "/market-data",
-    summary="Fetch daily OHLCV price/volume history for a stock",
-    dependencies=[Depends(require_api_key)],
-)
-async def market_data(
-    symbol: str,
-    country: str = Query("in"),
-    source: str = Query("nse"),
-    limit: int = Query(0, ge=0, description="Number of rows (0 = all)."),
-):
-    return await get_market_data(symbol, "NSE" if source.upper() == "NSE" else source, limit)
 
 
 @app.get(

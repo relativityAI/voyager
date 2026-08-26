@@ -88,7 +88,6 @@ from src.scrapers.session import (
     SessionExhausted,
     StealthSession,
 )
-from src.scrapers.pipeline import proxy_resolver_for
 from src.scrapers.sources.nse import (
     NSE_ENDPOINTS as ENDPOINTS,
 )
@@ -203,7 +202,7 @@ class NSEApiClient:
         self.logger = logging.getLogger(__name__)
 
         config = build_nse_config(calls_per_second)
-        self.session = StealthSession(config, proxy_resolver=proxy_resolver_for(config))
+        self.session = StealthSession(config)
 
     def _referer_for(self, symbol: str) -> str:
         """Real NSE page used as the in-page Referer for API calls (D-05)."""
