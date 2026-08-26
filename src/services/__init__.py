@@ -7,6 +7,7 @@ from ._common import (
     UpstreamError,
 )
 from .lists import list_category
+from .market import get_latest_quote, get_market_data, pull_market_data
 from .metrics import financial_metrics
 from .nse import (
     get_announcements,
@@ -34,4 +35,7 @@ __all__ = [
     "get_announcements",
     "get_shareholdings",
     "nse_scraper",
+    "get_latest_quote",
+    "get_market_data",
+    "pull_market_data",
 ]
