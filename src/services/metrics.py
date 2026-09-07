@@ -6,9 +6,9 @@ from loguru import logger
 from sqlalchemy import select
 
 from src.db.engine import get_session_factory
-from src.db.models import IncomeStatement, BalanceSheet, CashFlow
+from src.db.models import BalanceSheet, CashFlow, IncomeStatement, NSEStockMetadata
 
-from ._common import InvalidRequestError, UnsupportedSourceError
+from ._common import InvalidRequestError, _validate_source
 
 
 def _to_float(v) -> Optional[float]:
@@ -130,18 +130,14 @@ async def _safe_market_fetch(func, symbol: str, source: str) -> Dict[str, Any]:
 
 async def financial_metrics(
     symbol: str,
-    country: str = "in",
+    country: Optional[str] = None,
     source: str = "nse",
     consolidated: bool = True,
     filing_type: str = "quarterly",
 ) -> Dict[str, Any]:
     symbol = symbol.upper()
-    source = source.upper()
+    _, source = _validate_source(country, source)
 
-    if country.lower() != "in" or source != "NSE":
-        raise UnsupportedSourceError(
-            f"Source '{source}' for country '{country}' is not yet supported"
-        )
     if filing_type not in ("quarterly", "annual", "ttm"):
         raise InvalidRequestError("filing_type must be 'quarterly', 'annual', or 'ttm'")
 
@@ -155,8 +151,19 @@ async def financial_metrics(
 
     db_ft = "quarterly" if filing_type == "ttm" else filing_type
 
+    yf_exchange = source
     factory = get_session_factory()
     async with factory() as session:
+        if source == "SEC":
+            result = await session.execute(
+                select(NSEStockMetadata).where(
+                    NSEStockMetadata.symbol == symbol,
+                    NSEStockMetadata.source == "SEC",
+                )
+            )
+            meta = result.scalar_one_or_none()
+            yf_exchange = (meta.exchange or "NASDAQ") if meta else "NASDAQ"
+
         for model_class, dest in (
             (IncomeStatement, income_docs),
             (BalanceSheet, balance_docs),
@@ -167,6 +174,7 @@ async def financial_metrics(
                     model_class.symbol == symbol,
                     model_class.consolidated == is_cons,
                     model_class.filing_type == db_ft,
+                    model_class.source == source,
                 ).order_by(model_class.period_end_date.desc())
             )
             for doc in result.scalars().all():
@@ -206,7 +214,7 @@ async def financial_metrics(
     _carry_forward_balance_sheets(records, balance_docs)
     latest = records[0]
 
-    price_info = await _safe_market_fetch(fetch_price_info, symbol, source)
+    price_info = await _safe_market_fetch(fetch_price_info, symbol, yf_exchange)
     current_price = _to_float(price_info.get("current_price"))
     shares_outstanding = _to_float(price_info.get("shares_outstanding"))
     if shares_outstanding is None:
@@ -214,7 +222,7 @@ async def financial_metrics(
 
         shares_outstanding = compute_shares_outstanding(latest)
 
-    technicals = await _safe_market_fetch(fetch_technicals, symbol, source)
+    technicals = await _safe_market_fetch(fetch_technicals, symbol, yf_exchange)
 
     assets_t = _to_float(latest.get("assets"))
     equity_sc = _to_float(latest.get("equity_share_capital"))

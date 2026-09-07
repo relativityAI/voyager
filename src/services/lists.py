@@ -1,8 +1,8 @@
 import csv
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
-from ._common import InvalidRequestError
+from ._common import InvalidRequestError, _validate_source
 
 ASSETS_DIR = os.path.join(os.path.dirname(__file__), "..", "assets")
 SOURCES_CSV = os.path.join(ASSETS_DIR, "sources.csv")
@@ -27,8 +27,9 @@ LIST_PROVIDERS: Dict[str, Any] = {
 
 
 def list_category(
-    category: str = "sources", country: str = "in", source: str = "nse"
+    category: str = "sources", country: Optional[str] = None, source: str = "nse"
 ) -> Dict[str, Any]:
+    country, source = _validate_source(country, source)
     category = category.lower()
     if category not in LIST_PROVIDERS:
         raise InvalidRequestError(
@@ -37,6 +38,6 @@ def list_category(
     return {
         "category": category,
         "country": country,
-        "source": source.upper(),
+        "source": source,
         "data": LIST_PROVIDERS[category](),
     }

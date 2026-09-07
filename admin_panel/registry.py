@@ -55,8 +55,7 @@ PUBLIC: List[Endpoint] = [
 def _symbol_params() -> List[Dict[str, Any]]:
     return [
         {"name": "symbol", "type": "symbol", "required": True},
-        {"name": "country", "type": "text", "default": "in"},
-        {"name": "source", "type": "select", "default": "nse", "options": ["nse"]},
+        {"name": "source", "type": "select", "default": "nse", "options": ["nse", "sec"]},
     ]
 
 
@@ -87,8 +86,7 @@ LIST: List[Endpoint] = [
         "params": [
             {"name": "category", "type": "select", "default": "sources",
              "options": ["sources", "countries", "industries", "sectors", "indices"]},
-            {"name": "country", "type": "text", "default": "in"},
-            {"name": "source", "type": "select", "default": "nse", "options": ["nse"]},
+            {"name": "source", "type": "select", "default": "nse", "options": ["nse", "sec"]},
         ],
     },
 ]
@@ -155,7 +153,7 @@ DATA: List[Endpoint] = [
         "method": "GET",
         "path": "/announcements",
         "auth": "key",
-        "description": "Corporate announcements from NSE.",
+        "description": "Corporate announcements: NSE announcements, or 8-K filings for SEC/EDGAR.",
         "params": _symbol_params() + [
             {"name": "market", "type": "select", "default": "equities",
              "options": ["equities", "sme"]},
@@ -167,7 +165,7 @@ DATA: List[Endpoint] = [
         "method": "GET",
         "path": "/shareholdings",
         "auth": "key",
-        "description": "Latest promoter / FII / DII / public holding pattern.",
+        "description": "Latest promoter / FII / DII / public holding (NSE), or a US-specific insider-ownership schema (SEC).",
         "params": _symbol_params(),
     },
 ]
@@ -182,8 +180,7 @@ PULLS: List[Endpoint] = [
         "description": "Submit an async XBRL pull job (returns 202 + job_id).",
         "params": [
             {"name": "symbol", "type": "symbol", "required": True},
-            {"name": "country", "type": "text", "default": "in"},
-            {"name": "source", "type": "select", "default": "nse", "options": ["nse"]},
+            {"name": "source", "type": "select", "default": "nse", "options": ["nse", "sec"]},
             {"name": "filing_type", "type": "select", "default": "quarterly",
              "options": ["quarterly", "annual"]},
             {"name": "refresh", "type": "bool", "default": False,

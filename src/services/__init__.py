@@ -17,6 +17,11 @@ from .nse import (
     nse_scraper,
     pull_nse_data,
 )
+from .sec import (
+    get_announcements_us,
+    get_shareholdings_us,
+    pull_sec_data,
+)
 
 __all__ = [
     "ServiceError",
@@ -27,11 +32,14 @@ __all__ = [
     "UpstreamError",
     "list_category",
     "pull_nse_data",
+    "pull_sec_data",
     "get_financials",
     "get_statement_data",
     "get_pull_status",
     "financial_metrics",
     "get_announcements",
+    "get_announcements_us",
     "get_shareholdings",
+    "get_shareholdings_us",
     "nse_scraper",
 ]

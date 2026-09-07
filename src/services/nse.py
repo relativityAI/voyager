@@ -1,20 +1,20 @@
 import asyncio
 import os
 import time
-from datetime import datetime, date, timedelta
-from typing import Any, Dict, Optional
+from datetime import date, datetime, timedelta
+from typing import Any, Dict, Optional, Tuple
 
 from loguru import logger
-from sqlalchemy import select, func, update, and_
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.db.engine import get_session_factory
 from src.db.models import (
-    IncomeStatement,
     BalanceSheet,
     CashFlow,
-    Shareholding,
+    IncomeStatement,
     NSEStockMetadata,
+    Shareholding,
 )
 from src.tools.nse.client import ENDPOINTS, CookieError, NSEIndia
 
@@ -26,6 +26,7 @@ from ._common import (
     UpstreamError,
     _filter_priority_fields,
     _load_priority_metrics,
+    _validate_source,
 )
 
 STATEMENT_COLLECTIONS: Dict[str, str] = {
@@ -414,26 +415,21 @@ async def pull_nse_data(
     }
 
 
-def _validate_nse(country: str, source: str) -> None:
-    if country.lower() != "in" or source != "NSE":
-        raise UnsupportedSourceError(
-            f"Source '{source}' for country '{country}' is not yet supported"
-        )
-    return source.upper()
+def _validate_nse(country: Optional[str], source: str) -> Tuple[str, str]:
+    """NSE pulls and reads; SEC has its own module (src.services.sec)."""
+    return _validate_source(country, source)
 
 
 async def get_financials(
     symbol: str,
-    country: str = "in",
+    country: Optional[str] = None,
     source: str = "nse",
     consolidated: bool = True,
     filing_type: str = "quarterly",
     all_fields: bool = False,
 ) -> Dict[str, Any]:
     symbol = symbol.upper()
-    source = source.upper()
-
-    _validate_nse(country, source)
+    country, source = _validate_nse(country, source)
 
     priority_config = _load_priority_metrics()
     all_priority = set()
@@ -450,6 +446,7 @@ async def get_financials(
                     model_class.symbol == symbol,
                     model_class.consolidated == consolidated,
                     model_class.filing_type == filing_type,
+                    model_class.source == source,
                 ).order_by(model_class.period_end_date.desc()).limit(1)
             )
             doc = result.scalar_one_or_none()
@@ -469,7 +466,7 @@ async def get_financials(
 async def get_statement_data(
     route_name: str,
     symbol: str,
-    country: str = "in",
+    country: Optional[str] = None,
     source: str = "nse",
     consolidated: Optional[bool] = True,
     filing_type: str = "quarterly",
@@ -477,9 +474,7 @@ async def get_statement_data(
     all_fields: bool = False,
 ) -> Dict[str, Any]:
     symbol = symbol.upper()
-    source = source.upper()
-
-    _validate_nse(country, source)
+    country, source = _validate_nse(country, source)
 
     coll_name = ROUTE_TO_COLLECTION.get(route_name)
     if not coll_name:
@@ -495,6 +490,7 @@ async def get_statement_data(
         stmt = select(model_class).where(
             model_class.symbol == symbol,
             model_class.filing_type == filing_type,
+            model_class.source == source,
         )
         if consolidated is not None:
             stmt = stmt.where(model_class.consolidated == consolidated)
@@ -510,20 +506,18 @@ async def get_statement_data(
 
 
 async def get_pull_status(
-    symbol: str, country: str = "in", source: str = "nse"
+    symbol: str, country: Optional[str] = None, source: str = "nse"
 ) -> Dict[str, Any]:
     symbol = symbol.upper()
-    source = source.upper()
-
-    if country.lower() != "in" or source != "NSE":
-        raise UnsupportedSourceError(
-            f"Source '{source}' for country '{country}' is not yet supported"
-        )
+    country, source = _validate_nse(country, source)
 
     factory = get_session_factory()
     async with factory() as session:
         result = await session.execute(
-            select(NSEStockMetadata).where(NSEStockMetadata.symbol == symbol)
+            select(NSEStockMetadata).where(
+                NSEStockMetadata.symbol == symbol,
+                NSEStockMetadata.source == source,
+            )
         )
         meta = result.scalar_one_or_none()
         if not meta:
@@ -535,7 +529,8 @@ async def get_pull_status(
             if model_class:
                 count_result = await session.execute(
                     select(func.count()).select_from(model_class).where(
-                        model_class.symbol == symbol
+                        model_class.symbol == symbol,
+                        model_class.source == source,
                     )
                 )
                 record_counts[label] = count_result.scalar() or 0
@@ -552,7 +547,10 @@ async def get_pull_status(
                         func.min(model_class.period_end_date).label("min_date"),
                         func.max(model_class.period_end_date).label("max_date"),
                     )
-                    .where(model_class.symbol == symbol)
+                    .where(
+                        model_class.symbol == symbol,
+                        model_class.source == source,
+                    )
                     .group_by(model_class.consolidated)
                 )
                 groups = group_result.all()
@@ -590,17 +588,17 @@ async def get_pull_status(
 
 async def get_announcements(
     symbol: str,
-    country: str = "in",
+    country: Optional[str] = None,
     source: str = "nse",
     market: str = "equities",
 ) -> Dict[str, Any]:
     symbol = symbol.upper()
-    source = source.upper()
+    country, source = _validate_nse(country, source)
 
-    if country.lower() != "in" or source != "NSE":
-        raise UnsupportedSourceError(
-            f"Source '{source}' for country '{country}' is not yet supported"
-        )
+    if source == "SEC":
+        from .sec import get_announcements_us
+
+        return await get_announcements_us(symbol, country, source, market)
 
     ep_key = f"announcements-{market}"
     if ep_key not in ENDPOINTS:
@@ -653,15 +651,15 @@ _SH_FRESHNESS = timedelta(days=7)
 
 
 async def get_shareholdings(
-    symbol: str, country: str = "in", source: str = "nse"
+    symbol: str, country: Optional[str] = None, source: str = "nse"
 ) -> Dict[str, Any]:
     symbol = symbol.upper()
-    source = source.upper()
+    country, source = _validate_nse(country, source)
 
-    if country.lower() != "in" or source != "NSE":
-        raise UnsupportedSourceError(
-            f"Source '{source}' for country '{country}' is not yet supported"
-        )
+    if source == "SEC":
+        from .sec import get_shareholdings_us
+
+        return await get_shareholdings_us(symbol, country, source)
 
     factory = get_session_factory()
     async with factory() as session:

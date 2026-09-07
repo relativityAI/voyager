@@ -23,7 +23,7 @@ from src.auth.security import require_admin_key
 from src.db.models import APIKey as APIKeyModel
 from src.utils.helpers import utcnow
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+router = APIRouter(prefix="/admin", tags=["Admin"])
 
 
 class CreateKeyBody(BaseModel):
