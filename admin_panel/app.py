@@ -234,6 +234,7 @@ def job_rows(client: VoyagerClient, limit: int = 50) -> tuple[list, str | None]:
         rows.append(
             {
                 "symbol": j.get("symbol"),
+                "source": j.get("source", "nse"),
                 "filing_type": j.get("filing_type"),
                 "refresh": j.get("refresh", False),
                 "status": j.get("status"),
@@ -390,7 +391,7 @@ def tab_overview(client: VoyagerClient):
 
 def tab_pull_manager(client: VoyagerClient):
     st.subheader("Pull Manager")
-    st.caption("Submit async NSE XBRL pulls. Requires an API key with `data:write` scope.")
+    st.caption("Submit async XBRL pulls (NSE or SEC/EDGAR). Requires a `data:write` API key.")
 
     symbols = load_symbol_index(
         current_cfg().database_url
@@ -436,12 +437,10 @@ def tab_pull_manager(client: VoyagerClient):
             on_change=_merge_upload,
         )
 
-    c1, c2, c3 = st.columns([1, 1, 2])
-    filing_type = c1.selectbox(
-        "filing_type", ["quarterly", "annual"], key="inp_pull_ft"
-    )
+    c1, c2, c3 = st.columns([1, 1, 1])
+    filing_type = c1.selectbox("filing_type", ["quarterly", "annual"], key="inp_pull_ft")
     refresh = c2.checkbox("refresh (re-parse existing)", key="inp_pull_refresh")
-    c3.text_input("country / source", value="in / nse", disabled=True)
+    source = c3.selectbox("source", ["nse", "sec"], key="inp_pull_source")
 
     if st.button("🚀 Start pulls", type="primary", width='stretch'):
         symbols_to_pull = parse_symbols(st.session_state.get("inp_pull_symbols", ""))
@@ -457,8 +456,7 @@ def tab_pull_manager(client: VoyagerClient):
                             "/pull",
                             params={
                                 "symbol": sym,
-                                "country": "in",
-                                "source": "nse",
+                                "source": source,
                                 "filing_type": filing_type,
                                 "refresh": refresh,
                             },

@@ -1,6 +1,6 @@
 # Voyager
 
-A financial data API for Indian equities (NSE) that turns exchange XBRL filings into investment metrics.
+A financial data API for Indian equities (NSE) and US equities (SEC) that turns exchange XBRL filings into investment metrics.
 
 ## What you get
 
@@ -20,7 +20,7 @@ Point it at a stock symbol and Voyager returns:
 
 **Shareholding** — promoter, FII, DII, and public holding from the latest filing.
 
-**Raw statements** — the actual quarterly/annual income statements, balance sheets, and cash flows pulled from NSE filings.
+**Raw statements** — the actual quarterly/annual income statements, balance sheets, and cash flows pulled from NSE or SEC (EDGAR) filings.
 
 ## Quick start
 
@@ -165,6 +165,9 @@ Configure via `.env` (copy from `.env.example`):
 | `SENTRY_DSN` | *(unset)* | Enables Sentry error tracking when set |
 | `CORS_ORIGINS` | *(unset)* | Comma-separated list; CORS middleware only added when set |
 | `LOG_FILE_SINK` | *(unset)* | When set, logs also go to this file path |
+| `SEC_IDENTITY` | *(unset)* | `"Name email"` required for SEC pulls (EDGAR UA declaration; throttled to 10 req/s internally) |
+| `EDGAR_MAX_ANNUAL_FILINGS` | `8` | 10-K filings parsed per SEC pull (annual statements + fiscal-year-end quarter derivation) |
+| `EDGAR_MAX_QUARTERLY_FILINGS` | `40` | 10-Q filings parsed per quarterly SEC pull |
 | `ENVIRONMENT` | `development` | `production` disables uvicorn reload |
 | `WEB_CONCURRENCY` | `2` | gunicorn workers (Render free: `1`) |
 
@@ -194,7 +197,14 @@ Data endpoints require an API key via the `X-API-Key` (or `Authorization: Bearer
 | `POST /admin/keys/{prefix}/enable` | 🛡️ | Re-enable a revoked key |
 | `GET /funds`, `/macro`, `/news` | 🔑 | Not yet implemented |
 
-All endpoints use `country=in` and `source=nse` (others return `501`).
+Financial endpoints take a single `source` query param (`source=sec` for US/EDGAR, `source=nse` for India/NSE, the default); the country is derived from the source. An unknown source returns `501`.
+
+```bash
+curl -H "X-API-Key: $VOYAGER_API_KEY" \
+  "http://localhost:8001/financial-metrics?symbol=AAPL&source=sec"
+```
+
+SEC pulls require `SEC_IDENTITY` (see [ENV](#environment)) and are documented in [docs/sec_integration.md](docs/sec_integration.md).
 
 ### API keys
 
@@ -293,4 +303,4 @@ This repo ships a `render.yaml` blueprint for Render. The API runs on **Read Rep
 
 ### Notes
 
-- Financial endpoints are India/NSE only today; the codebase also contains scrapers for web screeners (Screener, Trendlyne, StockScans), news/blog sources, and market data APIs, exposed via the `cli.py` tooling.
+- Financial endpoints serve India/NSE and US/SEC, selected via a single `source` param (`nse` default, or `sec`); the codebase also contains scrapers for web screeners (Screener, Trendlyne, StockScans), news/blog sources, and market data APIs, exposed via the `cli.py` tooling.

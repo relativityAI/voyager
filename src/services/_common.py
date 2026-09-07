@@ -1,6 +1,6 @@
 import json
 import os
-from typing import Any, Dict, Set
+from typing import Any, Dict, Optional, Set, Tuple
 
 ASSETS_DIR = os.path.join(os.path.dirname(__file__), "..", "assets")
 METRICS_CONFIG_PATH = os.path.join(ASSETS_DIR, "metrics_config.json")
@@ -81,3 +81,29 @@ def _filter_priority_fields(
         if k in priority_set or k in _PRIORITY_FIELD_KEEP:
             filtered[k] = v
     return filtered
+
+
+# A data source implies the country it serves; callers no longer pass both.
+SOURCE_COUNTRY: Dict[str, str] = {
+    "NSE": "in",
+    "SEC": "us",
+}
+
+
+def _validate_source(country: Optional[str], source: str) -> Tuple[str, str]:
+    """Normalize source and reject unsupported combos. Returns (country, source).
+
+    ``country`` is optional and derived from ``source`` when omitted.
+    """
+    source = source.upper()
+    if source not in SOURCE_COUNTRY:
+        raise UnsupportedSourceError(f"Data source '{source}' is not yet supported")
+    if country is None:
+        country = SOURCE_COUNTRY[source]
+    else:
+        country = country.lower()
+        if SOURCE_COUNTRY[source] != country:
+            raise UnsupportedSourceError(
+                f"Source '{source}' does not serve country '{country}'"
+            )
+    return country, source

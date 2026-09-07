@@ -5,21 +5,20 @@ wrapped so an unreachable database degrades to an error message instead of
 crashing the app.
 """
 
-from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Any, List
+from typing import List
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
 from src.db.models import (
-    IncomeStatement,
+    APIKey,
     BalanceSheet,
     CashFlow,
-    Shareholding,
+    IncomeStatement,
     NSEStockMetadata,
-    APIKey,
     PullJob,
+    Shareholding,
 )
 
 STATEMENT_TABLES = ["income_statements", "balance_sheets", "cash_flows"]

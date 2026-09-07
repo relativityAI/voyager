@@ -11,11 +11,11 @@ startup sweep (`reap_stale_jobs`) fails any job stuck in queued/running.
 import asyncio
 import os
 import uuid
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from datetime import timedelta
+from typing import List, Optional
 
 from loguru import logger
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from src.db.engine import get_session_factory
 from src.db.models import PullJob as PullJobModel
@@ -62,6 +62,8 @@ async def submit_pull(
     filing_type: Optional[str],
     refresh: bool,
     created_by: Optional[str],
+    country: str = "in",
+    source: str = "nse",
 ) -> PullJobModel:
     factory = get_session_factory()
     async with factory() as session:
@@ -85,6 +87,8 @@ async def submit_pull(
         filing_type=filing_type,
         refresh=refresh,
         created_by=created_by,
+        country=country,
+        source=source.upper(),
     )
 
     factory = get_session_factory()
@@ -112,9 +116,16 @@ async def _run_job(job: PullJobModel) -> None:
         await session.commit()
 
         try:
-            from src.services import pull_nse_data
+            if db_job.source == "SEC":
+                from src.services.sec import pull_sec_data
 
-            pull_result = await pull_nse_data(db_job.symbol, db_job.filing_type, db_job.refresh)
+                pull_result = await pull_sec_data(
+                    db_job.symbol, db_job.filing_type, db_job.refresh
+                )
+            else:
+                from src.services import pull_nse_data
+
+                pull_result = await pull_nse_data(db_job.symbol, db_job.filing_type, db_job.refresh)
             db_job.result = pull_result
             db_job.status = "done"
         except Exception as exc:

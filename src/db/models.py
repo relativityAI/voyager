@@ -1,5 +1,4 @@
 from datetime import date, datetime
-from typing import Any, Dict, List, Optional
 
 from sqlalchemy import (
     BigInteger,
@@ -9,7 +8,6 @@ from sqlalchemy import (
     DateTime,
     Integer,
     Numeric,
-    String,
     Text,
     UniqueConstraint,
 )
@@ -94,6 +92,8 @@ class PullJob(Base):
         return {
             "job_id": self.job_id,
             "symbol": self.symbol,
+            "country": self.country,
+            "source": self.source,
             "filing_type": self.filing_type,
             "refresh": self.refresh,
             "status": self.status,
@@ -109,12 +109,17 @@ class NSEStockMetadata(Base):
     __tablename__ = "nse_stock_metadata"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    symbol = Column(Text, nullable=False, unique=True)
+    symbol = Column(Text, nullable=False)
     source = Column(Text, default="NSE")
+    exchange = Column(Text, nullable=True)
     last_pull = Column(DateTime, nullable=True)
     previous_pulls = Column(ARRAY(DateTime), default=[])
     created_at = Column(DateTime, nullable=False, default=_utcnow)
     updated_at = Column(DateTime, nullable=False, default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "source", name="uq_stock_meta_symbol_source"),
+    )
 
 
 class APIKeyUsage(Base):
@@ -140,6 +145,7 @@ class IncomeStatement(Base):
     entity_identifier = Column(Text, nullable=True)
     fiscal_period = Column(Text, nullable=True)
     source_endpoint = Column(Text, nullable=False)
+    source = Column(Text, default="NSE")
     context_ref_type = Column(Text, nullable=True)
     pulled_at = Column(DateTime, nullable=True)
     _content_hash = Column("_content_hash", Text, nullable=True)
@@ -203,6 +209,7 @@ class BalanceSheet(Base):
     entity_identifier = Column(Text, nullable=True)
     fiscal_period = Column(Text, nullable=True)
     source_endpoint = Column(Text, nullable=False)
+    source = Column(Text, default="NSE")
     context_ref_type = Column(Text, nullable=True)
     pulled_at = Column(DateTime, nullable=True)
     _content_hash = Column("_content_hash", Text, nullable=True)
@@ -265,6 +272,7 @@ class CashFlow(Base):
     entity_identifier = Column(Text, nullable=True)
     fiscal_period = Column(Text, nullable=True)
     source_endpoint = Column(Text, nullable=False)
+    source = Column(Text, default="NSE")
     context_ref_type = Column(Text, nullable=True)
     pulled_at = Column(DateTime, nullable=True)
     _content_hash = Column("_content_hash", Text, nullable=True)
@@ -304,6 +312,7 @@ class Shareholding(Base):
     entity_identifier = Column(Text, nullable=True)
     fiscal_period = Column(Text, nullable=True)
     source_endpoint = Column(Text, nullable=False)
+    source = Column(Text, default="NSE")
     context_ref_type = Column(Text, nullable=True)
     pulled_at = Column(DateTime, nullable=True)
     _content_hash = Column("_content_hash", Text, nullable=True)

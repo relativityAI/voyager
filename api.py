@@ -31,7 +31,6 @@ from src.observability import (
 from src.services import (
     InvalidRequestError,
     ServiceError,
-    UnsupportedSourceError,
     financial_metrics,
     get_announcements,
     get_financials,
@@ -40,6 +39,7 @@ from src.services import (
     get_statement_data,
     list_category,
 )
+from src.services._common import _validate_source
 
 load_dotenv()
 
@@ -56,7 +56,19 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Voyager", version=__version__, lifespan=lifespan)
+openapi_tags = [
+    {"name": "System", "description": "Health, liveness, readiness and metrics probes."},
+    {"name": "Lists", "description": "Enumerations of available categories (sources, countries, etc.)."},
+    {"name": "Financials", "description": "Financial statements and computed financial metrics."},
+    {"name": "Corporate Actions", "description": "Corporate announcements and shareholding patterns."},
+    {"name": "Data Pulls", "description": "Pull raw data from the exchange and track async pull jobs."},
+    {"name": "Admin", "description": "API key management (guarded by VOYAGER_ADMIN_KEY)."},
+    {"name": "Coming Soon", "description": "Placeholder endpoints not yet implemented."},
+]
+
+app = FastAPI(
+    title="Voyager", version=__version__, lifespan=lifespan, openapi_tags=openapi_tags
+)
 
 _cors_origins = [
     o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()
@@ -80,17 +92,17 @@ async def service_error_handler(request: Request, exc: ServiceError):
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
 
 
-@app.get("/", summary="Health check")
+@app.get("/", summary="Health check", tags=["System"])
 def ping():
     return {"ok": 1}
 
 
-@app.get("/healthz", summary="Liveness probe")
+@app.get("/healthz", summary="Liveness probe", tags=["System"])
 def healthz():
     return {"ok": True}
 
 
-@app.get("/readyz", summary="Readiness probe (checks DB)")
+@app.get("/readyz", summary="Readiness probe (checks DB)", tags=["System"])
 async def readyz():
     if not await ping_database():
         raise HTTPException(status_code=503, detail="Database unreachable")
@@ -99,7 +111,7 @@ async def readyz():
 
 if metrics_enabled():
 
-    @app.get("/metrics", summary="Prometheus metrics")
+    @app.get("/metrics", summary="Prometheus metrics", tags=["System"])
     async def metrics():
         return metrics_response()
 
@@ -107,6 +119,7 @@ if metrics_enabled():
 @app.get(
     "/list",
     summary="List available categories",
+    tags=["Lists"],
     dependencies=[Depends(require_api_key)],
 )
 def list_category_endpoint(
@@ -114,20 +127,19 @@ def list_category_endpoint(
         "sources",
         description="Category: sources, countries, industries, sectors, indices",
     ),
-    country: str = Query("in", description="Country code"),
     source: str = Query("nse", description="Data source"),
 ):
-    return list_category(category, country, source)
+    return list_category(category, source)
 
 
 @app.get(
     "/financials",
     summary="Get merged financial data (income, balance, cash flow) for a stock",
+    tags=["Financials"],
     dependencies=[Depends(require_api_key)],
 )
 async def financials(
     symbol: str,
-    country: str = Query("in"),
     source: str = Query("nse"),
     consolidated: bool = Query(True),
     filing_type: str = Query("quarterly", description="quarterly or annual"),
@@ -136,18 +148,18 @@ async def financials(
     ),
 ):
     return await get_financials(
-        symbol, country, source, consolidated, filing_type, all_fields
+        symbol, None, source, consolidated, filing_type, all_fields
     )
 
 
 @app.get(
     "/financials/income-statements",
     summary="Fetch income statement data from DB",
+    tags=["Financials"],
     dependencies=[Depends(require_api_key)],
 )
 async def financials_income_statements(
     symbol: str,
-    country: str = Query("in"),
     source: str = Query("nse"),
     consolidated: Optional[bool] = Query(
         True,
@@ -162,7 +174,7 @@ async def financials_income_statements(
     return await get_statement_data(
         "income-statements",
         symbol,
-        country,
+        None,
         source,
         consolidated,
         filing_type,
@@ -174,11 +186,11 @@ async def financials_income_statements(
 @app.get(
     "/financials/balance-sheets",
     summary="Fetch balance sheet data from DB",
+    tags=["Financials"],
     dependencies=[Depends(require_api_key)],
 )
 async def financials_balance_sheets(
     symbol: str,
-    country: str = Query("in"),
     source: str = Query("nse"),
     consolidated: Optional[bool] = Query(True),
     filing_type: str = Query("quarterly", description="quarterly or annual"),
@@ -188,7 +200,7 @@ async def financials_balance_sheets(
     return await get_statement_data(
         "balance-sheets",
         symbol,
-        country,
+        None,
         source,
         consolidated,
         filing_type,
@@ -200,11 +212,11 @@ async def financials_balance_sheets(
 @app.get(
     "/financials/cash-flows",
     summary="Fetch cash flow data from DB",
+    tags=["Financials"],
     dependencies=[Depends(require_api_key)],
 )
 async def financials_cash_flows(
     symbol: str,
-    country: str = Query("in"),
     source: str = Query("nse"),
     consolidated: Optional[bool] = Query(True),
     filing_type: str = Query("quarterly", description="quarterly or annual"),
@@ -214,7 +226,7 @@ async def financials_cash_flows(
     return await get_statement_data(
         "cash-flows",
         symbol,
-        country,
+        None,
         source,
         consolidated,
         filing_type,
@@ -227,11 +239,11 @@ async def financials_cash_flows(
     "/pull",
     summary="Pull raw stock data from exchange into DB (async job)",
     status_code=status.HTTP_202_ACCEPTED,
+    tags=["Data Pulls"],
 )
 async def financials_pull(
     symbol: str,
     key: APIKey = Depends(require_scope("data:write")),
-    country: str = Query("in"),
     source: str = Query("nse"),
     filing_type: str = Query("quarterly", description="quarterly or annual"),
     refresh: bool = Query(
@@ -239,44 +251,44 @@ async def financials_pull(
     ),
 ):
     symbol = symbol.upper()
-    source = source.upper()
 
     if filing_type not in ("quarterly", "annual"):
         raise InvalidRequestError("filing_type must be 'quarterly' or 'annual'")
 
-    if country.lower() == "in" and source == "NSE":
-        try:
-            job = await submit_pull(symbol, filing_type, refresh, created_by=key.prefix)
-        except PullLimitReached as exc:
-            raise HTTPException(status_code=503, detail=str(exc))
-        except PullAlreadyActive as exc:
-            raise HTTPException(status_code=409, detail=str(exc))
-        return {
-            "job_id": job.job_id,
-            "status": job.status,
-            "status_url": f"/pull/jobs/{job.job_id}",
-        }
-    raise UnsupportedSourceError(
-        f"Source '{source}' for country '{country}' is not yet supported"
-    )
+    country, source = _validate_source(None, source)
+    try:
+        job = await submit_pull(
+            symbol, filing_type, refresh, created_by=key.prefix,
+            country=country, source=source,
+        )
+    except PullLimitReached as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except PullAlreadyActive as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {
+        "job_id": job.job_id,
+        "status": job.status,
+        "status_url": f"/pull/jobs/{job.job_id}",
+    }
 
 
 @app.get(
     "/pull",
     summary="Get pull status and data availability for a stock",
+    tags=["Data Pulls"],
     dependencies=[Depends(require_api_key)],
 )
 async def financials_pull_status(
     symbol: str,
-    country: str = Query("in"),
     source: str = Query("nse"),
 ):
-    return await get_pull_status(symbol, country, source)
+    return await get_pull_status(symbol, None, source)
 
 
 @app.get(
     "/pull/jobs/{job_id}",
     summary="Get the status/result of an async pull job",
+    tags=["Data Pulls"],
     dependencies=[Depends(require_scope("data:write"))],
 )
 async def pull_job_status(job_id: str):
@@ -289,6 +301,7 @@ async def pull_job_status(job_id: str):
 @app.get(
     "/pull/jobs",
     summary="List recent pull jobs",
+    tags=["Data Pulls"],
     dependencies=[Depends(require_scope("data:write"))],
 )
 async def pull_job_list(limit: int = Query(20, ge=1, le=100)):
@@ -299,50 +312,51 @@ async def pull_job_list(limit: int = Query(20, ge=1, le=100)):
 @app.get(
     "/financial-metrics",
     summary="Retrieve computed financial metrics for a stock",
+    tags=["Financials"],
     dependencies=[Depends(require_api_key)],
 )
 async def financial_metrics_endpoint(
     symbol: str,
-    country: str = Query("in"),
     source: str = Query("nse"),
     consolidated: bool = Query(
         True, description="True for consolidated, False for standalone"
     ),
     filing_type: str = Query("quarterly", description="quarterly, annual, or ttm"),
 ):
-    return await financial_metrics(symbol, country, source, consolidated, filing_type)
+    return await financial_metrics(symbol, None, source, consolidated, filing_type)
 
 
 @app.get(
     "/announcements",
     summary="Fetch corporate announcements for a stock",
+    tags=["Corporate Actions"],
     dependencies=[Depends(require_api_key)],
 )
 async def announcements(
     symbol: str,
-    country: str = Query("in"),
     source: str = Query("nse"),
     market: str = Query("equities", description="Market segment: equities or sme"),
 ):
-    return await get_announcements(symbol, country, source, market)
+    return await get_announcements(symbol, None, source, market)
 
 
 @app.get(
     "/shareholdings",
     summary="Fetch shareholding pattern for a stock (parsed from XBRL)",
+    tags=["Corporate Actions"],
     dependencies=[Depends(require_api_key)],
 )
 async def shareholdings(
     symbol: str,
-    country: str = Query("in"),
     source: str = Query("nse"),
 ):
-    return await get_shareholdings(symbol, country, source)
+    return await get_shareholdings(symbol, None, source)
 
 
 @app.get(
     "/funds",
     summary="Fund data (not yet implemented)",
+    tags=["Coming Soon"],
     dependencies=[Depends(require_api_key)],
 )
 def funds():
@@ -352,6 +366,7 @@ def funds():
 @app.get(
     "/macro",
     summary="Macroeconomic data (not yet implemented)",
+    tags=["Coming Soon"],
     dependencies=[Depends(require_api_key)],
 )
 def macro():
@@ -364,6 +379,7 @@ def macro():
 @app.get(
     "/news",
     summary="News data (not yet implemented)",
+    tags=["Coming Soon"],
     dependencies=[Depends(require_api_key)],
 )
 def news():
