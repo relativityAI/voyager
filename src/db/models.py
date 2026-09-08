@@ -80,6 +80,10 @@ class PullJob(Base):
     source = Column(Text, default="nse")
     filing_type = Column(Text, nullable=True)
     refresh = Column(Boolean, default=False)
+    # Generic async task (e.g. "documents.parse", "sentiment.management").
+    # When set, the job runs the named task instead of a symbol pull.
+    task = Column(Text, nullable=True)
+    task_args = Column(JSONB, nullable=True)
     status = Column(Text, default="queued")
     result = Column(JSONB, nullable=True)
     error = Column(Text, nullable=True)
@@ -96,6 +100,7 @@ class PullJob(Base):
             "source": self.source,
             "filing_type": self.filing_type,
             "refresh": self.refresh,
+            "task": self.task,
             "status": self.status,
             "created_at": self.created_at.isoformat(),
             "started_at": self.started_at.isoformat() if self.started_at else None,
@@ -363,3 +368,61 @@ class NSEAnnualReport(Base):
     symbol = Column(Text, nullable=False)
     file_name = Column(Text, nullable=True)
     raw_data = Column(JSONB, nullable=True)
+
+
+class DocumentIndex(Base):
+    """PageIndex Flash tree map for a PDF, cached so one URL is parsed once."""
+
+    __tablename__ = "document_indices"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    url = Column(Text, nullable=False)
+    pdf_hash = Column(Text, nullable=True)
+    symbol = Column(Text, nullable=True)
+    source = Column(Text, default="nse")
+    doc_title = Column(Text, nullable=True)
+    num_pages = Column(Integer, nullable=True)
+    page_index = Column(JSONB, nullable=True)
+    status = Column(Text, default="parsed")
+    error = Column(Text, nullable=True)
+    indexed_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("url", name="uq_document_index_url"),
+    )
+
+
+class NewsArticle(Base):
+    """News stories deduplicated by URL so repeat fetches are cheap."""
+
+    __tablename__ = "news_articles"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    country = Column(Text, nullable=False)
+    source = Column(Text, nullable=False)
+    url = Column(Text, nullable=False)
+    title = Column(Text, nullable=True)
+    summary = Column(Text, nullable=True)
+    published_at = Column(DateTime, nullable=True)
+    fetched_at = Column(DateTime, nullable=False, default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("url", name="uq_news_article_url"),
+    )
+
+
+class SentimentResult(Base):
+    """Cached management-sentiment analysis, keyed by text hash + model."""
+
+    __tablename__ = "sentiment_results"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source_key = Column(Text, nullable=False)
+    content_hash = Column(Text, nullable=False)
+    model = Column(Text, nullable=False)
+    result = Column(JSONB, nullable=False)
+    analyzed_at = Column(DateTime, nullable=False, default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("content_hash", "model", name="uq_sentiment_hash_model"),
+    )

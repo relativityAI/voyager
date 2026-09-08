@@ -30,13 +30,21 @@ lxml==5.3.0
 
 # PDF text extraction (no OCR)
 pypdf==6.11.0
+# PDF layout structuring (PageIndex Flash: pypdfium2-based, LLM-free path)
+pageindex==0.2.15
+
+# News + social
+feedparser==6.0.14
+yt-search-python==2.2.1
+youtube-transcript-api==1.2.4
+praw==8.0.3
+
+# Multi-provider LLM calls (management sentiment)
+litellm==1.100.0
 
 # Config / logging
 python-dotenv==1.1.0
 loguru==0.7.3
-
-# MCP server
-fastmcp==3.4.5
 
 # Observability
 sentry-sdk==2.45.0

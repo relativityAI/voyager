@@ -6,8 +6,10 @@ from ._common import (
     UnsupportedSourceError,
     UpstreamError,
 )
+from .dcf import dcf_valuation
 from .lists import list_category
 from .metrics import financial_metrics
+from .news import get_news_stories, get_ticker_mentions
 from .nse import (
     get_announcements,
     get_financials,
@@ -22,6 +24,7 @@ from .sec import (
     get_shareholdings_us,
     pull_sec_data,
 )
+from .social import get_reddit, get_youtube_search, get_youtube_transcript
 
 __all__ = [
     "ServiceError",
@@ -31,6 +34,12 @@ __all__ = [
     "ServiceUnavailableError",
     "UpstreamError",
     "list_category",
+    "dcf_valuation",
+    "get_news_stories",
+    "get_ticker_mentions",
+    "get_reddit",
+    "get_youtube_search",
+    "get_youtube_transcript",
     "pull_nse_data",
     "pull_sec_data",
     "get_financials",
