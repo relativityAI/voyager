@@ -1,5 +1,4 @@
 import os
-from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -57,6 +56,14 @@ async def init_db():
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+        # Idempotent schema evolution for new columns on existing tables.
+        # create_all() won't ALTER an existing table.
+        for ddl in [
+            "ALTER TABLE pull_jobs ADD COLUMN IF NOT EXISTS task TEXT",
+            "ALTER TABLE pull_jobs ADD COLUMN IF NOT EXISTS task_args JSONB",
+        ]:
+            await conn.execute(text(ddl))
 
     logger.info("Database initialization complete.")
 

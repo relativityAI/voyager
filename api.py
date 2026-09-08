@@ -20,6 +20,7 @@ from src.jobs import (
     list_jobs,
     reap_stale_jobs,
     submit_pull,
+    submit_task,
 )
 from src.logging_config import setup_logging
 from src.observability import (
@@ -31,15 +32,22 @@ from src.observability import (
 from src.services import (
     InvalidRequestError,
     ServiceError,
+    dcf_valuation,
     financial_metrics,
     get_announcements,
     get_financials,
+    get_news_stories,
     get_pull_status,
+    get_reddit,
     get_shareholdings,
     get_statement_data,
+    get_ticker_mentions,
+    get_youtube_search,
+    get_youtube_transcript,
     list_category,
 )
 from src.services._common import _validate_source
+from src.services.documents import get_document_index
 
 load_dotenv()
 
@@ -62,6 +70,7 @@ openapi_tags = [
     {"name": "Financials", "description": "Financial statements and computed financial metrics."},
     {"name": "Corporate Actions", "description": "Corporate announcements and shareholding patterns."},
     {"name": "Data Pulls", "description": "Pull raw data from the exchange and track async pull jobs."},
+    {"name": "Advanced Data Suite", "description": "Valuation, news, social signals, documents and sentiment analysis."},
     {"name": "Admin", "description": "API key management (guarded by VOYAGER_ADMIN_KEY)."},
     {"name": "Coming Soon", "description": "Placeholder endpoints not yet implemented."},
 ]
@@ -327,6 +336,37 @@ async def financial_metrics_endpoint(
 
 
 @app.get(
+    "/dcf",
+    summary="Two-stage discounted cash flow valuation from stored data",
+    tags=["Advanced Data Suite"],
+    dependencies=[Depends(require_api_key)],
+)
+async def dcf_endpoint(
+    symbol: str,
+    source: str = Query("nse"),
+    growth_rate: Optional[float] = Query(
+        None, ge=0, le=0.5, description="Stage-1 FCF growth rate (default: revenue growth)"
+    ),
+    terminal_growth_rate: Optional[float] = Query(
+        None, ge=0, le=0.1, description="Terminal growth rate (default 0.04)"
+    ),
+    discount_rate: Optional[float] = Query(
+        None, ge=0, le=0.5, description="WACC/discount rate (default: CAPM cost of equity)"
+    ),
+    years: int = Query(5, ge=1, le=20),
+    beta: float = Query(1.0),
+):
+    return await dcf_valuation(
+        symbol, source,
+        growth_rate=growth_rate,
+        terminal_growth_rate=terminal_growth_rate,
+        discount_rate=discount_rate,
+        years=years,
+        beta=beta,
+    )
+
+
+@app.get(
     "/announcements",
     summary="Fetch corporate announcements for a stock",
     tags=["Corporate Actions"],
@@ -377,13 +417,147 @@ def macro():
 
 
 @app.get(
-    "/news",
-    summary="News data (not yet implemented)",
-    tags=["Coming Soon"],
+    "/news/stories",
+    summary="Latest news stories for a market (RSS, cached)",
+    tags=["Advanced Data Suite"],
     dependencies=[Depends(require_api_key)],
 )
-def news():
-    return {"status": "not_implemented", "note": "News data not yet implemented"}
+async def news_stories(
+    country: str = Query("in", description="Market: us or in"),
+    days: int = Query(7, ge=1, le=30),
+    limit: int = Query(20, ge=1, le=50),
+):
+    return await get_news_stories(country, days, limit)
+
+
+@app.get(
+    "/news/ticker",
+    summary="News stories mentioning a stock symbol",
+    tags=["Advanced Data Suite"],
+    dependencies=[Depends(require_api_key)],
+)
+async def news_ticker(
+    symbol: str,
+    country: str = Query("in", description="Market: us or in"),
+    days: int = Query(7, ge=1, le=30),
+):
+    return await get_ticker_mentions(symbol, country, days)
+
+
+@app.post(
+    "/documents/parse",
+    summary="Build + cache a PageIndex tree for a PDF (async job)",
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["Advanced Data Suite"],
+)
+async def documents_parse(
+    url: str = Query(..., description="PDF URL or path to structure"),
+    symbol: str = Query(None),
+    source: str = Query("nse"),
+    key: APIKey = Depends(require_scope("data:write")),
+):
+    try:
+        job = await submit_task(
+            "documents.parse",
+            {"url": url, "symbol": symbol, "source": source},
+            created_by=key.prefix,
+        )
+    except PullLimitReached as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except PullAlreadyActive as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {
+        "job_id": job.job_id,
+        "status": job.status,
+        "status_url": f"/pull/jobs/{job.job_id}",
+    }
+
+
+@app.get(
+    "/documents/{document_id}/index",
+    summary="Get the cached PageIndex tree for a document",
+    tags=["Advanced Data Suite"],
+    dependencies=[Depends(require_api_key)],
+)
+async def document_index(document_id: int):
+    return await get_document_index(document_id)
+
+
+@app.get(
+    "/social/reddit",
+    summary="Search Reddit for a ticker/company mention",
+    tags=["Advanced Data Suite"],
+    dependencies=[Depends(require_api_key)],
+)
+async def social_reddit(
+    query: str,
+    limit: int = Query(10, ge=1, le=50),
+):
+    return await get_reddit(query, limit)
+
+
+@app.get(
+    "/social/youtube/search",
+    summary="Search YouTube for a ticker/company (e.g. earnings call)",
+    tags=["Advanced Data Suite"],
+    dependencies=[Depends(require_api_key)],
+)
+async def social_youtube_search(
+    query: str,
+    limit: int = Query(15, ge=1, le=50),
+):
+    return await get_youtube_search(query, limit)
+
+
+@app.get(
+    "/social/youtube/transcript",
+    summary="Fetch the transcript (captions) for a YouTube video",
+    tags=["Advanced Data Suite"],
+    dependencies=[Depends(require_api_key)],
+)
+async def social_youtube_transcript(
+    video_id: str,
+):
+    return await get_youtube_transcript(video_id)
+
+
+@app.post(
+    "/sentiment/management",
+    summary="Analyze management commentary for facts (async job)",
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["Advanced Data Suite"],
+)
+async def sentiment_management_run(
+    url: str = Query(None, description="PDF/transcript URL to analyze"),
+    text: str = Query(None, description="Or, raw text to analyze"),
+    symbol: str = Query(None),
+    source: str = Query("nse"),
+    model: str = Query(None, description="LiteLLM model override"),
+    key: APIKey = Depends(require_scope("data:write")),
+):
+    if url is None and text is None:
+        raise InvalidRequestError("Provide either 'url' or 'text'")
+    try:
+        job = await submit_task(
+            "sentiment.management",
+            {
+                "url": url,
+                "text": text,
+                "symbol": symbol,
+                "source": source,
+                "model": model,
+            },
+            created_by=key.prefix,
+        )
+    except PullLimitReached as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except PullAlreadyActive as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {
+        "job_id": job.job_id,
+        "status": job.status,
+        "status_url": f"/pull/jobs/{job.job_id}",
+    }
 
 
 if __name__ == "__main__":

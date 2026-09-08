@@ -1,4 +1,4 @@
-"""Async pull jobs.
+"""Async pull + analytics jobs.
 
 POST /pull is long-running (NSE XBRL fetch + parse can take 30-120s+) and
 Render hard-timeouts web requests at ~60s. Instead of blocking, the endpoint
@@ -12,7 +12,7 @@ import asyncio
 import os
 import uuid
 from datetime import timedelta
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from loguru import logger
 from sqlalchemy import select
@@ -57,14 +57,7 @@ async def reap_stale_jobs() -> None:
         await session.commit()
 
 
-async def submit_pull(
-    symbol: str,
-    filing_type: Optional[str],
-    refresh: bool,
-    created_by: Optional[str],
-    country: str = "in",
-    source: str = "nse",
-) -> PullJobModel:
+async def _check_concurrency(created_by: Optional[str] = None) -> None:
     factory = get_session_factory()
     async with factory() as session:
         result = await session.execute(
@@ -76,10 +69,21 @@ async def submit_pull(
 
     if len(active) >= MAX_CONCURRENT_PULLS:
         raise PullLimitReached(
-            f"Too many pulls in progress ({len(active)} >= {MAX_CONCURRENT_PULLS}). Try again shortly."
+            f"Too many jobs in progress ({len(active)} >= {MAX_CONCURRENT_PULLS}). Try again shortly."
         )
     if created_by and any(j.created_by == created_by for j in active):
-        raise PullAlreadyActive("A pull for this key is already in progress.")
+        raise PullAlreadyActive("A job for this key is already in progress.")
+
+
+async def submit_pull(
+    symbol: str,
+    filing_type: Optional[str],
+    refresh: bool,
+    created_by: Optional[str],
+    country: str = "in",
+    source: str = "nse",
+) -> PullJobModel:
+    await _check_concurrency(created_by)
 
     job = PullJobModel(
         job_id=str(uuid.uuid4()),
@@ -102,6 +106,34 @@ async def submit_pull(
     return job
 
 
+async def submit_task(
+    task: str,
+    task_args: Dict[str, Any],
+    created_by: Optional[str] = None,
+) -> PullJobModel:
+    """Submit a generic async analytics job (parse PDF, sentiment, etc.)."""
+    await _check_concurrency(created_by)
+
+    symbol = task_args.get("symbol", "*")
+    job = PullJobModel(
+        job_id=str(uuid.uuid4()),
+        symbol=symbol,
+        task=task,
+        task_args=task_args,
+        created_by=created_by,
+    )
+
+    factory = get_session_factory()
+    async with factory() as session:
+        session.add(job)
+        await session.commit()
+        await session.refresh(job)
+
+    asyncio.create_task(_run_job(job))
+    logger.info(f"Task job queued: {job.job_id} ({task})")
+    return job
+
+
 async def _run_job(job: PullJobModel) -> None:
     _inflight.add(job.job_id)
 
@@ -116,7 +148,9 @@ async def _run_job(job: PullJobModel) -> None:
         await session.commit()
 
         try:
-            if db_job.source == "SEC":
+            if db_job.task:
+                pull_result = await _run_task(db_job.task, db_job.task_args or {})
+            elif db_job.source == "SEC":
                 from src.services.sec import pull_sec_data
 
                 pull_result = await pull_sec_data(
@@ -129,13 +163,26 @@ async def _run_job(job: PullJobModel) -> None:
             db_job.result = pull_result
             db_job.status = "done"
         except Exception as exc:
-            logger.exception(f"Pull job {db_job.job_id} failed for {db_job.symbol}")
+            logger.exception(f"Job {db_job.job_id} failed ({db_job.task or db_job.symbol})")
             db_job.error = str(exc)
             db_job.status = "failed"
         finally:
             db_job.finished_at = utcnow()
             await session.commit()
             _inflight.discard(db_job.job_id)
+
+
+async def _run_task(task: str, task_args: Dict[str, Any]) -> Dict[str, Any]:
+    """Dispatch a named task to its handler module."""
+    if task == "documents.parse":
+        from src.services.documents import parse_document
+
+        return await parse_document(task_args)
+    if task == "sentiment.management":
+        from src.services.sentiment import run_sentiment_analysis
+
+        return await run_sentiment_analysis(task_args)
+    raise ValueError(f"Unknown task: {task}")
 
 
 async def get_job(job_id: str) -> Optional[PullJobModel]:
