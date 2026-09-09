@@ -1,4 +1,5 @@
 import math
+import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -6,6 +7,11 @@ import pandas as pd
 import pandas_ta as ta
 import yfinance as yf
 from loguru import logger
+
+# ponytail: yfinance is not thread-safe; single lock serialises all yfinance
+# access. Upgrade path: per-symbol locks if throughput matters, or migrate to
+# a thread-safe data provider.
+_yf_lock = threading.Lock()
 
 _YF_SUFFIX_MAP = {
     "NSE": ".NS",
@@ -50,33 +56,35 @@ def _set_cache(key: str, data: Dict[str, Any]) -> None:
 
 
 def _get_yf_raw(symbol: str, exchange: str) -> Tuple[Any, Any]:
-    key = f"{symbol}:{exchange}"
-    entry = _RAW_CACHE.get(key)
-    if entry and (time.time() - entry["ts"]) < RAW_CACHE_TTL:
-        return entry["data"]["ticker"], entry["data"]["hist"]
+    with _yf_lock:
+        key = f"{symbol}:{exchange}"
+        entry = _RAW_CACHE.get(key)
+        if entry and (time.time() - entry["ts"]) < RAW_CACHE_TTL:
+            return entry["data"]["ticker"], entry["data"]["hist"]
 
-    yf_symbol = _generate_yf_symbol(symbol, exchange)
-    ticker = yf.Ticker(yf_symbol)
-    try:
-        hist = ticker.history(period="1y")
-    except Exception as exc:  # noqa: BLE001 - rate limits should not crash callers
-        logger.debug(f"yfinance history failed for {yf_symbol}: {exc}")
-        hist = pd.DataFrame()
+        yf_symbol = _generate_yf_symbol(symbol, exchange)
+        ticker = yf.Ticker(yf_symbol)
+        try:
+            hist = ticker.history(period="1y")
+        except Exception as exc:  # noqa: BLE001 - rate limits should not crash callers
+            logger.debug(f"yfinance history failed for {yf_symbol}: {exc}")
+            hist = pd.DataFrame()
 
-    _RAW_CACHE[key] = {
-        "ts": time.time(),
-        "data": {"ticker": ticker, "hist": hist},
-    }
-    return ticker, hist
+        _RAW_CACHE[key] = {
+            "ts": time.time(),
+            "data": {"ticker": ticker, "hist": hist},
+        }
+        return ticker, hist
 
 
 def fetch_price_info(symbol: str, exchange: str = "NSE") -> Dict[str, Any]:
     ticker, hist = _get_yf_raw(symbol, exchange)
-    try:
-        info = ticker.info or {}
-    except Exception as exc:  # noqa: BLE001 - rate limits should not crash callers
-        logger.debug(f"yfinance info failed for {symbol}.{exchange}: {exc}")
-        info = {}
+    with _yf_lock:
+        try:
+            info = ticker.info or {}
+        except Exception as exc:  # noqa: BLE001 - rate limits should not crash callers
+            logger.debug(f"yfinance info failed for {symbol}.{exchange}: {exc}")
+            info = {}
     shares = _to_valid_float(info.get("sharesOutstanding"))
     current_price = _to_valid_float(
         info.get("currentPrice") or info.get("regularMarketPrice")
@@ -108,10 +116,11 @@ def fetch_technicals(
         }
 
     info = {}
-    try:
-        info = ticker.info or {}
-    except Exception as exc:  # noqa: BLE001 - rate limits should not crash callers
-        logger.debug(f"yfinance info failed for {symbol}.{exchange}: {exc}")
+    with _yf_lock:
+        try:
+            info = ticker.info or {}
+        except Exception as exc:  # noqa: BLE001 - rate limits should not crash callers
+            logger.debug(f"yfinance info failed for {symbol}.{exchange}: {exc}")
     current_price = _to_valid_float(
         info.get("currentPrice") or info.get("regularMarketPrice")
     )
