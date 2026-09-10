@@ -37,6 +37,8 @@ pageindex==0.2.15
 feedparser==6.0.14
 yt-search-python==2.2.1
 youtube-transcript-api==1.2.4
+# Transcript fallback: TLS-impersonating downloader that survives YouTube's cloud-IP bot checks
+yt-dlp==2026.8.19
 praw==8.0.3
 
 # Multi-provider LLM calls (management sentiment)

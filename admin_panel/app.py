@@ -37,7 +37,9 @@ def init_state() -> None:
 
 def current_cfg() -> config_mod.PanelConfig:
     return config_mod.PanelConfig(
-        api_base_url=st.session_state.get("inp_api_base", config_mod.DEFAULTS["api_base_url"]).rstrip("/"),
+        api_base_url=st.session_state.get(
+            "inp_api_base", config_mod.DEFAULTS["api_base_url"]
+        ).rstrip("/"),
         api_key=st.session_state.get("inp_api_key", ""),
         admin_key=st.session_state.get("inp_admin_key", ""),
         database_url=st.session_state.get("inp_database_url", ""),
@@ -74,8 +76,13 @@ def run_request(
     """Execute a request through the client, log to history, return (resp, err)."""
     try:
         resp = client.request(
-            method, path, params=params, json=body, admin=admin,
-            timeout=timeout, retries=retries,
+            method,
+            path,
+            params=params,
+            json=body,
+            admin=admin,
+            timeout=timeout,
+            retries=retries,
         )
         log_request(method, path, resp.status_code, resp.elapsed_ms)
         return resp, None
@@ -147,9 +154,11 @@ def display_response(resp) -> None:
 
     df = to_dataframe(data)
     if df is not None:
-        view = st.radio("View", ["Table", "JSON"], horizontal=True, key=f"view_{id(resp)}")
+        view = st.radio(
+            "View", ["Table", "JSON"], horizontal=True, key=f"view_{id(resp)}"
+        )
         if view == "Table":
-            st.dataframe(df, width='stretch', hide_index=True)
+            st.dataframe(df, width="stretch", hide_index=True)
             st.download_button(
                 "⬇️ Download CSV",
                 df.to_csv(index=False).encode(),
@@ -220,7 +229,7 @@ def job_rows(client: VoyagerClient, limit: int = 50) -> tuple[list, str | None]:
     except PanelHTTPError as exc:
         return [], exc.detail
     rows = []
-    for j in (resp.json or []):
+    for j in resp.json or []:
         start = j.get("started_at")
         fin = j.get("finished_at")
         duration = None
@@ -289,10 +298,10 @@ def render_sidebar():
             )
 
         c1, c2 = st.columns(2)
-        if c1.button("💾 Save config", width='stretch'):
+        if c1.button("💾 Save config", width="stretch"):
             config_mod.save(current_cfg())
             st.toast("Saved to " + str(config_mod.CONFIG_FILE))
-        if c2.button("♻️ Reset defaults", width='stretch'):
+        if c2.button("♻️ Reset defaults", width="stretch"):
             env = config_mod.env_defaults()
             st.session_state["inp_api_base"] = env.api_base_url
             st.session_state["inp_api_key"] = env.api_key
@@ -321,7 +330,7 @@ def tab_overview(client: VoyagerClient):
     st.subheader("Overview")
 
     c1, c2, c3 = st.columns([1, 1, 2])
-    if c1.button("🏥 Run health checks", width='stretch'):
+    if c1.button("🏥 Run health checks", width="stretch"):
         results = {}
         for name, path, timeout in (
             ("root", "/", 10),
@@ -330,20 +339,30 @@ def tab_overview(client: VoyagerClient):
         ):
             try:
                 r = client.get(path, timeout=timeout, retries=0)
-                results[name] = {"ok": r.status_code == 200, "status": r.status_code,
-                                 "ms": r.elapsed_ms, "body": r.json}
+                results[name] = {
+                    "ok": r.status_code == 200,
+                    "status": r.status_code,
+                    "ms": r.elapsed_ms,
+                    "body": r.json,
+                }
             except PanelHTTPError as exc:
-                results[name] = {"ok": False, "status": exc.status_code,
-                                 "ms": 0, "body": exc.detail}
+                results[name] = {
+                    "ok": False,
+                    "status": exc.status_code,
+                    "ms": 0,
+                    "body": exc.detail,
+                }
         ok = sum(1 for v in results.values() if v["ok"])
         st.session_state.health_results = {
             "results": results,
             "summary": f"{ok}/3 healthy",
         }
-    if c2.button("☀️ Wake up API", width='stretch'):
+    if c2.button("☀️ Wake up API", width="stretch"):
         with st.status("Waking the API…", expanded=True) as status:
+
             def progress(msg):
                 status.update(label=msg)
+
             result = client.wake(progress=progress)
             st.session_state.wake_results = result
             status.update(
@@ -371,9 +390,10 @@ def tab_overview(client: VoyagerClient):
                 if r["body"] and isinstance(r["body"], dict):
                     st.caption(str(r["body"])[:80])
     else:
-        st.caption("Run a health check to see status." + (
-            " — first hit after a cold start can take up to a minute."
-        ))
+        st.caption(
+            "Run a health check to see status."
+            + (" — first hit after a cold start can take up to a minute.")
+        )
 
     st.divider()
     cfg = current_cfg()
@@ -391,11 +411,11 @@ def tab_overview(client: VoyagerClient):
 
 def tab_pull_manager(client: VoyagerClient):
     st.subheader("Pull Manager")
-    st.caption("Submit async XBRL pulls (NSE or SEC/EDGAR). Requires a `data:write` API key.")
-
-    symbols = load_symbol_index(
-        current_cfg().database_url
+    st.caption(
+        "Submit async XBRL pulls (NSE or SEC/EDGAR). Requires a `data:write` API key."
     )
+
+    symbols = load_symbol_index(current_cfg().database_url)
 
     def _pick_symbol():
         sym = st.session_state["inp_quick_pick"].split(" — ")[0]
@@ -406,12 +426,16 @@ def tab_pull_manager(client: VoyagerClient):
             )
 
     def _merge_upload():
-        text = st.session_state["inp_pull_file"].getvalue().decode(
-            "utf-8", errors="replace"
+        text = (
+            st.session_state["inp_pull_file"]
+            .getvalue()
+            .decode("utf-8", errors="replace")
         )
         fresh = parse_symbols(text)
         existing = parse_symbols(st.session_state.get("inp_pull_symbols", ""))
-        st.session_state["inp_pull_symbols"] = ", ".join(sorted(set(existing) | set(fresh)))
+        st.session_state["inp_pull_symbols"] = ", ".join(
+            sorted(set(existing) | set(fresh))
+        )
 
     c1, c2 = st.columns([2, 1])
     with c1:
@@ -433,16 +457,20 @@ def tab_pull_manager(client: VoyagerClient):
             on_change=_pick_symbol,
         )
         st.file_uploader(
-            "Upload list (.txt/.csv)", type=["txt", "csv"], key="inp_pull_file",
+            "Upload list (.txt/.csv)",
+            type=["txt", "csv"],
+            key="inp_pull_file",
             on_change=_merge_upload,
         )
 
     c1, c2, c3 = st.columns([1, 1, 1])
-    filing_type = c1.selectbox("filing_type", ["quarterly", "annual"], key="inp_pull_ft")
+    filing_type = c1.selectbox(
+        "filing_type", ["quarterly", "annual"], key="inp_pull_ft"
+    )
     refresh = c2.checkbox("refresh (re-parse existing)", key="inp_pull_refresh")
     source = c3.selectbox("source", ["nse", "sec"], key="inp_pull_source")
 
-    if st.button("🚀 Start pulls", type="primary", width='stretch'):
+    if st.button("🚀 Start pulls", type="primary", width="stretch"):
         symbols_to_pull = parse_symbols(st.session_state.get("inp_pull_symbols", ""))
         if not symbols_to_pull:
             st.warning("Enter at least one symbol.")
@@ -474,8 +502,12 @@ def tab_pull_manager(client: VoyagerClient):
                         )
                     except PanelHTTPError as exc:
                         results.append(
-                            {"symbol": sym, "result": "❌ failed", "job_id": None,
-                             "detail": exc.detail}
+                            {
+                                "symbol": sym,
+                                "result": "❌ failed",
+                                "job_id": None,
+                                "detail": exc.detail,
+                            }
                         )
                 status.update(label="Done", state="complete")
             st.session_state.pull_submit_results = results
@@ -485,7 +517,7 @@ def tab_pull_manager(client: VoyagerClient):
         st.markdown("**Submission results**")
         st.dataframe(
             pd.DataFrame(st.session_state.pull_submit_results),
-            width='stretch',
+            width="stretch",
             hide_index=True,
         )
 
@@ -540,7 +572,7 @@ def jobs_table(client: VoyagerClient):
     display = view.drop(columns=["result", "error"])
     st.dataframe(
         status_color_style(display),
-        width='stretch',
+        width="stretch",
         hide_index=True,
         column_config={
             "job_id": st.column_config.TextColumn("job_id", width="medium"),
@@ -577,8 +609,7 @@ def tab_playground(client: VoyagerClient):
         )
         ep = ALL_ENDPOINTS[labels.index(chosen)]
         st.markdown(
-            f"**{ep['method']} `{ep['path']}`** "
-            f"· auth: `{AUTH_LABELS.get(ep['auth'])}`"
+            f"**{ep['method']} `{ep['path']}`** · auth: `{AUTH_LABELS.get(ep['auth'])}`"
         )
         if ep.get("description"):
             st.caption(ep["description"])
@@ -589,7 +620,11 @@ def tab_playground(client: VoyagerClient):
             val = render_param(p)
             if p.get("in_path"):
                 path = path.replace("{" + p["name"] + "}", str(val) if val else "…")
-            elif val is not None and not (p["type"] == "bool3" and val == "null"):
+            elif (
+                val is not None
+                and val != ""
+                and not (p["type"] == "bool3" and val == "null")
+            ):
                 params[p["name"]] = val
 
         body = None
@@ -606,11 +641,16 @@ def tab_playground(client: VoyagerClient):
                 st.error(f"Invalid JSON body: {exc}")
 
         admin = ep["auth"] == "admin"
-        if st.button("▶️ Execute", type="primary", width='stretch'):
+        if st.button("▶️ Execute", type="primary", width="stretch"):
             with st.spinner("Requesting…"):
                 resp, err = run_request(
-                    client, ep["method"], path, params=params, body=body,
-                    admin=admin, timeout=120,
+                    client,
+                    ep["method"],
+                    path,
+                    params=params,
+                    body=body,
+                    admin=admin,
+                    timeout=120,
                 )
             if err:
                 banner_for_error(err, bool(current_cfg().admin_key))
@@ -632,7 +672,9 @@ def tab_playground(client: VoyagerClient):
         body_text = st.text_area(
             "Body (JSON, optional)", height=90, key="inp_pg_raw_body"
         )
-        admin = st.checkbox("Use admin key (X-Voyager-Admin-Key)", key="inp_pg_raw_admin")
+        admin = st.checkbox(
+            "Use admin key (X-Voyager-Admin-Key)", key="inp_pg_raw_admin"
+        )
         if st.button("▶️ Execute raw", type="primary"):
             params = {}
             for line in params_text.splitlines():
@@ -653,8 +695,13 @@ def tab_playground(client: VoyagerClient):
             else:
                 with st.spinner("Requesting…"):
                     resp, err = run_request(
-                        client, method, path, params=params or None, body=body,
-                        admin=admin, timeout=120,
+                        client,
+                        method,
+                        path,
+                        params=params or None,
+                        body=body,
+                        admin=admin,
+                        timeout=120,
                     )
                 if err:
                     banner_for_error(err, bool(current_cfg().admin_key))
@@ -667,7 +714,7 @@ def tab_playground(client: VoyagerClient):
     if hist.empty:
         st.caption("No requests yet.")
     else:
-        st.dataframe(hist, width='stretch', hide_index=True)
+        st.dataframe(hist, width="stretch", hide_index=True)
         if st.button("Clear history"):
             st.session_state.history = []
             st.rerun()
@@ -698,7 +745,9 @@ def render_param(p: dict):
             help=help_text,
         )
     if ptype == "bool":
-        return st.checkbox(label, value=bool(p.get("default", False)), key=key, help=help_text)
+        return st.checkbox(
+            label, value=bool(p.get("default", False)), key=key, help=help_text
+        )
     if ptype == "bool3":
         options = p.get("options", [])
         labels = [o["label"] for o in options]
@@ -749,7 +798,7 @@ def tab_db_stats():
     if isinstance(rows, dict) and "error" in rows:
         st.error(rows["error"])
     else:
-        st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
         st.markdown("**Collection detail**")
         chosen = st.selectbox(
@@ -765,7 +814,10 @@ def tab_db_stats():
             d[0].metric("Documents", f"{detail['documents']:,}")
             if detail.get("coverage"):
                 cov = detail["coverage"]
-                d[1].metric("Period range", f"{cov.get('min_period', '?')} → {cov.get('max_period', '?')}")
+                d[1].metric(
+                    "Period range",
+                    f"{cov.get('min_period', '?')} → {cov.get('max_period', '?')}",
+                )
                 d[2].metric("Distinct periods", cov.get("distinct_periods", 0))
             if detail.get("filing_types"):
                 st.markdown("**filing_type distribution**")
@@ -777,7 +829,7 @@ def tab_db_stats():
                 st.markdown("**Top symbols**")
                 st.dataframe(
                     pd.DataFrame(detail["top_symbols"]),
-                    width='stretch',
+                    width="stretch",
                     hide_index=True,
                 )
             if detail.get("sample_doc"):
@@ -796,7 +848,9 @@ def tab_db_stats():
         jc[4].metric("Total", jstats["total"])
         jc[5].metric(
             "Avg duration (s)",
-            jstats["avg_duration_sec"] if jstats["avg_duration_sec"] is not None else "—",
+            jstats["avg_duration_sec"]
+            if jstats["avg_duration_sec"] is not None
+            else "—",
         )
         if jstats.get("per_day"):
             jd = pd.DataFrame(jstats["per_day"])
@@ -814,7 +868,7 @@ def tab_db_stats():
                         "error": str(f.get("error", ""))[:120],
                     }
                 )
-            st.dataframe(pd.DataFrame(fails), width='stretch', hide_index=True)
+            st.dataframe(pd.DataFrame(fails), width="stretch", hide_index=True)
 
     st.divider()
     st.markdown("**API key analytics**")
@@ -827,13 +881,17 @@ def tab_db_stats():
         kc[1].metric("Enabled", kstats["enabled"])
         kc[2].metric("Revoked", kstats["revoked"])
         kc[3].metric("Expired", kstats["expired"])
-        kc[4].metric("Scopes", ", ".join(f"{k}:{v}" for k, v in kstats["scopes"].items()))
+        kc[4].metric(
+            "Scopes", ", ".join(f"{k}:{v}" for k, v in kstats["scopes"].items())
+        )
 
 
 def tab_api_keys(client: VoyagerClient):
     st.subheader("API Keys")
     if not current_cfg().admin_key:
-        st.warning("Set the admin key (VOYAGER_ADMIN_KEY) in the sidebar to manage keys.")
+        st.warning(
+            "Set the admin key (VOYAGER_ADMIN_KEY) in the sidebar to manage keys."
+        )
         return
 
     c1, c2 = st.columns([3, 2])
@@ -842,13 +900,21 @@ def tab_api_keys(client: VoyagerClient):
         name = st.text_input("Name", key="key_name", placeholder="my-app")
         owner = st.text_input("Owner", key="key_owner", placeholder="optional")
         scopes = st.multiselect(
-            "Scopes", ["data:read", "data:write", "admin"],
-            default=["data:read"], key="key_scopes",
+            "Scopes",
+            ["data:read", "data:write", "admin"],
+            default=["data:read"],
+            key="key_scopes",
         )
         c11, c12 = st.columns(2)
-        rpm = c11.number_input("RPM", min_value=1, max_value=10000, value=60, step=1, key="key_rpm")
+        rpm = c11.number_input(
+            "RPM", min_value=1, max_value=10000, value=60, step=1, key="key_rpm"
+        )
         expires = c12.number_input(
-            "Expires in days (0 = never)", min_value=0, value=0, step=1, key="key_expires"
+            "Expires in days (0 = never)",
+            min_value=0,
+            value=0,
+            step=1,
+            key="key_expires",
         )
         if st.button("➕ Create key", type="primary"):
             body = {
@@ -891,23 +957,42 @@ def tab_api_keys(client: VoyagerClient):
                 st.caption("No keys yet.")
             else:
                 df = pd.DataFrame(keys)
-                cols = [c for c in
-                        ["name", "prefix", "scopes", "rpm", "enabled", "expires_at",
-                         "last_used_at", "created_at", "owner", "revoked_at"] if c in df.columns]
-                st.dataframe(df[cols], width='stretch', hide_index=True)
+                cols = [
+                    c
+                    for c in [
+                        "name",
+                        "prefix",
+                        "scopes",
+                        "rpm",
+                        "enabled",
+                        "expires_at",
+                        "last_used_at",
+                        "created_at",
+                        "owner",
+                        "revoked_at",
+                    ]
+                    if c in df.columns
+                ]
+                st.dataframe(df[cols], width="stretch", hide_index=True)
 
                 st.markdown("**Actions**")
                 a1, a2 = st.columns(2)
                 prefix = a1.selectbox(
                     "Key (prefix)", [k["prefix"] for k in keys], key="key_act_prefix"
                 )
-                action = a2.selectbox("Action", ["revoke", "enable"], key="key_act_type")
+                action = a2.selectbox(
+                    "Action", ["revoke", "enable"], key="key_act_type"
+                )
                 if st.button("Apply"):
                     path = f"/admin/keys/{prefix}"
                     if action == "revoke":
-                        r, e = run_request(client, "DELETE", path, admin=True, timeout=30)
+                        r, e = run_request(
+                            client, "DELETE", path, admin=True, timeout=30
+                        )
                     else:
-                        r, e = run_request(client, "POST", f"{path}/enable", admin=True, timeout=30)
+                        r, e = run_request(
+                            client, "POST", f"{path}/enable", admin=True, timeout=30
+                        )
                     if e:
                         banner_for_error(e, True)
                     else:
@@ -922,9 +1007,7 @@ def tab_metrics(client: VoyagerClient):
     resp, err = run_request(client, "GET", "/metrics", timeout=30)
     if err:
         banner_for_error(err, bool(current_cfg().admin_key))
-        st.caption(
-            "If /metrics is disabled, set METRICS_ENABLED=true on the server."
-        )
+        st.caption("If /metrics is disabled, set METRICS_ENABLED=true on the server.")
         return
 
     families = {}
@@ -951,15 +1034,20 @@ def tab_metrics(client: VoyagerClient):
             by_route.items(), key=lambda kv: kv[1], reverse=True
         ):
             errs = sum(
-                s.value for s in counter
+                s.value
+                for s in counter
                 if (s.labels.get("method"), s.labels.get("route")) == (method, route)
                 and int(s.labels.get("status", 0)) >= 500
             )
             rate = errs / count * 100 if count else 0
             err_rate += rate
             route_rows.append(
-                {"method": method, "route": route, "requests": int(count),
-                 "error_rate_%": round(rate, 2)}
+                {
+                    "method": method,
+                    "route": route,
+                    "requests": int(count),
+                    "error_rate_%": round(rate, 2),
+                }
             )
         m = st.columns(3)
         m[0].metric("Total requests", f"{int(total):,}")
@@ -969,7 +1057,7 @@ def tab_metrics(client: VoyagerClient):
         st.markdown("**Requests by route**")
         st.bar_chart(rdf.set_index("route")["requests"])
         st.markdown("**5xx error rate by route**")
-        st.dataframe(rdf, width='stretch', hide_index=True)
+        st.dataframe(rdf, width="stretch", hide_index=True)
 
     if histogram:
         buckets = {}
@@ -988,12 +1076,17 @@ def tab_metrics(client: VoyagerClient):
             p50 = _percentile(bucket_list, 0.50)
             p95 = _percentile(bucket_list, 0.95)
             rows.append(
-                {"method": method, "route": route, "requests": int(total),
-                 "p50_ms": p50, "p95_ms": p95}
+                {
+                    "method": method,
+                    "route": route,
+                    "requests": int(total),
+                    "p50_ms": p50,
+                    "p95_ms": p95,
+                }
             )
         if rows:
             st.markdown("**Latency (ms)**")
-            st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 def _percentile(bucket_list, p: float):
@@ -1028,7 +1121,14 @@ def main():
     client = build_client()
 
     tabs = st.tabs(
-        ["Overview", "Pull Manager", "Playground", "Database Stats", "API Keys", "Metrics"]
+        [
+            "Overview",
+            "Pull Manager",
+            "Playground",
+            "Database Stats",
+            "API Keys",
+            "Metrics",
+        ]
     )
     with tabs[0]:
         tab_overview(client)
