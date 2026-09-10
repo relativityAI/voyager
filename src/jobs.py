@@ -114,7 +114,7 @@ async def submit_task(
     """Submit a generic async analytics job (parse PDF, sentiment, etc.)."""
     await _check_concurrency(created_by)
 
-    symbol = task_args.get("symbol", "*")
+    symbol = task_args.get("symbol") or "*"
     job = PullJobModel(
         job_id=str(uuid.uuid4()),
         symbol=symbol,
