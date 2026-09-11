@@ -50,6 +50,7 @@ class BlockedResponse(Exception):
 DEFAULT_TIMEOUT = 10.0
 DEFAULT_PRIME_TIMEOUT = 15.0
 DEFAULT_PRIME_TTL = 1800.0  # 30 minutes
+MAX_PROXY_ROTATIONS = int(os.getenv("PROXY_MAX_ROTATIONS", "3"))
 
 
 def _is_render() -> bool:
@@ -199,6 +200,7 @@ class StealthSession:
             self._current_proxy = self._resolve_initial_proxy()
         targets = [self.config.warmup_url, *self.config.warmup_fallbacks]
         last_error: str = ""
+        proxy_rotations = 0
         for url in targets:
             self.throttle.wait()
             try:
@@ -219,6 +221,13 @@ class StealthSession:
                     self.logger.info("Stale HTTP/2 session detected; clearing cookies and retrying")
                     self._invalidate_cookies()
                     continue
+                if self._current_proxy and proxy_rotations < MAX_PROXY_ROTATIONS:
+                    new_proxy = self._rotate_proxy(
+                        self._current_proxy, f"prime failed: {exc}"
+                    )
+                    if new_proxy:
+                        proxy_rotations += 1
+                        continue
             except Exception as exc:  # noqa: BLE001 - any failure means "not primed"
                 last_error = f"{url} -> {exc}"
         self.logger.warning(f"Cookie priming failed for {self.config.name}: {last_error}")
@@ -267,11 +276,13 @@ class StealthSession:
         Proxy behaviour (D-11):
           - On Render, starts with a pool proxy.
           - Locally, starts direct. On 403/blocked, falls back to pool.
-          - On repeated blocks, rotates to the next pool proxy.
+          - On repeated blocks, rotates to the next pool proxy, up to
+            ``MAX_PROXY_ROTATIONS`` (3) times per request.
         """
         request_timeout = timeout if timeout is not None else self.timeout
         last_failure: str = ""
         reprimed = False
+        proxy_rotations = 0
 
         self._current_proxy = self._resolve_initial_proxy()
         self._used_proxy_this_request = self._current_proxy is not None
@@ -296,8 +307,14 @@ class StealthSession:
             except RequestException as exc:
                 last_failure = f"network error: {exc}"
                 self.logger.warning(f"{method} {url} failed ({last_failure}); retrying")
-                if self._current_proxy:
-                    self._rotate_proxy(self._current_proxy, f"network error: {exc}")
+                if self._current_proxy and proxy_rotations < MAX_PROXY_ROTATIONS:
+                    new_proxy = self._rotate_proxy(
+                        self._current_proxy, f"network error: {exc}"
+                    )
+                    if new_proxy:
+                        proxy_rotations += 1
+                        self._backoff(attempt)
+                        continue
                 self._backoff(attempt)
                 continue
 
@@ -313,15 +330,25 @@ class StealthSession:
             status = resp.status_code
 
             if status in (401, 403):
-                if self.config.proxy_pool and not self._used_proxy_this_request:
+                if (
+                    self.config.proxy_pool
+                    and not self._used_proxy_this_request
+                    and proxy_rotations < MAX_PROXY_ROTATIONS
+                ):
                     if self._switch_to_proxy(f"blocked {status}"):
+                        proxy_rotations += 1
                         self._backoff(attempt)
                         continue
-                if self.config.proxy_pool and self._current_proxy:
+                if (
+                    self.config.proxy_pool
+                    and self._current_proxy
+                    and proxy_rotations < MAX_PROXY_ROTATIONS
+                ):
                     new_proxy = self._rotate_proxy(
                         self._current_proxy, f"blocked {status}"
                     )
                     if new_proxy:
+                        proxy_rotations += 1
                         self._backoff(attempt)
                         continue
                 if not reprimed:

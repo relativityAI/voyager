@@ -5,8 +5,9 @@ This test hits a real NSE endpoint through a real proxy, so it is marked
 
     python -m pytest tests/test_proxy_nse.py -m live -v
 
-The proxy URL defaults to ``http://117.236.124.166:3128`` and can be
-overridden with ``TEST_PROXY_URL``.
+The proxy list defaults to a comma-separated set of free proxies and can be
+overridden with ``TEST_PROXY_URL``. On failure the session rotates to the
+next proxy in the pool (up to 3 times).
 """
 
 from __future__ import annotations
@@ -19,7 +20,15 @@ from src.scrapers.proxy_pool import ProxyPool
 from src.scrapers.session import BlockedResponse, StealthSession
 from src.scrapers.sources.nse import build_nse_config
 
-PROXY_URL = os.getenv("TEST_PROXY_URL", "http://117.236.124.166:3128")
+PROXY_URLS = [
+    p.strip()
+    for p in os.getenv(
+        "TEST_PROXY_URL",
+        "http://117.236.124.166:3128,http://202.28.194.139:31280,"
+        "http://185.195.71.218:18080,http://1.231.81.166:3128",
+    ).split(",")
+    if p.strip()
+]
 SYMBOL = os.getenv("TEST_NSE_SYMBOL", "TCS")
 
 
@@ -34,7 +43,7 @@ def _validate_api_response(resp) -> None:
 def test_nse_endpoint_through_proxy():
     """Access a real NSE API endpoint through the configured proxy."""
     config = build_nse_config(calls_per_second=5)
-    config.proxy_pool = ProxyPool(proxies=[PROXY_URL])
+    config.proxy_pool = ProxyPool(proxies=PROXY_URLS)
     session = StealthSession(config, force_proxy=True)
 
     try:
@@ -51,7 +60,7 @@ def test_nse_endpoint_through_proxy():
         assert resp.status_code == 200
         ctype = resp.headers.get("content-type", "")
         assert "text/html" not in ctype.lower(), f"NSE blocked the request: {ctype}"
-        # Confirm the request actually went through the proxy.
-        assert session._current_proxy == PROXY_URL
+        # Confirm the request actually went through one of the pool proxies.
+        assert session._current_proxy in PROXY_URLS
     finally:
         session.close()

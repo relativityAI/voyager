@@ -41,3 +41,5 @@ jobs:
       #   run: ruff format --check .
       - name: Run test suite
         run: python -m pytest tests/ -q
+      - name: Run proxy test 
+        run: python -m pytest tests/test_proxy_nse.py -m live -v --noconftest -o addopts=""

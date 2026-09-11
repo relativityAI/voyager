@@ -34,17 +34,24 @@ def test_pool_size():
     assert ProxyPool(proxies=["http://1.2.3.4:8080"]).size == 1
 
 
-def test_pool_mark_failed_is_noop():
+def test_pool_mark_failed_avoids_proxy_during_cooldown():
+    pool = ProxyPool(proxies=["http://1.2.3.4:8080", "http://5.6.7.8:3128"])
+    pool.mark_failed("http://1.2.3.4:8080")
+    assert pool.get_proxy() == "http://5.6.7.8:3128"
+
+
+def test_pool_mark_failed_falls_back_when_all_failed():
     pool = ProxyPool(proxies=["http://1.2.3.4:8080"])
     pool.mark_failed("http://1.2.3.4:8080")
     assert pool.size == 1
     assert pool.get_proxy() == "http://1.2.3.4:8080"
 
 
-def test_pool_mark_success_is_noop():
-    pool = ProxyPool(proxies=["http://1.2.3.4:8080"])
+def test_pool_mark_success_clears_failure():
+    pool = ProxyPool(proxies=["http://1.2.3.4:8080", "http://5.6.7.8:3128"])
+    pool.mark_failed("http://1.2.3.4:8080")
     pool.mark_success("http://1.2.3.4:8080")
-    assert pool.size == 1
+    assert pool.get_proxy() in ("http://1.2.3.4:8080", "http://5.6.7.8:3128")
 
 
 def test_pool_force_refresh_is_noop():

@@ -5,8 +5,10 @@ and returns a random one on each call. No fetching, no validation - just a
 static list from the environment (same pattern as ``src/utils/web.py``).
 
 The :class:`ProxyPool` keeps the same interface used by the stealth session
-(``get_proxy``/``mark_failed``/``mark_success``) so the transport code is
-unchanged; ``mark_failed``/``mark_success`` are no-ops for a static pool.
+(``get_proxy``/``mark_failed``/``mark_success``). ``mark_failed`` records a
+proxy as failed for a short cooldown so ``get_proxy`` avoids returning it
+again; ``mark_success`` clears the failure. This lets the stealth session
+rotate to a *different* proxy when one is unstable.
 """
 
 from __future__ import annotations
@@ -15,37 +17,59 @@ import logging
 import os
 import random
 import threading
-from typing import List, Optional
+import time
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 PROXY_POOL_ENV = "PROXY_POOL"
+PROXY_FAIL_COOLDOWN_ENV = "PROXY_POOL_FAIL_COOLDOWN"
+DEFAULT_FAIL_COOLDOWN = 300.0  # seconds
 
 
 class ProxyPool:
     """A static, env-configured pool of proxy URLs.
 
     Proxies are read once from ``PROXY_POOL`` (comma-separated) and a random
-    one is returned per ``get_proxy()`` call. ``mark_failed``/``mark_success``
-    are no-ops kept for interface compatibility with the stealth session.
+    one is returned per ``get_proxy()`` call. Proxies marked failed are
+    excluded from selection for a cooldown period so rotation picks a
+    different proxy.
     """
 
     def __init__(self, proxies: Optional[List[str]] = None) -> None:
         self._proxies = [p.strip() for p in (proxies or []) if p.strip()]
+        self._failed: Dict[str, float] = {}
         self._lock = threading.Lock()
+        self._fail_cooldown = float(
+            os.getenv(PROXY_FAIL_COOLDOWN_ENV, DEFAULT_FAIL_COOLDOWN)
+        )
 
     def get_proxy(self) -> Optional[str]:
-        """Return a random proxy URL from the pool, or None if empty."""
+        """Return a random proxy that has not recently failed, or None if empty."""
         if not self._proxies:
             return None
         with self._lock:
-            return random.choice(self._proxies)
+            now = time.monotonic()
+            candidates = [
+                p
+                for p in self._proxies
+                if p not in self._failed
+                or now - self._failed[p] > self._fail_cooldown
+            ]
+            if not candidates:
+                # Everything failed recently - fall back to the full pool.
+                candidates = self._proxies
+            return random.choice(candidates)
 
     def mark_failed(self, proxy_url: str) -> None:
-        """No-op: static pool, nothing to track."""
+        """Record a proxy as failed so it is avoided for the cooldown period."""
+        with self._lock:
+            self._failed[proxy_url] = time.monotonic()
 
     def mark_success(self, proxy_url: str) -> None:
-        """No-op: static pool, nothing to track."""
+        """Clear a proxy's failure so it can be selected again."""
+        with self._lock:
+            self._failed.pop(proxy_url, None)
 
     def force_refresh(self) -> None:
         """No-op: static pool, nothing to refresh."""
