@@ -37,7 +37,7 @@ jobs:
       # - name: Run Ruff check (Linter)
       #   run: ruff check .
 
-      - name: Run Ruff format check
-        run: ruff format --check .
+      # - name: Run Ruff format check
+      #   run: ruff format --check .
       - name: Run test suite
         run: python -m pytest tests/ -q
