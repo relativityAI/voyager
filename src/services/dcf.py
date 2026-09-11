@@ -1,9 +1,9 @@
 """Two-stage discounted cash flow (DCF) valuation, computed from stored data.
 
-Reuses ``financial_metrics`` (TTM OCF/FCF-per-share, shares, price, growth) so
-the model needs no new DB reads. Free cash flow is approximated as operating
-cash flow: capex is rarely present in XBRL filings, so it is omitted and the
-assumption is disclosed in the output.
+Reuses ``financial_metrics`` (TTM OCF, CapEx, shares, price, growth) so
+the model needs no new DB reads. Free cash flow is operating cash flow minus
+CapEx when the filing provides it; otherwise it falls back to operating cash
+flow alone and the output flags the proxy with a warning.
 """
 
 from typing import Any, Dict, Optional
@@ -14,6 +14,9 @@ from .metrics import _safe_div, _to_float, financial_metrics
 RISK_FREE_RATE = 0.064  # India 10Y govt yield proxy; override via risk_free_rate
 MARKET_PREMIUM = 0.06
 TAX_RATE = 0.25
+# Auto-derived growth (revenue growth) is capped: sustainable FCF growth
+# cannot exceed nominal GDP + a tailwind. User-supplied growth is never capped.
+MAX_AUTO_GROWTH = 0.12
 
 
 def _default_discount_rate(beta: float) -> float:
@@ -58,6 +61,23 @@ async def dcf_valuation(
             "discount rate must be greater than terminal growth rate"
         )
 
+    warnings = []
+    auto_growth = growth_rate is None
+    if auto_growth and g > MAX_AUTO_GROWTH:
+        warnings.append(
+            f"Growth rate capped from {g*100:.1f}% to {MAX_AUTO_GROWTH*100:.0f}% "
+            "(auto-computed revenue growth; pass growth_rate to override)"
+        )
+        g = MAX_AUTO_GROWTH
+
+    fcf_src = metrics.get("free_cash_flow_source")
+    fcf_from_capex = fcf_src == "operating_cash_flow_minus_capex"
+    if not fcf_from_capex:
+        warnings.append(
+            "FCF approximated as operating cash flow (CapEx absent from filings); "
+            "intrinsic value is optimistic"
+        )
+
     pv_explicit = 0.0
     for i in range(1, years + 1):
         cf = fcf_per_share * ((1 + g) ** i)
@@ -72,14 +92,21 @@ async def dcf_valuation(
         else None
     )
 
+    model = (
+        "two-stage FCFF (FCF = operating cash flow - CapEx)"
+        if fcf_from_capex
+        else "two-stage FCFF (FCF ~= operating cash flow, CapEx absent)"
+    )
+
     return {
         "symbol": symbol,
         "source": source,
         "valuation": "dcf",
-        "model": "two-stage FCFF (FCF ~= operating cash flow)",
+        "model": model,
         "current_price": current_price,
         "intrinsic_value_per_share": round(intrinsic_value, 2),
         "margin_of_safety_pct": margin_of_safety,
+        "warnings": warnings,
         "assumptions": {
             "growth_rate": g,
             "terminal_growth_rate": tg,
@@ -89,8 +116,11 @@ async def dcf_valuation(
             "risk_free_rate": RISK_FREE_RATE,
             "market_premium": MARKET_PREMIUM,
             "fcf_per_share": fcf_per_share,
-            "fcf_source": "operating_cash_flow (capex absent from XBRL); "
-                           "override via financial-metrics FCF when available",
+            "fcf_source": (
+                "operating_cash_flow_minus_capex"
+                if fcf_from_capex
+                else "operating_cash_flow_capex_absent"
+            ),
         },
     }
 

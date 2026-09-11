@@ -60,10 +60,13 @@ def _carry_forward_balance_sheets(records: list, balance_docs: dict) -> None:
     if not balance_docs:
         return
     bs_dates = sorted(balance_docs.keys(), reverse=True)
-    fields = [
-        k for k in next(iter(balance_docs.values()))
-        if k not in _BS_META_FIELDS
-    ]
+    fields = set()
+    for d in balance_docs.values():
+        fields |= set(d.keys())
+    fields -= _BS_META_FIELDS
+    # Newest quarterly filings can be stub rows (Q1 XBRLs only carry ratio
+    # fields), so the fill set must come from every stored balance sheet, not
+    # just the first row's keys.
     for r in records:
         d = r.get("period_end_date")
         if not isinstance(d, str):
@@ -241,8 +244,13 @@ async def financial_metrics(
         "finance_costs",
         "depreciation_depletion_and_amortisation_expense",
         "cash_flows_from_used_in_operating_activities",
+        "payments_for_purchase_of_noncurrent_assets",
         "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations",
     ]
+    sparse_flows = {
+        "cash_flows_from_used_in_operating_activities",
+        "payments_for_purchase_of_noncurrent_assets",
+    }
     ttm_values: dict = {}
     if is_ttm or filing_type == "quarterly":
         for f in flow_fields:
@@ -250,7 +258,7 @@ async def financial_metrics(
                 records,
                 f,
                 0,
-                require_all=(f != "cash_flows_from_used_in_operating_activities"),
+                require_all=(f not in sparse_flows),
             )
 
     ttm_rev = ttm_values.get("revenue_from_operations")
@@ -258,6 +266,7 @@ async def financial_metrics(
     ttm_pbt = ttm_values.get("profit_before_tax")
     ttm_fc = ttm_values.get("finance_costs")
     ttm_ocf = ttm_values.get("cash_flows_from_used_in_operating_activities")
+    ttm_capex = ttm_values.get("payments_for_purchase_of_noncurrent_assets")
     ttm_dep = ttm_values.get("depreciation_depletion_and_amortisation_expense")
     ttm_eps = ttm_values.get(
         "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations"
@@ -269,7 +278,7 @@ async def financial_metrics(
     )
 
     if is_ttm:
-        rev, pbt, pat, fc, dep, ocf, eps = [ttm_values[f] for f in flow_fields]
+        rev, pbt, pat, fc, dep, ocf, capex, eps = [ttm_values[f] for f in flow_fields]
     else:
         rev = _to_float(latest.get("revenue_from_operations"))
         pbt = _to_float(latest.get("profit_before_tax"))
@@ -277,12 +286,14 @@ async def financial_metrics(
         fc = _to_float(latest.get("finance_costs"))
         dep = _to_float(latest.get("depreciation_depletion_and_amortisation_expense"))
         ocf = _to_float(latest.get("cash_flows_from_used_in_operating_activities"))
+        capex = _to_float(latest.get("payments_for_purchase_of_noncurrent_assets"))
         eps = _to_float(
             latest.get(
                 "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations"
             )
         )
     ebit = (pbt or 0) + (fc or 0) if pbt is not None or fc is not None else None
+    val_capex = ttm_capex if ttm_capex is not None else capex
 
     total_debt = (borrowings_c or 0) + (borrowings_nc or 0)
     total_equity = (equity_sc or 0) + (other_eq or 0)
@@ -470,7 +481,19 @@ async def financial_metrics(
     result["enterprise_value_to_revenue_ratio"] = (
         _safe_div(enterprise_value, val_rev) if enterprise_value is not None else None
     )
-    fcf = val_ocf
+    # FCF = OCF - CapEx when CapEx is present in filings; falls back to OCF
+    # (the old proxy) only when the filing omits CapEx.
+    if val_ocf is not None:
+        fcf = val_ocf - val_capex if val_capex is not None else val_ocf
+        fcf_source = (
+            "operating_cash_flow_minus_capex"
+            if val_capex is not None
+            else "operating_cash_flow_capex_absent"
+        )
+    else:
+        fcf = None
+        fcf_source = None
+    result["free_cash_flow_source"] = fcf_source
     result["free_cash_flow_yield"] = (
         _pct(_safe_div(fcf, market_cap)) if fcf is not None and market_cap else None
     )

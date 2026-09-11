@@ -68,6 +68,7 @@ _PRIORITY_FIELD_KEEP = {
     "source_endpoint",
     "context_ref_type",
     "pulled_at",
+    "data_quality",
 }
 
 

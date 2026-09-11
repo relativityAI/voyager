@@ -75,6 +75,7 @@ import os
 import random
 import time
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from typing import Any, Dict
 from urllib.parse import urlparse
@@ -455,7 +456,14 @@ class NSEIndia:
 
             # Q4 integrated filings publish the cash-flow statement only as a
             # full-year figure; dropping it left the cash_flows table empty.
-            is_cash_flow_fact = f.get("tag", "").startswith("CashFlowsFromUsedIn")
+            # Any fact mapped to the cash_flow category is kept, so CapEx
+            # (Purchase*ClassifiedAsInvestingActivities, which lack the
+            # CashFlowsFromUsedIn prefix) survives too.
+            tag = f.get("tag", "")
+            is_cash_flow_fact = (
+                CATEGORY_MAP.get(CAML_TO_SNAKE.get(tag, camel_to_snake(tag)))
+                == "cash_flow"
+            )
             ctx_type = NSEIndia._get_context_ref_type(f.get("contextRef"))
 
             if ctx_type in ("quarterly", "annual"):
@@ -609,7 +617,15 @@ class NSEIndia:
                                 stmts["shareholding"].append((field, f["value"]))
                                 continue
 
-                            entry = (tag_snake, f["value"])
+                            # CapEx is published as several Purchase* line items;
+                            # the "field" override collapses them onto the store
+                            # column so FCF can read a single number.
+                            target = (
+                                FINANCIAL_FIELD_MAP[tag].get("field")
+                                if tag in FINANCIAL_FIELD_MAP
+                                else None
+                            )
+                            entry = (target or tag_snake, f["value"])
 
                             if cat == "income_statement" or cat == "per_share":
                                 stmts["income_statement"].append(entry)
@@ -655,6 +671,16 @@ class NSEIndia:
                                 ).encode()
                             ).hexdigest()
                             for tag_snake, value in entries:
+                                if value is None:
+                                    continue
+                                existing = doc.get(tag_snake)
+                                if existing is not None:
+                                    try:
+                                        value = str(
+                                            Decimal(existing) + Decimal(value)
+                                        )
+                                    except InvalidOperation:
+                                        pass
                                 doc[tag_snake] = value
                             result[stmt_key] = doc
 

@@ -57,7 +57,10 @@
   "cash_flows": {
     "priority": [
       "cash_flows_from_used_in_operations",
-      "cash_flows_from_used_in_operating_activities"
+      "cash_flows_from_used_in_operating_activities",
+      "cash_flows_from_used_in_investing_activities",
+      "cash_flows_from_used_in_financing_activities",
+      "payments_for_purchase_of_noncurrent_assets"
     ]
   },
   "shareholdings": {
