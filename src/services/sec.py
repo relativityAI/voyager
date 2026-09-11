@@ -443,25 +443,27 @@ async def pull_sec_data(
     parse_failures: List[str] = []
 
     def _parse(form: str) -> Optional[tuple]:
+        last_error = None
         for attempt in range(3):
             try:
                 filings = _get_filings(company, form, EDGAR_MAX_ANNUAL_FILINGS if form == "10-K" else EDGAR_MAX_QUARTERLY_FILINGS)
                 if not filings:
-                    logger.warning(f"No {form} filings for {symbol}")
-                    return None
-                xbrls = XBRLS.from_filings(filings)
-                return (
-                    xbrls.statements.income_statement().to_dataframe(),
-                    xbrls.statements.balance_sheet().to_dataframe(),
-                    xbrls.statements.cash_flow_statement().to_dataframe(),
-                    len(filings),
-                )
+                    last_error = f"{form}: SEC returned no filings for {symbol}"
+                else:
+                    xbrls = XBRLS.from_filings(filings)
+                    return (
+                        xbrls.statements.income_statement().to_dataframe(),
+                        xbrls.statements.balance_sheet().to_dataframe(),
+                        xbrls.statements.cash_flow_statement().to_dataframe(),
+                        len(filings),
+                    )
             except Exception as exc:
-                if attempt < 2:
-                    time.sleep(1 + attempt * 2)
-                    continue
-                logger.warning(f"XBRL parse failed for {symbol} {form} (after 3 attempts): {exc}")
-                return None
+                last_error = f"{form}: {type(exc).__name__}: {exc}"
+            if attempt < 2:
+                time.sleep(1 + attempt * 2)
+        parse_failures.append(last_error or f"{form}: parse failed")
+        logger.warning(f"SEC parse failed for {symbol} {form} (after 3 attempts): {last_error}")
+        return None
 
     annual = None
     if want_quarterly or want_annual:
