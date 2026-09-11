@@ -62,6 +62,9 @@ async def init_db():
         for ddl in [
             "ALTER TABLE pull_jobs ADD COLUMN IF NOT EXISTS task TEXT",
             "ALTER TABLE pull_jobs ADD COLUMN IF NOT EXISTS task_args JSONB",
+            "ALTER TABLE cash_flows ADD COLUMN IF NOT EXISTS cash_flows_from_used_in_investing_activities NUMERIC",
+            "ALTER TABLE cash_flows ADD COLUMN IF NOT EXISTS cash_flows_from_used_in_financing_activities NUMERIC",
+            "ALTER TABLE cash_flows ADD COLUMN IF NOT EXISTS payments_for_purchase_of_noncurrent_assets NUMERIC",
         ]:
             await conn.execute(text(ddl))
 

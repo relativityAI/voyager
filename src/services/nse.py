@@ -420,6 +420,29 @@ def _validate_nse(country: Optional[str], source: str) -> Tuple[str, str]:
     return _validate_source(country, source)
 
 
+_STUB_BALANCE_SHEET_FIELDS = {
+    "paid_up_value_of_equity_share_capital",
+    "face_value_of_equity_share_capital",
+    "debt_equity_ratio",
+}
+
+
+def _latest_populated_balance_sheet(docs, priority_fields):
+    """Latest balance-sheet row that actually carries statement values.
+
+    Current NSE quarterly XBRL filings publish only segment assets/liabilities
+    and ratios (plus paid-up capital), so the newest balance-sheet row can be a
+    structurally-present-but-empty stub; it must not shadow the most recent
+    real balance sheet.
+    """
+    substantive = set(priority_fields or ()) - _STUB_BALANCE_SHEET_FIELDS
+    for c in docs:
+        d = c.to_dict()
+        if any(d.get(f) is not None for f in substantive):
+            return c
+    return docs[0] if docs else None
+
+
 async def get_financials(
     symbol: str,
     country: Optional[str] = None,
@@ -442,15 +465,23 @@ async def get_financials(
 
     async with factory() as session:
         for model_class in (IncomeStatement, BalanceSheet, CashFlow):
-            result = await session.execute(
-                select(model_class).where(
+            stmt = (
+                select(model_class)
+                .where(
                     model_class.symbol == symbol,
                     model_class.consolidated == consolidated,
                     model_class.filing_type == filing_type,
                     model_class.source == source,
-                ).order_by(model_class.period_end_date.desc()).limit(1)
+                )
+                .order_by(model_class.period_end_date.desc())
             )
-            doc = result.scalar_one_or_none()
+            if model_class is BalanceSheet:
+                docs = (await session.execute(stmt.limit(12))).scalars().all()
+                doc = _latest_populated_balance_sheet(
+                    docs, priority_config.get("balance_sheets", set())
+                )
+            else:
+                doc = (await session.execute(stmt.limit(1))).scalar_one_or_none()
             if doc:
                 d = doc.to_dict()
                 period = d.get("period_end_date")

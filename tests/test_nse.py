@@ -291,6 +291,47 @@ def test_process_xbrl_skips_empty_after_filter(nse_india):
     assert result is None, "Should skip XBRL with no annual facts"
 
 
+def test_process_xbrl_keeps_capex_in_quarterly_cash_flow(nse_india):
+    """CapEx (PaymentsForPurchaseOfNoncurrentAssets) is a cash-flow fact but
+    lacks the CashFlowsFromUsedIn prefix; the quarterly filter must keep it
+    when published as a full-year figure in a Q4 integrated filing."""
+    sample = SAMPLE_XBRL.replace(
+        b"</xbrli:xbrl>",
+        b'    <in-bse-fin:PaymentsForPurchaseOfNoncurrentAssets contextRef="FourD">150000'
+        b"</in-bse-fin:PaymentsForPurchaseOfNoncurrentAssets>\n"
+        b"</xbrli:xbrl>",
+    )
+    mock_record = {"xbrl": MOCK_XBRL_URL, "consolidated": "Consolidated"}
+    with unittest.mock.patch.object(
+        nse_india.api, "fetch_xbrl_content", return_value=sample
+    ):
+        result = nse_india.process_xbrl(mock_record, "TEST", "integrated-filing")
+    assert result is not None
+    doc = result["cash_flow"]
+    assert doc["payments_for_purchase_of_noncurrent_assets"] == "150000"
+
+
+def test_process_xbrl_sums_capex_line_items_to_one_field(nse_india):
+    """Real filings publish CapEx as several Purchase* investing line items;
+    they must collapse onto payments_for_purchase_of_noncurrent_assets."""
+    sample = SAMPLE_XBRL.replace(
+        b"</xbrli:xbrl>",
+        b'    <in-bse-fin:PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities'
+        b' contextRef="FourD">100000</in-bse-fin:PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities>\n'
+        b'    <in-bse-fin:PurchaseOfOtherLongTermAssetsClassifiedAsInvestingActivities'
+        b' contextRef="FourD">25000</in-bse-fin:PurchaseOfOtherLongTermAssetsClassifiedAsInvestingActivities>\n'
+        b"</xbrli:xbrl>",
+    )
+    mock_record = {"xbrl": MOCK_XBRL_URL, "consolidated": "Consolidated"}
+    with unittest.mock.patch.object(
+        nse_india.api, "fetch_xbrl_content", return_value=sample
+    ):
+        result = nse_india.process_xbrl(mock_record, "TEST", "integrated-filing")
+    assert result is not None
+    doc = result["cash_flow"]
+    assert doc["payments_for_purchase_of_noncurrent_assets"] == "125000"
+
+
 def test_process_xbrl_shareholding_new_context_format(nse_india):
     """NSE's post-Jun-2025 shareholding template uses '..._ContextI' context ids."""
     mock_record = {"xbrl": MOCK_XBRL_URL, "consolidated": "Shareholding"}

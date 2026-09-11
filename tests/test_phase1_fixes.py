@@ -58,13 +58,19 @@ def _mock_factory(session):
     return MagicMock(return_value=cm)
 
 
-def _session_with_docs(*docs_by_iteration):
-    """get_financials iterates IncomeStatement, BalanceSheet, CashFlow in a
-    fixed order and calls execute() then scalar_one_or_none() each pass."""
+def _session_with_docs(income, balance, cash):
+    """get_financials queries income & cash flow via scalar_one_or_none() and
+    the balance sheet via scalars().all() (look-back for stub skip)."""
+    bs_result = MagicMock()
+    bs_scalars = MagicMock()
+    bs_scalars.all.return_value = [balance] if balance is not None else []
+    bs_result.scalars.return_value = bs_scalars
+
     result = MagicMock()
-    result.scalar_one_or_none = MagicMock(side_effect=list(docs_by_iteration))
+    result.scalar_one_or_none = MagicMock(side_effect=[income, cash])
+
     session = AsyncMock()
-    session.execute = AsyncMock(return_value=result)
+    session.execute = AsyncMock(side_effect=[result, bs_result, result])
     return session
 
 
@@ -128,35 +134,39 @@ async def _run_dcf(metrics, **kwargs):
         return await dcf_valuation("T", source="nse", **kwargs)
 
 
+_DCF_METRICS = {
+    "free_cash_flow_per_share": 10.0,
+    "current_price": 100.0,
+    "revenue_growth": 20.0,
+    "free_cash_flow_source": "operating_cash_flow_minus_capex",
+}
+
+
 def test_dcf_caps_auto_growth():
-    metrics = {
-        "free_cash_flow_per_share": 10.0,
-        "current_price": 100.0,
-        "revenue_growth": 20.0,
-    }
-    result = asyncio.run(_run_dcf(metrics))
+    result = asyncio.run(_run_dcf(_DCF_METRICS))
     assert result["assumptions"]["growth_rate"] == 0.12
     assert len(result["warnings"]) == 1
     assert "capped" in result["warnings"][0]
 
 
 def test_dcf_does_not_cap_user_growth():
-    metrics = {
-        "free_cash_flow_per_share": 10.0,
-        "current_price": 100.0,
-        "revenue_growth": 20.0,
-    }
-    result = asyncio.run(_run_dcf(metrics, growth_rate=0.25))
+    result = asyncio.run(_run_dcf(_DCF_METRICS, growth_rate=0.25))
     assert result["assumptions"]["growth_rate"] == 0.25
     assert result["warnings"] == []
 
 
 def test_dcf_auto_growth_within_cap_has_no_warning():
-    metrics = {
-        "free_cash_flow_per_share": 10.0,
-        "current_price": 100.0,
-        "revenue_growth": 5.0,
-    }
+    metrics = {**_DCF_METRICS, "revenue_growth": 5.0}
     result = asyncio.run(_run_dcf(metrics))
     assert result["assumptions"]["growth_rate"] == 0.05
     assert result["warnings"] == []
+
+
+def test_dcf_warns_when_capex_absent():
+    metrics = {
+        **_DCF_METRICS,
+        "free_cash_flow_source": "operating_cash_flow_capex_absent",
+    }
+    result = asyncio.run(_run_dcf(metrics, growth_rate=0.10))
+    assert any("CapEx absent" in w for w in result["warnings"])
+    assert result["assumptions"]["fcf_source"] == "operating_cash_flow_capex_absent"

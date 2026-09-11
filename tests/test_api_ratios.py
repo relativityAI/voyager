@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -82,6 +82,9 @@ class TestFinancialMetrics:
                     "consolidated": rec["consolidated"],
                     "cash_flows_from_used_in_operating_activities": rec.get(
                         "cash_flows_from_used_in_operating_activities"
+                    ),
+                    "payments_for_purchase_of_noncurrent_assets": rec.get(
+                        "payments_for_purchase_of_noncurrent_assets"
                     ),
                 }
             )
@@ -441,6 +444,65 @@ class TestFinancialMetrics:
         assert data["return_on_equity"] == pytest.approx(15000 / 200000 * 100)
         assert data["cash_and_equivalents"] == 10000
 
+    def test_balance_sheet_stub_skipped_for_populated(self):
+        """The newest quarterly balance sheet can be a stub (Q1 filings often
+        lack a full BS); the most recent row with real values must be used."""
+        income, balance, cashflow = [], [], []
+        income.append({"period_end_date": "2026-06-30", "consolidated": True,
+                       "revenue_from_operations": "500000",
+                       "profit_loss_for_period": "60000"})
+        cashflow.append({"period_end_date": "2026-06-30", "consolidated": True})
+        # stub BS row (Q1): only metadata fields set
+        balance.append({"period_end_date": "2026-06-30", "consolidated": True,
+                        "paid_up_value_of_equity_share_capital": "100",
+                        "face_value_of_equity_share_capital": "10"})
+        # FY26 annual BS: full data
+        balance.append({"period_end_date": "2026-03-31", "consolidated": True,
+                        "equity_share_capital": "200000",
+                        "other_equity": "400000",
+                        "assets": "1500000",
+                        "cash_and_cash_equivalents": "25000"})
+
+        data_map = {
+            "income_statements": income,
+            "balance_sheets": balance,
+            "cash_flows": cashflow,
+        }
+        query_count = {"n": 0}
+
+        def _make_result(items):
+            mock_result = MagicMock()
+            mock_scalars = MagicMock()
+            mock_scalars.all.return_value = [self._make_mock_model(d) for d in items]
+            mock_result.scalars.return_value = mock_scalars
+            return mock_result
+
+        mock_session = AsyncMock()
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cm.__exit__ = AsyncMock(return_value=False)
+        self.mock_factory.return_value = MagicMock(return_value=mock_cm)
+
+        keys = list(data_map.keys())
+
+        def execute_side_effect(stmt):
+            idx = query_count["n"]
+            query_count["n"] += 1
+            return _make_result(data_map[keys[idx]]) if idx < len(keys) else _make_result([])
+
+        mock_session.execute = AsyncMock(side_effect=execute_side_effect)
+        self.mock_fetch_price.return_value = {
+            "current_price": 2500.0,
+            "shares_outstanding": 100000,
+        }
+        self.mock_fetch_tech.return_value = {}
+
+        response = client.get("/financial-metrics?symbol=TEST&country=in&source=nse")
+        data = response.json()
+        # must reflect the FY26 populated BS, not the Q1 stub
+        assert data["total_equity"] == 600000
+        assert data["cash_and_equivalents"] == 25000
+
     def test_missing_cash_flow_returns_null_not_zero(self):
         self._setup_db_mock(
             [
@@ -459,6 +521,55 @@ class TestFinancialMetrics:
         data = response.json()
         assert data["free_cash_flow_yield"] is None
         assert data["free_cash_flow_per_share"] is None
+
+    def test_fcf_is_ocf_minus_capex_when_present(self):
+        """With CapEx in the filing, FCF must subtract it and label the source."""
+        self._setup_db_mock(
+            [
+                {
+                    "period_end_date": "2025-09-30",
+                    "consolidated": True,
+                    "revenue_from_operations": "100000",
+                    "profit_loss_for_period": "15000",
+                    "cash_flows_from_used_in_operating_activities": "40000",
+                    "payments_for_purchase_of_noncurrent_assets": "12000",
+                }
+            ]
+        )
+        self.mock_fetch_price.return_value = {
+            "current_price": 2500.0,
+            "shares_outstanding": 100000,
+        }
+        self.mock_fetch_tech.return_value = {}
+
+        response = client.get("/financial-metrics?symbol=TEST&country=in&source=nse")
+        data = response.json()
+        assert data["free_cash_flow_source"] == "operating_cash_flow_minus_capex"
+        # FCF = 40000 - 12000 = 28000 -> per share = 0.28
+        assert data["free_cash_flow_per_share"] == pytest.approx(0.28)
+
+    def test_fcf_falls_back_to_ocf_when_capex_absent(self):
+        self._setup_db_mock(
+            [
+                {
+                    "period_end_date": "2025-09-30",
+                    "consolidated": True,
+                    "revenue_from_operations": "100000",
+                    "profit_loss_for_period": "15000",
+                    "cash_flows_from_used_in_operating_activities": "40000",
+                }
+            ]
+        )
+        self.mock_fetch_price.return_value = {
+            "current_price": 2500.0,
+            "shares_outstanding": 100000,
+        }
+        self.mock_fetch_tech.return_value = {}
+
+        response = client.get("/financial-metrics?symbol=TEST&country=in&source=nse")
+        data = response.json()
+        assert data["free_cash_flow_source"] == "operating_cash_flow_capex_absent"
+        assert data["free_cash_flow_per_share"] == pytest.approx(0.4)
 
     def test_shares_fallback_from_paid_up_and_face_value(self):
         self._setup_db_mock(

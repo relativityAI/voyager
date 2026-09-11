@@ -284,6 +284,9 @@ class CashFlow(Base):
 
     cash_flows_from_used_in_operations = Column(Numeric, nullable=True)
     cash_flows_from_used_in_operating_activities = Column(Numeric, nullable=True)
+    cash_flows_from_used_in_investing_activities = Column(Numeric, nullable=True)
+    cash_flows_from_used_in_financing_activities = Column(Numeric, nullable=True)
+    payments_for_purchase_of_noncurrent_assets = Column(Numeric, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("symbol", "period_end_date", "consolidated", "source_endpoint",
