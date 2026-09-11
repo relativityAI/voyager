@@ -438,6 +438,7 @@ async def get_financials(
 
     factory = get_session_factory()
     merged: Dict[str, Any] = {"symbol": symbol, "consolidated": consolidated}
+    source_periods: Dict[str, str] = {}
 
     async with factory() as session:
         for model_class in (IncomeStatement, BalanceSheet, CashFlow):
@@ -452,6 +453,8 @@ async def get_financials(
             doc = result.scalar_one_or_none()
             if doc:
                 d = doc.to_dict()
+                period = d.get("period_end_date")
+                source_periods[model_class.__name__] = str(period) if period else None
                 for k, v in d.items():
                     if k in ("symbol", "consolidated", "pulled_at", "_content_hash", "id"):
                         continue
@@ -459,6 +462,20 @@ async def get_financials(
 
     if len(merged) <= 2:
         raise NotFoundError(f"No financial data found for {symbol}")
+
+    # The income statement is the canonical reporting period; balance sheet
+    # (point-in-time) and cash flow (only in annual filings for some issuers)
+    # can lag. Anchor the merged period on it rather than the last model seen.
+    is_period = source_periods.get("IncomeStatement")
+    if is_period:
+        merged["period_end_date"] = is_period
+
+    unique_periods = {p for p in source_periods.values() if p}
+    if len(unique_periods) > 1:
+        merged["data_quality"] = {
+            "warning": "Merged data mixes different reporting periods",
+            "source_periods": source_periods,
+        }
 
     return _filter_priority_fields(merged, all_priority, all_fields)
 

@@ -138,7 +138,7 @@ def list_category_endpoint(
     ),
     source: str = Query("nse", description="Data source"),
 ):
-    return list_category(category, source)
+    return list_category(category, source=source)
 
 
 @app.get(

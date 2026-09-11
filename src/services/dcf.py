@@ -14,6 +14,9 @@ from .metrics import _safe_div, _to_float, financial_metrics
 RISK_FREE_RATE = 0.064  # India 10Y govt yield proxy; override via risk_free_rate
 MARKET_PREMIUM = 0.06
 TAX_RATE = 0.25
+# Auto-derived growth (revenue growth) is capped: sustainable FCF growth
+# cannot exceed nominal GDP + a tailwind. User-supplied growth is never capped.
+MAX_AUTO_GROWTH = 0.12
 
 
 def _default_discount_rate(beta: float) -> float:
@@ -58,6 +61,15 @@ async def dcf_valuation(
             "discount rate must be greater than terminal growth rate"
         )
 
+    warnings = []
+    auto_growth = growth_rate is None
+    if auto_growth and g > MAX_AUTO_GROWTH:
+        warnings.append(
+            f"Growth rate capped from {g*100:.1f}% to {MAX_AUTO_GROWTH*100:.0f}% "
+            "(auto-computed revenue growth; pass growth_rate to override)"
+        )
+        g = MAX_AUTO_GROWTH
+
     pv_explicit = 0.0
     for i in range(1, years + 1):
         cf = fcf_per_share * ((1 + g) ** i)
@@ -80,6 +92,7 @@ async def dcf_valuation(
         "current_price": current_price,
         "intrinsic_value_per_share": round(intrinsic_value, 2),
         "margin_of_safety_pct": margin_of_safety,
+        "warnings": warnings,
         "assumptions": {
             "growth_rate": g,
             "terminal_growth_rate": tg,
