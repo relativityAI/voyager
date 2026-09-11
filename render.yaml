@@ -6,6 +6,8 @@
 #   VOYAGER_ADMIN_KEY  a long random string (e.g. `openssl rand -hex 32`)
 #
 # Optional (add yourself): SENTRY_DSN, CORS_ORIGINS, LOG_LEVEL.
+# Proxy pool (optional): PROXY_POOL (comma-separated proxy URLs),
+#   PROXY_POOL_FORCE.
 
 services:
   - type: web
@@ -24,4 +26,8 @@ services:
       - key: DATABASE_URL
         sync: false
       - key: VOYAGER_ADMIN_KEY
+        sync: false
+      - key: PROXY_POOL
+        sync: false
+      - key: PROXY_POOL_FORCE
         sync: false

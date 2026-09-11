@@ -11,10 +11,10 @@ in-page Referer.
 
 Proxy strategy (D-11):
   - ``NSE_PROXY`` env var: static proxy, always used when set.
-  - Free proxy pool: used when ``NSE_PROXY`` is not set AND
-    ``NSE_USE_FREE_PROXIES`` is true (default). On Render, the pool is
-    tried first. Locally, direct connection is tried first; the pool is
-    used as fallback on 403/blocked responses.
+  - ``PROXY_POOL`` env var: comma-separated proxy URLs used as a pool when
+    ``NSE_PROXY`` is not set. On Render, the pool is tried first. Locally,
+    direct connection is tried first; the pool is used as fallback on
+    403/blocked responses (or from the start when ``PROXY_POOL_FORCE`` is set).
 """
 
 from __future__ import annotations
@@ -66,18 +66,14 @@ def build_nse_config(calls_per_second: Optional[float] = None) -> SourceConfig:
 
     Proxy resolution order:
       1. ``NSE_PROXY`` env var → static proxy (always wins).
-      2. ``NSE_USE_FREE_PROXIES`` env var (default ``true``) → proxy pool.
-         On Render the pool is used directly. Locally it's a fallback.
+      2. ``PROXY_POOL`` env var → proxy pool (used when ``NSE_PROXY`` is
+         not set). The pool is empty if ``PROXY_POOL`` is unset, so the
+         session falls back to a direct connection.
     """
     static_proxy = os.getenv("NSE_PROXY")
-    use_free_proxies = os.getenv("NSE_USE_FREE_PROXIES", "true").lower() in (
-        "true",
-        "1",
-        "yes",
-    )
 
     pool = None
-    if not static_proxy and use_free_proxies:
+    if not static_proxy:
         from src.scrapers.proxy_pool import get_proxy_pool
 
         pool = get_proxy_pool()

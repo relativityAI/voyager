@@ -203,7 +203,7 @@ class NSEApiClient:
         self.logger = logging.getLogger(__name__)
 
         config = build_nse_config(calls_per_second)
-        self.session = StealthSession(config)
+        self.session = StealthSession(config, force_proxy=True)
 
     def _referer_for(self, symbol: str) -> str:
         """Real NSE page used as the in-page Referer for API calls (D-05)."""
