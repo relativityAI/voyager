@@ -50,6 +50,7 @@ class BlockedResponse(Exception):
 DEFAULT_TIMEOUT = 10.0
 DEFAULT_PRIME_TIMEOUT = 15.0
 DEFAULT_PRIME_TTL = 1800.0  # 30 minutes
+MAX_PROXY_ROTATIONS = int(os.getenv("PROXY_MAX_ROTATIONS", "3"))
 
 
 def _is_render() -> bool:
@@ -59,7 +60,7 @@ def _is_render() -> bool:
 class StealthSession:
     """Thread-safe stealth transport for one source."""
 
-    def __init__(self, config: SourceConfig) -> None:
+    def __init__(self, config: SourceConfig, force_proxy: bool = False) -> None:
         self.config = config
         self.fingerprint = config.build_fingerprint()
         self.throttle = config.build_throttle()
@@ -74,7 +75,8 @@ class StealthSession:
         self._primed_at: Optional[float] = None
         self._cookies_loaded = False
         self._current_proxy: Optional[str] = None
-        self._used_proxy_this_request: bool = False
+        self._force_proxy = force_proxy
+        self._used_proxy_this_request: bool = force_proxy
 
     # ------------------------------------------------------------------ setup
 
@@ -99,23 +101,42 @@ class StealthSession:
 
     # ----------------------------------------------------------------- proxy resolution
 
+    def _proxy_dict(self) -> Optional[Dict[str, str]]:
+        """Return the current proxy as the dict format curl_cffi expects.
+
+        curl_cffi requires ``proxies`` to be a mapping (``{"http": ...,
+        "https": ...}``), not a bare URL string.
+        """
+        if not self._current_proxy:
+            return None
+        return {"http": self._current_proxy, "https": self._current_proxy}
+
     def _resolve_initial_proxy(self) -> Optional[str]:
         """Determine the starting proxy for a request.
 
         - Static ``config.proxy`` always wins.
         - On Render with a pool: start with a pool proxy (direct is known
           to fail).
-        - Locally: start direct (``None``). Fallback to pool happens on
-          blocked responses.
+        - Locally: start direct (``None``) unless the session was created
+          with ``force_proxy=True`` or ``PROXY_POOL_FORCE`` is truthy, in
+          which case the pool is used from the start. Fallback to the pool
+          happens on blocked responses.
         """
         if self.config.proxy:
             return self.config.proxy
         if self.config.proxy_pool is None:
             return None
-        if _is_render():
+        force_pool = self._force_proxy or os.getenv(
+            "PROXY_POOL_FORCE", ""
+        ).lower() in ("true", "1", "yes")
+        if _is_render() or force_pool:
             proxy = self.config.proxy_pool.get_proxy()
             if proxy:
-                self.logger.info("Render detected; starting with pool proxy %s", proxy)
+                self.logger.info(
+                    "%s; starting with pool proxy %s",
+                    "Render detected" if _is_render() else "proxy forced",
+                    proxy,
+                )
             return proxy
         return None
 
@@ -150,6 +171,7 @@ class StealthSession:
             )
             self._invalidate_cookies()
             self._current_proxy = proxy
+            self._used_proxy_this_request = True
             return proxy
         return None
 
@@ -174,8 +196,11 @@ class StealthSession:
 
     def _do_prime(self) -> bool:
         """GET a real HTML page to obtain the WAF session cookie (D-03)."""
+        if self._current_proxy is None:
+            self._current_proxy = self._resolve_initial_proxy()
         targets = [self.config.warmup_url, *self.config.warmup_fallbacks]
         last_error: str = ""
+        proxy_rotations = 0
         for url in targets:
             self.throttle.wait()
             try:
@@ -183,7 +208,7 @@ class StealthSession:
                     url,
                     headers=self.fingerprint.page_load_headers(),
                     timeout=self.prime_timeout,
-                    proxies=self._current_proxy,
+                    proxies=self._proxy_dict(),
                 )
                 if resp.status_code == 200 and dict(self.session.cookies):
                     self._primed_at = time.monotonic()
@@ -196,6 +221,13 @@ class StealthSession:
                     self.logger.info("Stale HTTP/2 session detected; clearing cookies and retrying")
                     self._invalidate_cookies()
                     continue
+                if self._current_proxy and proxy_rotations < MAX_PROXY_ROTATIONS:
+                    new_proxy = self._rotate_proxy(
+                        self._current_proxy, f"prime failed: {exc}"
+                    )
+                    if new_proxy:
+                        proxy_rotations += 1
+                        continue
             except Exception as exc:  # noqa: BLE001 - any failure means "not primed"
                 last_error = f"{url} -> {exc}"
         self.logger.warning(f"Cookie priming failed for {self.config.name}: {last_error}")
@@ -244,11 +276,13 @@ class StealthSession:
         Proxy behaviour (D-11):
           - On Render, starts with a pool proxy.
           - Locally, starts direct. On 403/blocked, falls back to pool.
-          - On repeated blocks, rotates to the next pool proxy.
+          - On repeated blocks, rotates to the next pool proxy, up to
+            ``MAX_PROXY_ROTATIONS`` (3) times per request.
         """
         request_timeout = timeout if timeout is not None else self.timeout
         last_failure: str = ""
         reprimed = False
+        proxy_rotations = 0
 
         self._current_proxy = self._resolve_initial_proxy()
         self._used_proxy_this_request = self._current_proxy is not None
@@ -268,13 +302,19 @@ class StealthSession:
                     headers=req_headers,
                     timeout=request_timeout,
                     allow_redirects=allow_redirects,
-                    proxies=self._current_proxy,
+                    proxies=self._proxy_dict(),
                 )
             except RequestException as exc:
                 last_failure = f"network error: {exc}"
                 self.logger.warning(f"{method} {url} failed ({last_failure}); retrying")
-                if self._current_proxy:
-                    self._rotate_proxy(self._current_proxy, f"network error: {exc}")
+                if self._current_proxy and proxy_rotations < MAX_PROXY_ROTATIONS:
+                    new_proxy = self._rotate_proxy(
+                        self._current_proxy, f"network error: {exc}"
+                    )
+                    if new_proxy:
+                        proxy_rotations += 1
+                        self._backoff(attempt)
+                        continue
                 self._backoff(attempt)
                 continue
 
@@ -290,15 +330,25 @@ class StealthSession:
             status = resp.status_code
 
             if status in (401, 403):
-                if self.config.proxy_pool and not self._used_proxy_this_request:
+                if (
+                    self.config.proxy_pool
+                    and not self._used_proxy_this_request
+                    and proxy_rotations < MAX_PROXY_ROTATIONS
+                ):
                     if self._switch_to_proxy(f"blocked {status}"):
+                        proxy_rotations += 1
                         self._backoff(attempt)
                         continue
-                if self.config.proxy_pool and self._current_proxy:
+                if (
+                    self.config.proxy_pool
+                    and self._current_proxy
+                    and proxy_rotations < MAX_PROXY_ROTATIONS
+                ):
                     new_proxy = self._rotate_proxy(
                         self._current_proxy, f"blocked {status}"
                     )
                     if new_proxy:
+                        proxy_rotations += 1
                         self._backoff(attempt)
                         continue
                 if not reprimed:
