@@ -38,6 +38,19 @@ class PullAlreadyActive(Exception):
     """This key already has a pull in progress."""
 
 
+def _pull_outcome(pull_result: Dict[str, Any]) -> str:
+    """Job status ('done'/'failed') for a finished pull.
+
+    A pull that ran but parsed/wrote zero records is a failure, not a silent
+    success (e.g. NSE returning empty for a symbol, or SEC being unreachable).
+    """
+    rows = pull_result.get("rows_written") or pull_result.get("xbrl_parsed") or 0
+    status = pull_result.get("status")
+    if status == "failed" or (status == "partial" and rows == 0):
+        return "failed"
+    return "done"
+
+
 async def reap_stale_jobs() -> None:
     cutoff = utcnow() - timedelta(minutes=STALE_JOB_MINUTES)
     factory = get_session_factory()
@@ -161,7 +174,12 @@ async def _run_job(job: PullJobModel) -> None:
 
                 pull_result = await pull_nse_data(db_job.symbol, db_job.filing_type, db_job.refresh)
             db_job.result = pull_result
-            db_job.status = "done"
+            db_job.status = _pull_outcome(pull_result)
+            if db_job.status == "failed":
+                db_job.error = (
+                    f"Pull produced no records (status={pull_result.get('status')}); "
+                    "source returned empty/unparseable data. Check source accessibility."
+                )
         except Exception as exc:
             logger.exception(f"Job {db_job.job_id} failed ({db_job.task or db_job.symbol})")
             db_job.error = str(exc)

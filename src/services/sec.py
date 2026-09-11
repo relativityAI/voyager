@@ -34,7 +34,10 @@ from src.db.models import NSEStockMetadata
 from ._common import NotFoundError, UpstreamError
 from .nse import STATEMENT_MODELS, _upsert_rows
 
-_identity = os.getenv("SEC_IDENTITY", "").strip()
+_DEFAULT_IDENTITY = (
+    "Voyager API v1 (https://github.com/relativityAI/voyager; admin@voyager.local)"
+)
+_identity = os.getenv("SEC_IDENTITY", _DEFAULT_IDENTITY).strip()
 if _identity:
     set_identity(_identity)
 
@@ -443,21 +446,25 @@ async def pull_sec_data(
     parse_errors = 0
 
     def _parse(form: str) -> Optional[tuple]:
-        filings = _get_filings(company, form, EDGAR_MAX_ANNUAL_FILINGS if form == "10-K" else EDGAR_MAX_QUARTERLY_FILINGS)
-        if not filings:
-            logger.warning(f"No {form} filings for {symbol}")
-            return None
-        try:
-            xbrls = XBRLS.from_filings(filings)
-            return (
-                xbrls.statements.income_statement().to_dataframe(),
-                xbrls.statements.balance_sheet().to_dataframe(),
-                xbrls.statements.cash_flow_statement().to_dataframe(),
-                len(filings),
-            )
-        except Exception as exc:
-            logger.warning(f"XBRL parse failed for {symbol} {form}: {exc}")
-            return None
+        for attempt in range(3):
+            try:
+                filings = _get_filings(company, form, EDGAR_MAX_ANNUAL_FILINGS if form == "10-K" else EDGAR_MAX_QUARTERLY_FILINGS)
+                if not filings:
+                    logger.warning(f"No {form} filings for {symbol}")
+                    return None
+                xbrls = XBRLS.from_filings(filings)
+                return (
+                    xbrls.statements.income_statement().to_dataframe(),
+                    xbrls.statements.balance_sheet().to_dataframe(),
+                    xbrls.statements.cash_flow_statement().to_dataframe(),
+                    len(filings),
+                )
+            except Exception as exc:
+                if attempt < 2:
+                    time.sleep(1 + attempt * 2)
+                    continue
+                logger.warning(f"XBRL parse failed for {symbol} {form} (after 3 attempts): {exc}")
+                return None
 
     annual = None
     if want_quarterly or want_annual:
@@ -552,27 +559,34 @@ async def pull_sec_data(
             )
         )
         meta = result.scalar_one_or_none()
-        now = datetime.utcnow()
-        if meta:
-            if meta.last_pull:
-                prev = list(meta.previous_pulls or [])
-                prev.append(meta.last_pull)
-                meta.previous_pulls = prev
-            meta.last_pull = now
-            meta.exchange = exchange
-            meta.updated_at = now
-        else:
-            session.add(
-                NSEStockMetadata(
-                    symbol=symbol,
-                    source="SEC",
-                    exchange=exchange,
-                    last_pull=now,
-                    previous_pulls=[],
-                    created_at=now,
-                    updated_at=now,
-                )
+        if upserted == 0 and meta is None:
+            # Fresh symbol but nothing parsed (e.g. SEC unreachable): do not
+            # fabricate a "last_pull" that makes an empty pull look healthy.
+            logger.warning(
+                f"SEC pull for {symbol} parsed 0 rows; skipping metadata update"
             )
+        else:
+            now = datetime.utcnow()
+            if meta:
+                if meta.last_pull:
+                    prev = list(meta.previous_pulls or [])
+                    prev.append(meta.last_pull)
+                    meta.previous_pulls = prev
+                meta.last_pull = now
+                meta.exchange = exchange
+                meta.updated_at = now
+            else:
+                session.add(
+                    NSEStockMetadata(
+                        symbol=symbol,
+                        source="SEC",
+                        exchange=exchange,
+                        last_pull=now,
+                        previous_pulls=[],
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
         await session.commit()
     _tick("db")
 
