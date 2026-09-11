@@ -176,9 +176,11 @@ async def _run_job(job: PullJobModel) -> None:
             db_job.result = pull_result
             db_job.status = _pull_outcome(pull_result)
             if db_job.status == "failed":
+                detail = pull_result.get("parse_error_detail") or ""
                 db_job.error = (
                     f"Pull produced no records (status={pull_result.get('status')}); "
                     "source returned empty/unparseable data. Check source accessibility."
+                    + (f"\nDetail: {detail}" if detail else "")
                 )
         except Exception as exc:
             logger.exception(f"Job {db_job.job_id} failed ({db_job.task or db_job.symbol})")

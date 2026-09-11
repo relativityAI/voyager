@@ -383,11 +383,7 @@ def _one_company(symbol: str) -> Company:
 
 
 def _get_filings(company: Company, form: str, n: int) -> list:
-    try:
-        return list(company.get_filings(form=form, amendments=False).head(n))
-    except Exception as exc:
-        logger.warning(f"get_filings({form}) failed for {company.cik}: {exc}")
-        return []
+    return list(company.get_filings(form=form, amendments=False).head(n))
 
 
 async def pull_sec_data(
@@ -444,27 +440,30 @@ async def pull_sec_data(
     _tick("existing_scan")
     records_pulled = 0
     parse_errors = 0
+    parse_failures: List[str] = []
 
     def _parse(form: str) -> Optional[tuple]:
+        last_error = None
         for attempt in range(3):
             try:
                 filings = _get_filings(company, form, EDGAR_MAX_ANNUAL_FILINGS if form == "10-K" else EDGAR_MAX_QUARTERLY_FILINGS)
                 if not filings:
-                    logger.warning(f"No {form} filings for {symbol}")
-                    return None
-                xbrls = XBRLS.from_filings(filings)
-                return (
-                    xbrls.statements.income_statement().to_dataframe(),
-                    xbrls.statements.balance_sheet().to_dataframe(),
-                    xbrls.statements.cash_flow_statement().to_dataframe(),
-                    len(filings),
-                )
+                    last_error = f"{form}: SEC returned no filings for {symbol}"
+                else:
+                    xbrls = XBRLS.from_filings(filings)
+                    return (
+                        xbrls.statements.income_statement().to_dataframe(),
+                        xbrls.statements.balance_sheet().to_dataframe(),
+                        xbrls.statements.cash_flow_statement().to_dataframe(),
+                        len(filings),
+                    )
             except Exception as exc:
-                if attempt < 2:
-                    time.sleep(1 + attempt * 2)
-                    continue
-                logger.warning(f"XBRL parse failed for {symbol} {form} (after 3 attempts): {exc}")
-                return None
+                last_error = f"{form}: {type(exc).__name__}: {exc}"
+            if attempt < 2:
+                time.sleep(1 + attempt * 2)
+        parse_failures.append(last_error or f"{form}: parse failed")
+        logger.warning(f"SEC parse failed for {symbol} {form} (after 3 attempts): {last_error}")
+        return None
 
     annual = None
     if want_quarterly or want_annual:
@@ -595,7 +594,7 @@ async def pull_sec_data(
         timing["phases"][key] = round(timing["phases"][key], 1)
 
     status = "completed" if upserted > 0 else ("partial" if parse_errors else "no data")
-    return {
+    result = {
         "symbol": symbol,
         "source": "SEC",
         "status": status,
@@ -604,6 +603,9 @@ async def pull_sec_data(
         "endpoint_breakdown": {"parse_errors": parse_errors},
         "timing": timing,
     }
+    if parse_failures:
+        result["parse_error_detail"] = " | ".join(parse_failures)
+    return result
 
 
 async def get_announcements_us(
