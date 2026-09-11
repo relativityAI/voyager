@@ -383,11 +383,7 @@ def _one_company(symbol: str) -> Company:
 
 
 def _get_filings(company: Company, form: str, n: int) -> list:
-    try:
-        return list(company.get_filings(form=form, amendments=False).head(n))
-    except Exception as exc:
-        logger.warning(f"get_filings({form}) failed for {company.cik}: {exc}")
-        return []
+    return list(company.get_filings(form=form, amendments=False).head(n))
 
 
 async def pull_sec_data(
@@ -444,6 +440,7 @@ async def pull_sec_data(
     _tick("existing_scan")
     records_pulled = 0
     parse_errors = 0
+    parse_failures: List[str] = []
 
     def _parse(form: str) -> Optional[tuple]:
         for attempt in range(3):
@@ -595,7 +592,7 @@ async def pull_sec_data(
         timing["phases"][key] = round(timing["phases"][key], 1)
 
     status = "completed" if upserted > 0 else ("partial" if parse_errors else "no data")
-    return {
+    result = {
         "symbol": symbol,
         "source": "SEC",
         "status": status,
@@ -604,6 +601,9 @@ async def pull_sec_data(
         "endpoint_breakdown": {"parse_errors": parse_errors},
         "timing": timing,
     }
+    if parse_failures:
+        result["parse_error_detail"] = " | ".join(parse_failures)
+    return result
 
 
 async def get_announcements_us(
