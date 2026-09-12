@@ -452,6 +452,7 @@ async def pull_sec_data(
     records_pulled = 0
     parse_errors = 0
     parse_failures: List[str] = []
+    frames_diag: List[str] = []
 
     def _parse(form: str) -> Optional[tuple]:
         last_error = None
@@ -472,13 +473,15 @@ async def pull_sec_data(
                         last_error = f"{form}: {type(exc).__name__}: {exc}"
                     else:
                         accs = [getattr(f, "accession_no", "?") for f in filings][:12]
-                        logger.info(
-                            f"SEC {symbol} {form} frames: filings={len(filings)} "
+                        summary = (
+                            f"{form}: filings={len(filings)} "
                             f"income{i.shape}{'/concept' if 'concept' in i.columns else '/NO-concept'} "
                             f"balance{b.shape}{'/concept' if 'concept' in b.columns else '/NO-concept'} "
                             f"cashflow{c.shape}{'/concept' if 'concept' in c.columns else '/NO-concept'} "
                             f"acc={accs}"
                         )
+                        frames_diag.append(summary)
+                        logger.info(f"SEC {symbol} {summary}")
                         return (i, b, c, len(filings))
             except Exception as exc:
                 last_error = f"{form}: {type(exc).__name__}: {exc}"
@@ -626,6 +629,8 @@ async def pull_sec_data(
         "endpoint_breakdown": {"parse_errors": parse_errors},
         "timing": timing,
     }
+    if frames_diag:
+        result["frames_diag"] = "; ".join(frames_diag)
     if parse_failures:
         result["parse_error_detail"] = " | ".join(parse_failures)
     return result
