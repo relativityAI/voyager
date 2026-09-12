@@ -13,6 +13,7 @@ from src.db.models import (
     BalanceSheet,
     CashFlow,
     IncomeStatement,
+    NSEAnnouncement,
     NSEStockMetadata,
     Shareholding,
 )
@@ -155,12 +156,17 @@ async def _upsert_rows(session, model_class, rows: list, on_conflict_cols: list)
     if not rows:
         return
     for row_data in rows:
+        update = {
+            k: v
+            for k, v in row_data.items()
+            if k not in ("id",) + tuple(on_conflict_cols)
+        }
+        stmt = pg_insert(model_class).values(**row_data)
         stmt = (
-            pg_insert(model_class)
-            .values(**row_data)
-            .on_conflict_do_update(
-                index_elements=on_conflict_cols,
-                set_={k: v for k, v in row_data.items() if k not in ("id",) + tuple(on_conflict_cols)},
+            stmt.on_conflict_do_nothing(index_elements=on_conflict_cols)
+            if not update
+            else stmt.on_conflict_do_update(
+                index_elements=on_conflict_cols, set_=update
             )
         )
         await session.execute(stmt)
@@ -277,6 +283,17 @@ async def pull_nse_data(
         "shareholding": "shareholdings",
     }
 
+    ANN_FIELD_MAP = {
+        "an_dt": "an_dt",
+        "attchmntText": "attchmnt_text",
+        "desc": "desc",
+        "attchmntFile": "attchmnt_file",
+        "attFileSize": "att_file_size",
+        "hasXbrl": "has_xbrl",
+        "sortDateTime": "sort_date",
+    }
+    ANN_ENDPOINTS = ("announcements-equities", "announcements-sme")
+
     seen_xbrl: set = set()
     pending: list = []
 
@@ -352,6 +369,27 @@ async def pull_nse_data(
                     on_conflict_cols=["symbol", "period_end_date", "consolidated", "source_endpoint"],
                 )
                 logger.info(f"Upserted {len(rows)} {coll_name} docs for {symbol}")
+
+        ann_rows = []
+        for ep_key in ANN_ENDPOINTS:
+            for rec in raw_by_endpoint.get(ep_key, []):
+                row = {"symbol": symbol, "raw_data": rec}
+                for src, col in ANN_FIELD_MAP.items():
+                    if rec.get(src) is not None:
+                        row[col] = rec[src]
+                if "att_file_size" in row:
+                    try:
+                        row["att_file_size"] = int(row["att_file_size"])
+                    except (TypeError, ValueError):
+                        row["att_file_size"] = None
+                ann_rows.append(row)
+        if ann_rows:
+            await _upsert_rows(
+                session, NSEAnnouncement, ann_rows,
+                on_conflict_cols=["symbol", "raw_data"],
+            )
+            logger.info(f"Upserted {len(ann_rows)} announcements for {symbol}")
+
         await session.commit()
     _tick("db")
 

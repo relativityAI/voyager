@@ -65,6 +65,7 @@ async def init_db():
             "ALTER TABLE cash_flows ADD COLUMN IF NOT EXISTS cash_flows_from_used_in_investing_activities NUMERIC",
             "ALTER TABLE cash_flows ADD COLUMN IF NOT EXISTS cash_flows_from_used_in_financing_activities NUMERIC",
             "ALTER TABLE cash_flows ADD COLUMN IF NOT EXISTS payments_for_purchase_of_noncurrent_assets NUMERIC",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_nse_announcements_raw ON nse_announcements (symbol, raw_data)",
         ]:
             await conn.execute(text(ddl))
 
