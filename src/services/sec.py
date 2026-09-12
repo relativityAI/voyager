@@ -461,13 +461,25 @@ async def pull_sec_data(
                 if not filings:
                     last_error = f"{form}: SEC returned no filings for {symbol}"
                 else:
-                    xbrls = XBRLS.from_filings(filings)
-                    return (
-                        xbrls.statements.income_statement().to_dataframe(),
-                        xbrls.statements.balance_sheet().to_dataframe(),
-                        xbrls.statements.cash_flow_statement().to_dataframe(),
-                        len(filings),
-                    )
+                    try:
+                        xbrls = XBRLS.from_filings(filings)
+                        i, b, c = (
+                            xbrls.statements.income_statement().to_dataframe(),
+                            xbrls.statements.balance_sheet().to_dataframe(),
+                            xbrls.statements.cash_flow_statement().to_dataframe(),
+                        )
+                    except Exception as exc:
+                        last_error = f"{form}: {type(exc).__name__}: {exc}"
+                    else:
+                        accs = [getattr(f, "accession_no", "?") for f in filings][:12]
+                        logger.info(
+                            f"SEC {symbol} {form} frames: filings={len(filings)} "
+                            f"income{i.shape}{'/concept' if 'concept' in i.columns else '/NO-concept'} "
+                            f"balance{b.shape}{'/concept' if 'concept' in b.columns else '/NO-concept'} "
+                            f"cashflow{c.shape}{'/concept' if 'concept' in c.columns else '/NO-concept'} "
+                            f"acc={accs}"
+                        )
+                        return (i, b, c, len(filings))
             except Exception as exc:
                 last_error = f"{form}: {type(exc).__name__}: {exc}"
             if attempt < 2:
