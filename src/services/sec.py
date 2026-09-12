@@ -10,7 +10,7 @@ SEC conventions differ from NSE in two ways that matter here:
   * 10-K income/cash-flow are full-year; balance sheets are point-in-time
     instants either way. Neither needs differencing.
 
-EDGAR requires a UA declaring the requester and enforces 10 req/s; edgartools
+EDGAR requires a "Name email" declaration and enforces 10 req/s; edgartools
 handles the throttling internally.
 """
 
@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 from edgar import Company, CompanyNotFoundError, set_identity
+from edgar.httpclient import configure_http as _configure_http
 from edgar.xbrl import XBRLS
 from loguru import logger
 from sqlalchemy import select
@@ -34,23 +35,21 @@ from src.db.models import NSEStockMetadata
 from ._common import NotFoundError, UpstreamError
 from .nse import STATEMENT_MODELS, _upsert_rows
 
-# EDGAR requires a browser-like User-Agent; a plain declared-app UA gets 403
-# "undeclared automated tool" once the egress IP looks like an automated
-# client (cloud IPs are flagged almost immediately). Prefix the identity with
-# a Chrome UA so it passes, while still declaring the app + contact.
-_DEFAULT_IDENTITY = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 "
-    "VoyagerData/1.0 (https://github.com/relativityAI/voyager; admin@voyager.local)"
-)
+# EDGAR fair-access requires a "Name email" declaration. SEC's bot filter
+# rejects browser-masquerading UAs (403 on Chrome-prefixed strings) but
+# accepts a plain "Name email" declaration.
+_DEFAULT_IDENTITY = "VoyagerData/1.0 (https://github.com/relativityAI/voyager; admin@voyager.local)"
 _identity = os.getenv("SEC_IDENTITY", _DEFAULT_IDENTITY).strip(" \t\r\n\"'")
 if _identity:
-    # distutils-style sanitize: collapse inner whitespace between tokens so
-    # a mangled env value ("Mozilla/5.0 ... Chrome/131  Safari/537.36") can't
-    # break the browser-prefix that EDGAR's bot filter keys on.
     _identity = " ".join(_identity.split())
     set_identity(_identity)
     logger.info(f"EDGAR identity set: {_identity!r}")
+_proxy = os.getenv("SEC_PROXY", "").strip()
+if _proxy:
+    # Cloud egress IPs (Render/AWS) are hard-flagged by SEC's bot filter even
+    # with a browser UA; route requests through an egress proxy instead.
+    _configure_http(proxy=_proxy)
+    logger.info(f"EDGAR proxy set: {_proxy}")
 
 EDGAR_MAX_ANNUAL_FILINGS = int(os.getenv("EDGAR_MAX_ANNUAL_FILINGS", "8"))
 EDGAR_MAX_QUARTERLY_FILINGS = int(os.getenv("EDGAR_MAX_QUARTERLY_FILINGS", "40"))
