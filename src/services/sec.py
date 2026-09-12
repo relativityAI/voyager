@@ -43,9 +43,14 @@ _DEFAULT_IDENTITY = (
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 "
     "VoyagerData/1.0 (https://github.com/relativityAI/voyager; admin@voyager.local)"
 )
-_identity = os.getenv("SEC_IDENTITY", _DEFAULT_IDENTITY).strip()
+_identity = os.getenv("SEC_IDENTITY", _DEFAULT_IDENTITY).strip(" \t\r\n\"'")
 if _identity:
+    # distutils-style sanitize: collapse inner whitespace between tokens so
+    # a mangled env value ("Mozilla/5.0 ... Chrome/131  Safari/537.36") can't
+    # break the browser-prefix that EDGAR's bot filter keys on.
+    _identity = " ".join(_identity.split())
     set_identity(_identity)
+    logger.info(f"EDGAR identity set: {_identity!r}")
 
 EDGAR_MAX_ANNUAL_FILINGS = int(os.getenv("EDGAR_MAX_ANNUAL_FILINGS", "8"))
 EDGAR_MAX_QUARTERLY_FILINGS = int(os.getenv("EDGAR_MAX_QUARTERLY_FILINGS", "40"))
