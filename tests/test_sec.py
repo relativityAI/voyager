@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from src.services.sec import (
+    _DEFAULT_IDENTITY,
     _diff_cumulative,
     _fiscal_period,
     _period_to_date,
@@ -69,6 +70,14 @@ def test_q4_rows_income_and_cashflow():
     cf_rows = _q4_rows("X", "cashflow", cf_annual, cf_ytd, "2025-09-27", "2025-06-28")
     assert cf_rows[0]["cash_flows_from_used_in_operations"] == pytest.approx(20.0)
     assert cf_rows[0]["source_endpoint"] == "10-Q"
+
+
+def test_default_identity_is_declared_and_not_previously_blocked():
+    # SEC's bot filter learned the old "VoyagerData/1.0 (github...)" app token
+    # and 403s it everywhere; the default must stay a fresh declared identity.
+    assert _DEFAULT_IDENTITY.startswith("Voyager/1.0 (")
+    assert "VoyagerData" not in _DEFAULT_IDENTITY
+    assert "github.com" not in _DEFAULT_IDENTITY
 
 
 def test_q4_rows_skips_mismatched_concepts():

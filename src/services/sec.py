@@ -35,10 +35,11 @@ from src.db.models import NSEStockMetadata
 from ._common import NotFoundError, UpstreamError
 from .nse import STATEMENT_MODELS, _upsert_rows
 
-# EDGAR fair-access requires a "Name email" declaration. SEC's bot filter
-# rejects browser-masquerading UAs (403 on Chrome-prefixed strings) but
-# accepts a plain "Name email" declaration.
-_DEFAULT_IDENTITY = "VoyagerData/1.0 (https://github.com/relativityAI/voyager; admin@voyager.local)"
+# EDGAR requires a "Name email" declaration. SEC's bot filter learned to 403
+# the old "VoyagerData/1.0 (github...)" identity outright (every request from
+# every IP), while a fresh declared identity passes; keep this token unique
+# and never reuse a previously-blocked app identifier.
+_DEFAULT_IDENTITY = "Voyager/1.0 (data@voyager.local)"
 _identity = os.getenv("SEC_IDENTITY", _DEFAULT_IDENTITY).strip(" \t\r\n\"'")
 if _identity:
     _identity = " ".join(_identity.split())
