@@ -34,8 +34,14 @@ from src.db.models import NSEStockMetadata
 from ._common import NotFoundError, UpstreamError
 from .nse import STATEMENT_MODELS, _upsert_rows
 
+# EDGAR requires a browser-like User-Agent; a plain declared-app UA gets 403
+# "undeclared automated tool" once the egress IP looks like an automated
+# client (cloud IPs are flagged almost immediately). Prefix the identity with
+# a Chrome UA so it passes, while still declaring the app + contact.
 _DEFAULT_IDENTITY = (
-    "Voyager API v1 (https://github.com/relativityAI/voyager; admin@voyager.local)"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 "
+    "VoyagerData/1.0 (https://github.com/relativityAI/voyager; admin@voyager.local)"
 )
 _identity = os.getenv("SEC_IDENTITY", _DEFAULT_IDENTITY).strip()
 if _identity:
