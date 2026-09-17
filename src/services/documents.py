@@ -10,7 +10,6 @@ supported (see options decision).
 import asyncio
 import hashlib
 import io
-from datetime import datetime
 from typing import Any, Dict
 
 from loguru import logger
@@ -19,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.db.engine import get_session_factory
+from src.utils.helpers import utcnow
 from src.db.models import DocumentIndex
 from src.utils.web import generate_fake_headers
 
@@ -116,7 +116,7 @@ async def parse_document(task_args: Dict[str, Any]) -> Dict[str, Any]:
             "num_pages": parsed.get("num_pages"),
             "page_index": {"structure": structure},
             "status": "parsed",
-            "indexed_at": datetime.utcnow(),
+            "indexed_at": utcnow(),
         }
         stmt = (
             pg_insert(DocumentIndex)

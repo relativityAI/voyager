@@ -18,7 +18,6 @@ import hashlib
 import json
 import math
 import re
-from datetime import datetime
 from typing import Any, Dict, List
 
 from loguru import logger
@@ -26,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.db.engine import get_session_factory
+from src.utils.helpers import utcnow
 from src.db.models import SentimentResult
 
 from ._common import InvalidRequestError, ServiceUnavailableError
@@ -202,7 +202,7 @@ async def run_sentiment_analysis(task_args: Dict[str, Any]) -> Dict[str, Any]:
         "content_hash": text_hash,
         "model": model,
         "result": merged,
-        "analyzed_at": datetime.utcnow(),
+        "analyzed_at": utcnow(),
     }
     stmt = (
         pg_insert(SentimentResult)

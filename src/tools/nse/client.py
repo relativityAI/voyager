@@ -68,12 +68,11 @@ tags = [
 
 """
 
-import hashlib
-import json
 import logging
 import os
 import random
 import time
+from collections import Counter
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
@@ -98,6 +97,7 @@ from src.scrapers.sources.nse import (
 )
 from src.tools.nse.ratios import FINANCIAL_FIELD_MAP
 from src.utils.case_converter import camel_to_snake
+from src.utils.helpers import utcnow
 
 XBRLI_NS = "http://www.xbrl.org/2003/instance"
 
@@ -180,7 +180,11 @@ SH_CONTEXT_TO_FIELD = {
 shareholding_context_ref_types = list(SH_CONTEXT_TO_FIELD.keys())
 
 quarterly_context_ref_types = ["OneD", "OneI"]
-annual_context_ref_types = ["FourD"]
+# FourI = fiscal-year-end instants (annual balance-sheet points); FourD = annual
+# durations. Substring matching misclassifies refs that merely contain these
+# tokens (e.g. OneReportable31I), so classification is exact-id only; unknown
+# refs fall through to the period-duration heuristic in _filter_facts_by_period.
+annual_context_ref_types = ["FourD", "FourI"]
 
 
 class NSEApiClient:
@@ -334,7 +338,11 @@ class NSEDataParser:
             contexts: Dict[str, Dict[str, str]] = {}
             units: Dict[str, str] = {}
 
-            for elem in root.iter():
+            # XBRL instance facts are direct children of the root. Context and
+            # unit subtrees carry their own xbrli:identifier/startDate/endDate
+            # or measure elements, which are not facts: they must not become
+            # rows nor overwrite the filing period end.
+            for elem in root:
                 tag = etree.QName(elem.tag).localname
                 ns = etree.QName(elem.tag).namespace
                 text = elem.text.strip() if elem.text else None
@@ -363,7 +371,10 @@ class NSEDataParser:
                 if tag in ("xbrl",):
                     continue
 
-                if tag == "endDate" and text:
+                # The filing period end is the scheme-level endDate element
+                # (e.g. in-bse-fin:endDate). Context-local xbrli:endDate values
+                # describe each comparison context, not the filing period.
+                if tag == "endDate" and text and ns != XBRLI_NS:
                     period_end_date = text
 
                 if ns and text:
@@ -374,6 +385,13 @@ class NSEDataParser:
                             "contextRef": elem.get("contextRef"),
                         }
                     )
+
+            if period_end_date is None:
+                # Older templates may omit the scheme-level endDate; fall back
+                # to the last endDate anywhere in the instance.
+                for elem in root.iter():
+                    if etree.QName(elem.tag).localname == "endDate" and elem.text:
+                        period_end_date = elem.text.strip()
 
             currency = next(iter(units.values()), None)
 
@@ -404,6 +422,30 @@ class NSEIndia:
         self.logger = logging.getLogger(__name__)
 
     @staticmethod
+    def _pick_context_value(group: list, period_end: str):
+        """Pick the single value for a concept that appears in several contexts.
+
+        ``group`` is ``[(value, context_date, tag), ...]``. Prefer a fact dated
+        exactly at the filing period end (the primary context); else the most
+        recent context date; else the last in document order. Never sums.
+        """
+        best_val = None
+        best_meta = (-1, "")
+        for value, date_str, _ in group:
+            if value is None:
+                continue
+            if not date_str:
+                meta = (0, "")
+            elif period_end and date_str == period_end:
+                meta = (2, date_str)
+            else:
+                meta = (1, date_str)
+            if meta > best_meta:
+                best_meta = meta
+                best_val = value
+        return best_val
+
+    @staticmethod
     def _derive_fiscal_period(period_end: str) -> str:
         try:
             dt = datetime.strptime(period_end, "%Y-%m-%d")
@@ -423,11 +465,13 @@ class NSEIndia:
     def _get_context_ref_type(context_ref: str) -> str:
         if not context_ref:
             return ""
-        if any(ref in context_ref for ref in quarterly_context_ref_types):
+        # Exact-id match only: substring matching misclassifies refs like
+        # "OneReportable31I" or "FourOperatingExpenses01D".
+        if context_ref in quarterly_context_ref_types:
             return "quarterly"
-        if any(ref in context_ref for ref in annual_context_ref_types):
+        if context_ref in annual_context_ref_types:
             return "annual"
-        if any(ref in context_ref for ref in shareholding_context_ref_types):
+        if context_ref in shareholding_context_ref_types:
             return "shareholding"
         return context_ref
 
@@ -499,7 +543,7 @@ class NSEIndia:
 
     def process_xbrl(self, x, symbol, category):
         try:
-            xbrl_url = x.get("xbrl") or x.get("broadCastDate")
+            xbrl_url = x.get("xbrl")
             if not xbrl_url or xbrl_url in ("-", "null"):
                 return None
 
@@ -508,7 +552,7 @@ class NSEIndia:
             )
 
             self.logger.debug(f"Processing XBRL for {symbol} ({category}): {xbrl_url}")
-            extension = xbrl_url.split(".")[-1]
+            extension = os.path.splitext(urlparse(xbrl_url).path)[1].lstrip(".").lower()
             if extension == "xml":
                 t0 = time.perf_counter()
                 content = self.api.fetch_xbrl_content(xbrl_url, symbol)
@@ -542,10 +586,16 @@ class NSEIndia:
                             )
                             return None
 
+                        # NSE flags each financial filing "Consolidated"/"Standalone"
+                        # explicitly; a missing flag means the record carries no
+                        # consolidation split (board/CompBOD filings, etc). Forcing
+                        # "Consolidated" here would fabricate a consolidated record
+                        # that can collide with (and overwrite) the real one in the
+                        # upsert key (symbol, period_end, consolidated, source_endpoint).
                         default_consolidated = (
                             "Shareholding"
                             if category == "shareholding-pattern"
-                            else "Consolidated"
+                            else "Standalone"
                         )
                         consolidated = x.get("consolidated", default_consolidated)
                         period_end = data["period_end_date"]
@@ -565,10 +615,23 @@ class NSEIndia:
                         else:
                             filing_type = "quarterly"
 
+                        # The reporting period start is the date most facts share
+                        # (a filing's facts all describe the same duration, e.g.
+                        # 01-Jul-2025 to 30-Sep-2025); the first fact with a start
+                        # date is an arbitrary single context.
+                        _starts = Counter(
+                            f["start_date"]
+                            for f in data["financials"]
+                            if f.get("start_date")
+                        )
+                        period_start = (
+                            _starts.most_common(1)[0][0] if _starts else None
+                        )
+
                         base_meta = {
                             "symbol": symbol.upper(),
                             "period_end_date": period_end,
-                            "period_start_date": None,
+                            "period_start_date": period_start,
                             "xbrl_url": xbrl_url,
                             "broadcast_date": broadcast_date,
                             "consolidated": is_cons,
@@ -577,15 +640,8 @@ class NSEIndia:
                             "entity_identifier": symbol.upper(),
                             "fiscal_period": self._derive_fiscal_period(period_end),
                             "source_endpoint": category,
-                            "pulled_at": datetime.utcnow(),
+                            "pulled_at": utcnow(),
                         }
-
-                        for f in data["financials"]:
-                            if (
-                                f.get("start_date")
-                                and base_meta["period_start_date"] is None
-                            ):
-                                base_meta["period_start_date"] = f["start_date"]
 
                         result: Dict[str, Any] = {
                             "income_statement": None,
@@ -614,7 +670,9 @@ class NSEIndia:
                                 if tag not in SH_PERCENTAGE_TAGS:
                                     continue
                                 field = SH_CONTEXT_TO_FIELD.get(cr, camel_to_snake(cr))
-                                stmts["shareholding"].append((field, f["value"]))
+                                stmts["shareholding"].append(
+                                    (field, f["value"], None, tag)
+                                )
                                 continue
 
                             # CapEx is published as several Purchase* line items;
@@ -625,7 +683,12 @@ class NSEIndia:
                                 if tag in FINANCIAL_FIELD_MAP
                                 else None
                             )
-                            entry = (target or tag_snake, f["value"])
+                            entry = (
+                                target or tag_snake,
+                                f["value"],
+                                f.get("end_date") or f.get("instant_date"),
+                                tag,
+                            )
 
                             if cat == "income_statement" or cat == "per_share":
                                 stmts["income_statement"].append(entry)
@@ -633,10 +696,11 @@ class NSEIndia:
                                 stmts["balance_sheet"].append(entry)
                             elif cat == "cash_flow":
                                 stmts["cash_flow"].append(entry)
-                            elif cat == "metadata":
-                                pass
                             else:
-                                stmts["income_statement"].append(entry)
+                                # metadata / unmapped tags have no store column;
+                                # dumping them into income_statement fabricates
+                                # fields that are silently dropped at the DB.
+                                continue
 
                         ctx_ref_type_str = (
                             ", ".join(sorted(ctx_ref_types_used))
@@ -655,33 +719,45 @@ class NSEIndia:
                             if not entries:
                                 continue
                             doc = dict(base_meta)
-                            doc["_content_hash"] = hashlib.md5(
-                                json.dumps(
-                                    {
-                                        k: doc[k]
-                                        for k in (
-                                            "symbol",
-                                            "period_end_date",
-                                            "consolidated",
-                                            "source_endpoint",
-                                        )
-                                    },
-                                    sort_keys=True,
-                                    default=str,
-                                ).encode()
-                            ).hexdigest()
-                            for tag_snake, value in entries:
-                                if value is None:
-                                    continue
-                                existing = doc.get(tag_snake)
-                                if existing is not None:
-                                    try:
-                                        value = str(
-                                            Decimal(existing) + Decimal(value)
-                                        )
-                                    except InvalidOperation:
-                                        pass
-                                doc[tag_snake] = value
+                            grouped: Dict[str, list] = {}
+                            field_order: list = []
+                            for key, value, date, tag in entries:
+                                if key not in grouped:
+                                    grouped[key] = []
+                                    field_order.append(key)
+                                grouped[key].append((value, date, tag))
+                            for key in field_order:
+                                group = grouped[key]
+                                if len({t for _, _, t in group}) > 1:
+                                    # Distinct concepts collapsing onto one
+                                    # column (CapEx Purchase* line items) are
+                                    # additive.
+                                    acc = None
+                                    for value, _, _ in group:
+                                        if value is None:
+                                            continue
+                                        if acc is None:
+                                            acc = value
+                                        else:
+                                            try:
+                                                acc = str(
+                                                    Decimal(acc) + Decimal(value)
+                                                )
+                                            except InvalidOperation:
+                                                continue
+                                    if acc is not None:
+                                        doc[key] = acc
+                                else:
+                                    # The same concept reported in several
+                                    # contexts (quarter vs year-end instants,
+                                    # restated figures). These are never
+                                    # additive: pick the value dated for the
+                                    # filing period, never sum.
+                                    value = NSEIndia._pick_context_value(
+                                        group, period_end
+                                    )
+                                    if value is not None:
+                                        doc[key] = value
                             result[stmt_key] = doc
 
                         stmt_types = [k for k, v in result.items() if v is not None]

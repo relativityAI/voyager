@@ -30,6 +30,7 @@ from loguru import logger
 from sqlalchemy import select
 
 from src.db.engine import get_session_factory
+from src.utils.helpers import utcnow
 from src.db.models import NSEStockMetadata
 
 from ._common import NotFoundError, UpstreamError
@@ -591,7 +592,7 @@ async def pull_sec_data(
                 f"SEC pull for {symbol} parsed 0 rows; skipping metadata update"
             )
         else:
-            now = datetime.utcnow()
+            now = utcnow()
             if meta:
                 if meta.last_pull:
                     prev = list(meta.previous_pulls or [])

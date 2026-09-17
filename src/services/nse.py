@@ -18,6 +18,7 @@ from src.db.models import (
     Shareholding,
 )
 from src.tools.nse.client import ENDPOINTS, CookieError, NSEIndia
+from src.utils.helpers import utcnow
 
 from ._common import (
     InvalidRequestError,
@@ -71,13 +72,14 @@ XBRL_PARSE_MAP: Dict[str, str] = {
     "shareholding-pattern": "shareholding",
 }
 
-ALL_NSE_COLLECTIONS: Dict[str, str] = {**STATEMENT_COLLECTIONS}
+ANN_ENDPOINTS = ("announcements-equities", "announcements-sme")
 
-METADATA_COLUMNS = {
-    "symbol", "period_end_date", "period_start_date", "xbrl_url", "broadcast_date",
-    "consolidated", "filing_type", "measure", "entity_identifier", "fiscal_period",
-    "source_endpoint", "context_ref_type", "pulled_at", "_content_hash",
-}
+# Endpoints a pull actually consumes. corp-info / annual-reports / event-calendar
+# are fetched (or meaningful) elsewhere, not by pull_nse_data; pulling them here
+# wastes NSE rate budget and skews pull status.
+PULL_ENDPOINTS = set(XBRL_PARSE_MAP) | set(ANN_ENDPOINTS)
+
+ALL_NSE_COLLECTIONS: Dict[str, str] = {**STATEMENT_COLLECTIONS}
 
 
 def _fetch_endpoint_json(url: str, symbol: str):
@@ -201,7 +203,8 @@ async def pull_nse_data(
     selected = [
         (key, url)
         for key, url in ENDPOINTS.items()
-        if not (
+        if key in PULL_ENDPOINTS
+        and not (
             filing_type
             and key in XBRL_PARSE_MAP
             and key not in FT_ENDPOINTS.get(filing_type, set())
@@ -292,7 +295,6 @@ async def pull_nse_data(
         "hasXbrl": "has_xbrl",
         "sortDateTime": "sort_date",
     }
-    ANN_ENDPOINTS = ("announcements-equities", "announcements-sme")
 
     seen_xbrl: set = set()
     pending: list = []
@@ -352,7 +354,7 @@ async def pull_nse_data(
             doc = parsed.get(stmt_key)
             if doc is None:
                 continue
-            doc["pulled_at"] = datetime.utcnow()
+            doc["pulled_at"] = utcnow()
             model_class = STATEMENT_MODELS[coll_name]
             row = _doc_to_row(doc, model_class)
             rows_by_coll.setdefault(coll_name, []).append(row)
@@ -408,11 +410,15 @@ async def pull_nse_data(
         pull_status = "failed"
     elif failures:
         pull_status = "partial"
-    else:
+    elif successes:
         pull_status = "completed"
+    else:
+        # Every endpoint came back empty (or already in the DB): nothing to do,
+        # but not an error. "no data" is not treated as a failed job.
+        pull_status = "no data"
 
     if pull_status != "failed":
-        now = datetime.utcnow()
+        now = utcnow()
         factory = get_session_factory()
         async with factory() as session:
             result = await session.execute(
@@ -760,7 +766,7 @@ async def get_shareholdings(
     if (
         existing
         and existing.pulled_at
-        and datetime.utcnow() - existing.pulled_at < _SH_FRESHNESS
+        and utcnow() - existing.pulled_at < _SH_FRESHNESS
     ):
         priority = _load_priority_metrics().get("shareholdings", set())
         return {
@@ -783,7 +789,7 @@ async def get_shareholdings(
             if parsed is None or parsed.get("shareholding") is None:
                 continue
             doc = parsed["shareholding"]
-            doc["pulled_at"] = datetime.utcnow()
+            doc["pulled_at"] = utcnow()
             if i > 0:
                 logger.warning(
                     f"Shareholding for {symbol}: serving older period "

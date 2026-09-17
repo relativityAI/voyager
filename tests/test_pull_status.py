@@ -73,11 +73,12 @@ def test_pull_status_failed_when_all_endpoints_cookie_fail():
 
 
 def test_pull_status_partial_when_some_endpoints_cookie_fail():
+    # Only consumed endpoints are hit (no corp-info / event-calendar bloat).
     def fake_call(url, symbol=None, **kwargs):
-        if "corp-info" in url:
+        if "integrated-filing-results" in url:
             return _OkResponse({"data": [{"a": 1}]})
-        if "event-calendar" in url:
-            return _OkResponse([{"e": 2}])
+        if "corp-info" in url or "event-calendar" in url or "annual-reports" in url:
+            raise AssertionError(f"unexpected endpoint fetched: {url}")
         raise CookieError("no cookies")
 
     mock_session = _make_session()
@@ -89,14 +90,14 @@ def test_pull_status_partial_when_some_endpoints_cookie_fail():
         result = asyncio.run(pull_nse_data("TEST"))
 
     assert result["status"] == "partial"
-    assert result["records_pulled"] == 2
+    assert result["records_pulled"] == 1
     assert any(v == "cookie failed" for v in result["endpoint_breakdown"].values())
 
 
-def test_pull_status_completed_without_cookie_failures():
+def test_pull_status_no_data_without_cookie_failures():
     def fake_call(url, symbol=None, **kwargs):
-        if "corp-info" in url:
-            return _OkResponse({"data": [{"a": 1}]})
+        if "corp-info" in url or "event-calendar" in url or "annual-reports" in url:
+            raise AssertionError(f"unexpected endpoint fetched: {url}")
         return _OkResponse({})
 
     mock_session = _make_session()
@@ -107,7 +108,8 @@ def test_pull_status_completed_without_cookie_failures():
     ):
         result = asyncio.run(pull_nse_data("TEST"))
 
-    assert result["status"] == "completed"
+    assert result["status"] == "no data"
+    assert result["records_pulled"] == 0
     assert "cookie failed" not in result["endpoint_breakdown"].values()
 
 

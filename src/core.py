@@ -4,47 +4,6 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 
 from src.tools.nse.client import NSEIndia
-from src.tools.news.marketsmithindia import MarketSmithIndia
-from src.tools.web_screeners.screener import Screener
-from src.tools.web_screeners.stockscans import StockScans
-from src.tools.web_screeners.trendlyne import Trendlyne
-
-
-async def fetch_screener_data(symbol: str) -> Optional[Dict[str, Any]]:
-    """Fetch profile data for a stock from Screener.in"""
-    logger.info(f"Screener fetch: {symbol}")
-    scr = Screener()
-    return scr.scrape(symbol)
-
-
-def fetch_screener_screen(url: str) -> Optional[List[Dict[str, Any]]]:
-    """Fetch results from a custom screener URL."""
-    logger.info(f"Screener screen fetch: {url}")
-    scr = Screener()
-    return scr.scrape_screen(url)
-
-
-def fetch_trendlyne_data(symbol: str) -> Optional[Dict[str, Any]]:
-    """Fetch data for a symbol from Trendlyne."""
-    logger.info(f"Trendlyne fetch: {symbol}")
-    tr = Trendlyne()
-    return tr.fetch(symbol)
-
-
-def fetch_stockscans_data(
-    url: str, payload: Dict[str, Any]
-) -> Optional[Dict[str, Any]]:
-    """Fetch scan results from StockScans."""
-    logger.info(f"Stockscans fetch: {url}")
-    ss = StockScans()
-    return ss.fetch_scan(url, payload)
-
-
-def fetch_marketsmithindia_data(symbol: str) -> Optional[Dict[str, Any]]:
-    """Fetch data for a symbol from MarketSmith India."""
-    logger.info(f"MarketSmith India fetch: {symbol}")
-    ms = MarketSmithIndia()
-    return ms.fetch(symbol)
 
 
 def fetch_nse_financials(symbol: str) -> List[Dict[str, Any]]:

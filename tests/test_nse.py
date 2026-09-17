@@ -332,6 +332,61 @@ def test_process_xbrl_sums_capex_line_items_to_one_field(nse_india):
     assert doc["payments_for_purchase_of_noncurrent_assets"] == "125000"
 
 
+def test_process_xbrl_picks_not_sums_duplicate_instant_facts(nse_india):
+    """Balance-sheet instants published in both a quarterly and an annual
+    context must be picked (the one dated at the filing period), never summed."""
+    sample = b"""<?xml version="1.0" encoding="utf-8"?>
+<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"
+            xmlns:in-bse-fin="http://www.bseindia.com/xbrl/fin/2015-03-31/in-bse-fin">
+    <xbrli:context id="OneI">
+        <xbrli:entity><xbrli:identifier scheme="http://www.bseindia.com">TEST</xbrli:identifier></xbrli:entity>
+        <xbrli:period><xbrli:instant>2025-09-30</xbrli:instant></xbrli:period>
+    </xbrli:context>
+    <xbrli:context id="FourD">
+        <xbrli:entity><xbrli:identifier scheme="http://www.bseindia.com">TEST</xbrli:identifier></xbrli:entity>
+        <xbrli:period><xbrli:instant>2025-03-31</xbrli:instant></xbrli:period>
+    </xbrli:context>
+    <in-bse-fin:endDate>2025-09-30</in-bse-fin:endDate>
+    <in-bse-fin:Assets contextRef="OneI">1000000</in-bse-fin:Assets>
+    <in-bse-fin:Assets contextRef="FourD">800000</in-bse-fin:Assets>
+    <in-bse-fin:RevenueFromOperations contextRef="OneI">500000</in-bse-fin:RevenueFromOperations>
+</xbrli:xbrl>
+"""
+    mock_record = {"xbrl": MOCK_XBRL_URL, "consolidated": "Consolidated"}
+    with unittest.mock.patch.object(
+        nse_india.api, "fetch_xbrl_content", return_value=sample
+    ):
+        result = nse_india.process_xbrl(mock_record, "TEST", "integrated-filing")
+    assert result is not None
+    doc = result["balance_sheet"]
+    assert doc is not None
+    assert doc["period_end_date"] == "2025-09-30"
+    assert doc["assets"] == "1000000"
+
+
+def test_extract_xml_period_end_not_clobbered_by_contexts(parser):
+    """Context-local endDates must not overwrite the filing period end, and
+    context children must not leak into the fact rows."""
+    sample_xml = b"""<?xml version="1.0" encoding="utf-8"?>
+    <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:in-bse-fin="http://www.bseindia.com/xbrl/fin/2015-03-31/in-bse-fin">
+        <in-bse-fin:endDate>2025-09-30</in-bse-fin:endDate>
+        <xbrli:context id="OneI">
+            <xbrli:entity><xbrli:identifier scheme="http://www.bseindia.com">TCS</xbrli:identifier></xbrli:entity>
+            <xbrli:period><xbrli:startDate>2025-07-01</xbrli:startDate><xbrli:endDate>2026-03-31</xbrli:endDate></xbrli:period>
+        </xbrli:context>
+        <in-bse-fin:RevenueFromOperations contextRef="OneI">1000</in-bse-fin:RevenueFromOperations>
+        <in-bse-fin:endDate>2025-12-31</in-bse-fin:endDate>
+    </xbrli:xbrl>
+    """
+    result = parser.extract_xml(sample_xml, "TCS")
+    assert result is not None
+    assert result["period_end_date"] == "2025-12-31"
+    tags = {f["tag"] for f in result["financials"]}
+    assert "identifier" not in tags
+    assert "startDate" not in tags
+    assert "endDate" in tags
+
+
 def test_process_xbrl_shareholding_new_context_format(nse_india):
     """NSE's post-Jun-2025 shareholding template uses '..._ContextI' context ids."""
     mock_record = {"xbrl": MOCK_XBRL_URL, "consolidated": "Shareholding"}
@@ -468,3 +523,88 @@ def test_shareholdings_stale_cache_triggers_live_fetch():
         result = asyncio.run(get_shareholdings("TEST"))
 
     assert result["shareholdings"]["period_end_date"] == "2026-06-30"
+
+
+def test_get_context_ref_type_exact_match():
+    """Context classification must be exact-id, not substring: refs like
+    OneReportable31I must not be read as quarterly, and annual instants FourI
+    must classify as annual."""
+    q = NSEIndia._get_context_ref_type
+    assert q("OneI") == "quarterly"
+    assert q("OneD") == "quarterly"
+    assert q("FourD") == "annual"
+    assert q("FourI") == "annual"
+    assert q("OneReportable31I") == "OneReportable31I"
+    assert q("FourOperatingExpenses01D") == "FourOperatingExpenses01D"
+    assert q("InstitutionsForeignI") == "shareholding"
+
+
+def test_process_xbrl_skips_unmapped_tags(nse_india):
+    """Tags with no FINANCIAL_FIELD_MAP entry must not leak into the income
+    statement (they have no store column and were silently dropped at the DB)."""
+    sample = b"""<?xml version="1.0" encoding="utf-8"?>
+<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"
+            xmlns:in-bse-fin="http://www.bseindia.com/xbrl/fin/2015-03-31/in-bse-fin">
+    <xbrli:context id="OneI">
+        <xbrli:entity><xbrli:identifier scheme="http://www.bseindia.com">TEST</xbrli:identifier></xbrli:entity>
+        <xbrli:period><xbrli:startDate>2025-07-01</xbrli:startDate><xbrli:endDate>2025-09-30</xbrli:endDate></xbrli:period>
+    </xbrli:context>
+    <in-bse-fin:endDate>2025-09-30</in-bse-fin:endDate>
+    <in-bse-fin:RevenueFromOperations contextRef="OneI">5000000</in-bse-fin:RevenueFromOperations>
+    <in-bse-fin:SegmentAssets contextRef="OneI">99999</in-bse-fin:SegmentAssets>
+    <in-bse-fin:scripCode contextRef="OneI">540611</in-bse-fin:scripCode>
+</xbrli:xbrl>
+"""
+    mock_record = {"xbrl": MOCK_XBRL_URL, "consolidated": "Consolidated"}
+    with unittest.mock.patch.object(
+        nse_india.api, "fetch_xbrl_content", return_value=sample
+    ):
+        result = nse_india.process_xbrl(mock_record, "TEST", "integrated-filing")
+    assert result is not None
+    doc = result["income_statement"]
+    assert doc["revenue_from_operations"] == "5000000"
+    assert "segment_assets" not in doc
+    assert "scrip_code" not in doc
+
+
+def test_process_xbrl_default_standalone_when_flag_missing(nse_india):
+    """A filing with no consolidated flag must not be fabricated as
+    Consolidated (that can clobber the real consolidated record on the upsert
+    key)."""
+    with unittest.mock.patch.object(
+        nse_india.api, "fetch_xbrl_content", return_value=SAMPLE_XBRL
+    ):
+        result = nse_india.process_xbrl(
+            {"xbrl": MOCK_XBRL_URL}, "TEST", "integrated-filing"
+        )
+    assert result is not None
+    assert result["income_statement"]["consolidated"] is False
+
+
+def test_process_xbrl_period_start_is_majority_duration(nse_india):
+    """period_start_date is the start date most facts share, not the first one."""
+    sample = b"""<?xml version="1.0" encoding="utf-8"?>
+<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"
+            xmlns:in-bse-fin="http://www.bseindia.com/xbrl/fin/2015-03-31/in-bse-fin">
+    <xbrli:context id="OneI">
+        <xbrli:entity><xbrli:identifier scheme="http://www.bseindia.com">TEST</xbrli:identifier></xbrli:entity>
+        <xbrli:period><xbrli:startDate>2025-07-01</xbrli:startDate><xbrli:endDate>2025-09-30</xbrli:endDate></xbrli:period>
+    </xbrli:context>
+    <xbrli:context id="Odd">
+        <xbrli:entity><xbrli:identifier scheme="http://www.bseindia.com">TEST</xbrli:identifier></xbrli:entity>
+        <xbrli:period><xbrli:startDate>2025-01-01</xbrli:startDate><xbrli:endDate>2025-06-30</xbrli:endDate></xbrli:period>
+    </xbrli:context>
+    <in-bse-fin:endDate>2025-09-30</in-bse-fin:endDate>
+    <in-bse-fin:RevenueFromOperations contextRef="OneI">5000000</in-bse-fin:RevenueFromOperations>
+    <in-bse-fin:ProfitLossForPeriod contextRef="OneI">1000000</in-bse-fin:ProfitLossForPeriod>
+    <in-bse-fin:DilutedEarningsLossPerShareFromContinuingOperations contextRef="OneI">0.53</in-bse-fin:DilutedEarningsLossPerShareFromContinuingOperations>
+    <in-bse-fin:FinanceCosts contextRef="Odd">99</in-bse-fin:FinanceCosts>
+</xbrli:xbrl>
+"""
+    mock_record = {"xbrl": MOCK_XBRL_URL, "consolidated": "Consolidated"}
+    with unittest.mock.patch.object(
+        nse_india.api, "fetch_xbrl_content", return_value=sample
+    ):
+        result = nse_india.process_xbrl(mock_record, "TEST", "integrated-filing")
+    assert result is not None
+    assert result["income_statement"]["period_start_date"] == "2025-07-01"
