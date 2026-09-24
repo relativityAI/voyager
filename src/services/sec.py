@@ -17,6 +17,7 @@ handles the throttling internally.
 from __future__ import annotations
 
 import asyncio
+import gc
 import os
 import time
 from datetime import date, datetime
@@ -55,6 +56,10 @@ if _proxy:
 
 EDGAR_MAX_ANNUAL_FILINGS = int(os.getenv("EDGAR_MAX_ANNUAL_FILINGS", "8"))
 EDGAR_MAX_QUARTERLY_FILINGS = int(os.getenv("EDGAR_MAX_QUARTERLY_FILINGS", "40"))
+# XBRLS.from_filings holds every filing's parsed facts in memory at once; on
+# a 512MB Render instance 40 quarters OOMs the worker. Parse in small batches
+# and release each batch before the next.
+EDGAR_PARSE_BATCH = int(os.getenv("EDGAR_PARSE_BATCH", "6"))
 
 # A period gap larger than this (days) separates fiscal years in a 10-Q frame
 # (Q4 is reported in the 10-K, so the Jun->Dec gap is ~6 months).
@@ -418,6 +423,46 @@ def _q4_rows(
     return []
 
 
+def _stitch_batched(filings: list, symbol: str, form: str) -> tuple:
+    """Stitch statement frames from filings in small batches.
+
+    XBRLS.from_filings parses every filing's XBRL into memory at once; with
+    40 quarters that alone can exceed a 512MB Render instance. This chunks
+    the filings, extracts the three statement frames per batch, concatenates
+    them, and drops all batch state before the next chunk. Column sets are
+    unioned; missing cells become NaN, matching the single-shot stitch.
+    """
+    from edgar.xbrl import XBRLS
+
+    income_frames, balance_frames, cash_frames = [], [], []
+    filings = list(filings)
+    for start in range(0, len(filings), EDGAR_PARSE_BATCH):
+        batch = filings[start : start + EDGAR_PARSE_BATCH]
+        try:
+            xbrls = XBRLS.from_filings(batch)
+            income_frames.append(xbrls.statements.income_statement().to_dataframe())
+            balance_frames.append(xbrls.statements.balance_sheet().to_dataframe())
+            cash_frames.append(xbrls.statements.cash_flow_statement().to_dataframe())
+        finally:
+            # Release the batch's XBRL objects and any stitch caches before
+            # the next chunk; frames extracted above are standalone DataFrames.
+            del xbrls
+            gc.collect()
+
+    def _merge(frames):
+        if not frames:
+            return None
+        if len(frames) == 1:
+            return frames[0]
+        merged = pd.concat(frames, axis=0, ignore_index=False)
+        # Same concept can appear in multiple batches (overlapping periods);
+        # keep the first non-null value per (concept, period) column.
+        merged = merged.groupby(level=0, sort=False).first()
+        return merged
+
+    return _merge(income_frames), _merge(balance_frames), _merge(cash_frames)
+
+
 def _one_company(symbol: str) -> Company:
     try:
         return Company(symbol)
@@ -495,26 +540,24 @@ async def pull_sec_data(
                     last_error = f"{form}: SEC returned no filings for {symbol}"
                 else:
                     try:
-                        xbrls = XBRLS.from_filings(filings)
-                        i, b, c = (
-                            xbrls.statements.income_statement().to_dataframe(),
-                            xbrls.statements.balance_sheet().to_dataframe(),
-                            xbrls.statements.cash_flow_statement().to_dataframe(),
-                        )
+                        i, b, c = _stitch_batched(filings, symbol, form)
                     except Exception as exc:
                         last_error = f"{form}: {type(exc).__name__}: {exc}"
                     else:
-                        accs = [getattr(f, "accession_no", "?") for f in filings][:12]
-                        summary = (
-                            f"{form}: filings={len(filings)} "
-                            f"income{i.shape}{'/concept' if 'concept' in i.columns else '/NO-concept'} "
-                            f"balance{b.shape}{'/concept' if 'concept' in b.columns else '/NO-concept'} "
-                            f"cashflow{c.shape}{'/concept' if 'concept' in c.columns else '/NO-concept'} "
-                            f"acc={accs}"
-                        )
-                        frames_diag.append(summary)
-                        logger.info(f"SEC {symbol} {summary}")
-                        return (i, b, c, len(filings))
+                        if i is None:
+                            last_error = f"{form}: no statement frames parsed"
+                        else:
+                            accs = [getattr(f, "accession_no", "?") for f in filings][:12]
+                            summary = (
+                                f"{form}: filings={len(filings)} "
+                                f"income{i.shape}{'/concept' if 'concept' in i.columns else '/NO-concept'} "
+                                f"balance{b.shape}{'/concept' if 'concept' in b.columns else '/NO-concept'} "
+                                f"cashflow{c.shape}{'/concept' if 'concept' in c.columns else '/NO-concept'} "
+                                f"acc={accs}"
+                            )
+                            frames_diag.append(summary)
+                            logger.info(f"SEC {symbol} {summary}")
+                            return (i, b, c, len(filings))
             except Exception as exc:
                 last_error = f"{form}: {type(exc).__name__}: {exc}"
             if attempt < 2:
@@ -552,15 +595,17 @@ async def pull_sec_data(
             income_q = None
 
         if income_q is not None and "concept" in income_q.columns:
+            # Keep only the columns needed for Q4 derivation, not full frame
+            # copies — three full statement frames at once OOM small instances.
             income_raw_q, cashflow_raw_q = income_q.copy(), cashflow_q.copy()
             q_periods = _period_columns(income_q)
             income_q = _diff_cumulative(income_q, q_periods)
             cashflow_q = _diff_cumulative(cashflow_q, _period_columns(cashflow_q))
             rows_by_coll["income_statements"].extend(_income_rows(symbol, income_q, q_periods, "10-Q", False))
+            rows_by_coll["cash_flows"].extend(_cashflow_rows(symbol, cashflow_q, _period_columns(cashflow_q), "10-Q", False))
             if "concept" in balance_q.columns:
                 rows_by_coll["balance_sheets"].extend(_balance_rows(symbol, balance_q, _period_columns(balance_q), "10-Q", False))
-            if "concept" in cashflow_q.columns:
-                rows_by_coll["cash_flows"].extend(_cashflow_rows(symbol, cashflow_q, _period_columns(cashflow_q), "10-Q", False))
+            del balance_q
 
             if annual is not None:
                 income_k, _, cashflow_k = annual
@@ -585,6 +630,11 @@ async def pull_sec_data(
                             _q4_rows(symbol, "cashflow", cashflow_k, cashflow_raw_q, P, pick[0])
                         )
     _tick("parse")
+
+    # Statement frames are no longer needed once rows are extracted; release
+    # them before the DB write so peak RSS stays low on 512MB instances.
+    del annual
+    gc.collect()
 
     if existing_keys:
         for coll, rows in rows_by_coll.items():

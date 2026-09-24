@@ -208,19 +208,13 @@ def banner_for_error(err: PanelHTTPError, admin_key_set: bool) -> None:
         st.error(f"HTTP {err.status_code}: {err.detail}")
 
 
-def status_color_style(df: pd.DataFrame) -> pd.DataFrame:
-    colors = {
-        "queued": "#fef3c7",
-        "running": "#dbeafe",
-        "done": "#dcfce7",
-        "failed": "#fee2e2",
-    }
-    if "status" not in df.columns:
-        return df.style
-    return df.style.apply(
-        lambda row: [f"background-color: {colors.get(row['status'], '')}" for _ in row],
-        axis=1,
-    )
+def status_pill_text(status: str) -> str:
+    return {
+        "queued": "🟡 queued",
+        "running": "🔵 running",
+        "done": "🟢 done",
+        "failed": "🔴 failed",
+    }.get(status, status)
 
 
 def job_rows(client: VoyagerClient, limit: int = 50) -> tuple[list, str | None]:
@@ -425,18 +419,6 @@ def tab_pull_manager(client: VoyagerClient):
                 existing + (", " if existing else "") + sym
             )
 
-    def _merge_upload():
-        text = (
-            st.session_state["inp_pull_file"]
-            .getvalue()
-            .decode("utf-8", errors="replace")
-        )
-        fresh = parse_symbols(text)
-        existing = parse_symbols(st.session_state.get("inp_pull_symbols", ""))
-        st.session_state["inp_pull_symbols"] = ", ".join(
-            sorted(set(existing) | set(fresh))
-        )
-
     c1, c2 = st.columns([2, 1])
     with c1:
         st.markdown("**Symbols** (comma / space / newline separated)")
@@ -455,12 +437,6 @@ def tab_pull_manager(client: VoyagerClient):
             key="inp_quick_pick",
             label_visibility="collapsed",
             on_change=_pick_symbol,
-        )
-        st.file_uploader(
-            "Upload list (.txt/.csv)",
-            type=["txt", "csv"],
-            key="inp_pull_file",
-            on_change=_merge_upload,
         )
 
     c1, c2, c3 = st.columns([1, 1, 1])
@@ -514,12 +490,11 @@ def tab_pull_manager(client: VoyagerClient):
             st.session_state.job_auto_refresh = True
 
     if st.session_state.pull_submit_results:
-        st.markdown("**Submission results**")
-        st.dataframe(
-            pd.DataFrame(st.session_state.pull_submit_results),
-            width="stretch",
-            hide_index=True,
-        )
+        failed = [r for r in st.session_state.pull_submit_results if r.get("result") == "❌ failed"]
+        ok = [r for r in st.session_state.pull_submit_results if r.get("result") != "❌ failed"]
+        st.success(f"Queued {len(ok)} pull(s).")
+        for r in failed:
+            st.error(f"{r['symbol']}: {r['detail']}")
 
     st.divider()
     st.markdown("**Recent jobs**")
@@ -569,9 +544,10 @@ def jobs_table(client: VoyagerClient):
     if status_filter:
         view = view[view["status"].isin(status_filter)]
 
-    display = view.drop(columns=["result", "error"])
+    display = view.drop(columns=["result", "error"]).copy()
+    display["status"] = display["status"].map(status_pill_text)
     st.dataframe(
-        status_color_style(display),
+        display,
         width="stretch",
         hide_index=True,
         column_config={
@@ -580,12 +556,12 @@ def jobs_table(client: VoyagerClient):
         },
     )
     for _, row in view.iterrows():
-        if row.get("result") or row.get("error"):
-            with st.expander(f"{row['symbol']} · {row['job_id']} · {row['status']}"):
-                if row.get("error"):
-                    st.error(row["error"])
-                if row.get("result"):
-                    st.json(row["result"])
+        if row.get("error"):
+            with st.expander(f"🔴 {row['symbol']} · {row['job_id']}"):
+                st.error(row["error"])
+        elif row.get("result") and row["status"] == "done":
+            with st.expander(f"🟢 {row['symbol']} · {row['job_id']} · result"):
+                st.json(row["result"])
 
 
 def tab_playground(client: VoyagerClient):
