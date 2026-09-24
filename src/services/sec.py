@@ -24,9 +24,6 @@ from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
-from edgar import Company, CompanyNotFoundError, set_identity
-from edgar.httpclient import configure_http as _configure_http
-from edgar.xbrl import XBRLS
 from loguru import logger
 from sqlalchemy import select
 
@@ -37,22 +34,39 @@ from src.db.models import NSEStockMetadata
 from ._common import NotFoundError, UpstreamError
 from .nse import STATEMENT_MODELS, _upsert_rows
 
+# edgartools is imported lazily inside the functions that need it: it costs
+# ~60MB RSS (dill, multiinspector, huge class hierarchy) and the API serves
+# mostly NSE traffic. Deferring the import keeps idle footprint low on 512MB
+# instances and only pays it during SEC pulls.
+
 # EDGAR requires a "Name email" declaration. SEC's bot filter learned to 403
 # the old "VoyagerData/1.0 (github...)" identity outright (every request from
 # every IP), while a fresh declared identity passes; keep this token unique
 # and never reuse a previously-blocked app identifier.
 _DEFAULT_IDENTITY = "Voyager/1.0 (data@voyager.local)"
-_identity = os.getenv("SEC_IDENTITY", _DEFAULT_IDENTITY).strip(" \t\r\n\"'")
-if _identity:
-    _identity = " ".join(_identity.split())
-    set_identity(_identity)
-    logger.info(f"EDGAR identity set: {_identity!r}")
-_proxy = os.getenv("SEC_PROXY", "").strip()
-if _proxy:
-    # Cloud egress IPs (Render/AWS) are hard-flagged by SEC's bot filter even
-    # with a browser UA; route requests through an egress proxy instead.
-    _configure_http(proxy=_proxy)
-    logger.info(f"EDGAR proxy set: {_proxy}")
+_edgar_ready = False
+
+
+def _ensure_edgar():
+    """Import edgartools once and apply the identity/proxy configuration."""
+    global _edgar_ready
+    if _edgar_ready:
+        return
+    from edgar import set_identity
+    from edgar.httpclient import configure_http as _configure_http
+
+    identity = os.getenv("SEC_IDENTITY", _DEFAULT_IDENTITY).strip(" \t\r\n\"'")
+    if identity:
+        identity = " ".join(identity.split())
+        set_identity(identity)
+        logger.info(f"EDGAR identity set: {identity!r}")
+    proxy = os.getenv("SEC_PROXY", "").strip()
+    if proxy:
+        # Cloud egress IPs (Render/AWS) are hard-flagged by SEC's bot filter
+        # even with a browser UA; route through an egress proxy instead.
+        _configure_http(proxy=proxy)
+        logger.info(f"EDGAR proxy set: {proxy}")
+    _edgar_ready = True
 
 EDGAR_MAX_ANNUAL_FILINGS = int(os.getenv("EDGAR_MAX_ANNUAL_FILINGS", "8"))
 EDGAR_MAX_QUARTERLY_FILINGS = int(os.getenv("EDGAR_MAX_QUARTERLY_FILINGS", "40"))
@@ -424,6 +438,7 @@ def _q4_rows(
 
 
 def _stitch_batched(filings: list, symbol: str, form: str) -> tuple:
+    _ensure_edgar()  # no-op after first SEC use; keeps edgartools lazy
     """Stitch statement frames from filings in small batches.
 
     XBRLS.from_filings parses every filing's XBRL into memory at once; with
@@ -463,7 +478,10 @@ def _stitch_batched(filings: list, symbol: str, form: str) -> tuple:
     return _merge(income_frames), _merge(balance_frames), _merge(cash_frames)
 
 
-def _one_company(symbol: str) -> Company:
+def _one_company(symbol: str):
+    _ensure_edgar()
+    from edgar import Company
+
     try:
         return Company(symbol)
     except CompanyNotFoundError as exc:

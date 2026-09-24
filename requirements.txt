@@ -9,9 +9,10 @@ typer==0.20.0
 rich==14.2.0
 
 # Data
+# (pandas-ta removed: it pulled in numba/llvmlite for ~60MB of RSS for eight
+# indicators that are plain pandas rolling windows — see technicals.py)
 pandas==2.3.3
 numpy==2.2.6
-pandas-ta==0.4.71b0
 yfinance==1.4.1
 edgartools==5.56.0
 
