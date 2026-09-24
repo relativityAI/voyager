@@ -32,6 +32,14 @@ def _pct(v: Optional[float]) -> Optional[float]:
     return round(v * 100, 4) if v is not None else None
 
 
+def _round2(v: Any) -> Any:
+    """Round a numeric metric to max 2 decimals for the response."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return v
+    f = float(v)
+    return None if (f != f or abs(f) == float("inf")) else round(f, 2)
+
+
 def _ttm_window(
     records: list, field: str, start: int = 0, require_all: bool = True
 ) -> Optional[float]:
@@ -136,13 +144,18 @@ async def financial_metrics(
     country: Optional[str] = None,
     source: str = "nse",
     consolidated: bool = True,
-    filing_type: str = "quarterly",
+    filing_type: str = "ttm",
 ) -> Dict[str, Any]:
     symbol = symbol.upper()
     _, source = _validate_source(country, source)
 
     if filing_type not in ("quarterly", "annual", "ttm"):
         raise InvalidRequestError("filing_type must be 'quarterly', 'annual', or 'ttm'")
+
+    # One call serves all financial metrics: flows are computed on a TTM basis,
+    # stocks (balance-sheet items) on the latest quarter. filing_type is kept
+    # only as an optional override for callers that need a specific basis.
+    is_ttm = filing_type == "ttm"
 
     from src.tools.nse.technicals import fetch_price_info, fetch_technicals
 
@@ -233,8 +246,16 @@ async def financial_metrics(
     borrowings_c = _to_float(latest.get("borrowings_current"))
     borrowings_nc = _to_float(latest.get("borrowings_noncurrent"))
     ncl = _to_float(latest.get("noncurrent_liabilities"))
-    cash_eq = _to_float(latest.get("cash_and_cash_equivalents"))
-    debt_eq_ratio = _to_float(latest.get("debt_equity_ratio"))
+    cash_eq_raw = _to_float(latest.get("cash_and_cash_equivalents"))
+    bank_balance = _to_float(
+        latest.get("bank_balance_other_than_cash_and_cash_equivalents")
+    )
+    # Cash & equivalents includes bank balances other than cash; filings split
+    # them so a cash-only read understates liquidity (e.g. Skygold ₹235 Cr
+    # vs ₹7.9 Cr).
+    cash_eq = sum(
+        v for v in (cash_eq_raw, bank_balance) if v is not None
+    ) or None
 
     is_ttm = filing_type == "ttm"
     flow_fields = [
@@ -246,13 +267,19 @@ async def financial_metrics(
         "cash_flows_from_used_in_operating_activities",
         "payments_for_purchase_of_noncurrent_assets",
         "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations",
+        "cost_of_revenue",
+        "expenses",
+        "tax_expense",
+        "dividends_paid",
     ]
     sparse_flows = {
         "cash_flows_from_used_in_operating_activities",
         "payments_for_purchase_of_noncurrent_assets",
+        "dividends_paid",
     }
-    ttm_values: dict = {}
-    if is_ttm or filing_type == "quarterly":
+    ttm_values: dict = {f: None for f in flow_fields}
+
+    def _compute_ttm_windows():
         for f in flow_fields:
             ttm_values[f] = _ttm_window(
                 records,
@@ -261,6 +288,17 @@ async def financial_metrics(
                 require_all=(f not in sparse_flows),
             )
 
+    if filing_type != "annual":
+        _compute_ttm_windows()
+
+    # Graceful degradation: when fewer than 4 quarters are stored, the strict
+    # TTM window returns None. Fall back to the latest single quarter so the
+    # response stays populated (degraded, not empty) for newly listed symbols.
+    if ttm_values.get("revenue_from_operations") is None:
+        for f in flow_fields:
+            latest_val = _to_float(latest.get(f))
+            if ttm_values[f] is None and latest_val is not None:
+                ttm_values[f] = latest_val
     ttm_rev = ttm_values.get("revenue_from_operations")
     ttm_pat = ttm_values.get("profit_loss_for_period")
     ttm_pbt = ttm_values.get("profit_before_tax")
@@ -271,6 +309,10 @@ async def financial_metrics(
     ttm_eps = ttm_values.get(
         "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations"
     )
+    ttm_cor = ttm_values.get("cost_of_revenue")
+    ttm_exp = ttm_values.get("expenses")
+    ttm_tax = ttm_values.get("tax_expense")
+    ttm_div = ttm_values.get("dividends_paid")
     ttm_ebit = (
         (ttm_pbt or 0) + (ttm_fc or 0)
         if ttm_pbt is not None or ttm_fc is not None
@@ -278,7 +320,7 @@ async def financial_metrics(
     )
 
     if is_ttm:
-        rev, pbt, pat, fc, dep, ocf, capex, eps = [ttm_values[f] for f in flow_fields]
+        rev, pbt, pat, fc, dep, ocf, capex, eps = [ttm_values[f] for f in flow_fields[:8]]
     else:
         rev = _to_float(latest.get("revenue_from_operations"))
         pbt = _to_float(latest.get("profit_before_tax"))
@@ -317,6 +359,19 @@ async def financial_metrics(
     if hasattr(latest_date, "isoformat"):
         latest_date = latest_date.isoformat()
     yoy_rec = _find_record(records, latest_date, 12) if latest_date else None
+    prev_q_rec = _find_record(records, latest_date, 3) if latest_date else None
+
+    def _qoq(field: str) -> Optional[float]:
+        return _growth_rate(
+            _to_float(latest.get(field)),
+            _to_float(prev_q_rec.get(field)) if prev_q_rec else None,
+        )
+
+    def _yoy(field: str) -> Optional[float]:
+        return _growth_rate(
+            _to_float(latest.get(field)),
+            _to_float(yoy_rec.get(field)) if yoy_rec else None,
+        )
 
     if is_ttm:
         rev_prior = _ttm_window(records, "revenue_from_operations", 4)
@@ -388,43 +443,34 @@ async def financial_metrics(
     )
     ebitda_growth = op_income_growth
 
-    if is_ttm:
-        eps_vals = [
-            _ttm_window(
-                records,
-                "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations",
-                i,
-            )
-            for i in range(max(0, len(records) - 3))
-        ]
-    else:
-        eps_vals = [
-            _to_float(
-                r.get(
-                    "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations"
-                )
-            )
-            for r in records
-        ]
-    cagr = None
-    if (
-        len(eps_vals) >= 13
-        and eps_vals[0] is not None
-        and eps_vals[12] is not None
-        and eps_vals[0] > 0
-        and eps_vals[12] > 0
-    ):
-        cagr = ((eps_vals[0] / eps_vals[12]) ** (1.0 / 3) - 1) * 100
-
-    peg_growth = cagr if cagr is not None and cagr > 0 else eps_growth
+    peg_growth = eps_growth
 
     result: Dict[str, Any] = {
         "symbol": symbol,
-        "period_end_date": latest.get("period_end_date"),
+        "last_quarter_end_date": latest.get("period_end_date"),
+        "last_annual_end_date": None,
         "consolidated": is_cons,
         "filing_type": filing_type,
         "price_data": "live" if price_info else "unavailable",
     }
+    # Last annual period end: prefer an annual filing_type row if present,
+    # else infer the fiscal year-end from stored quarterly periods.
+    annual_dates = [
+        k for k, d in balance_docs.items()
+        if (d.get("filing_type") == "annual")
+    ]
+    if annual_dates:
+        result["last_annual_end_date"] = max(annual_dates)
+    else:
+        try:
+            dt = datetime.strptime(latest_date, "%Y-%m-%d")
+            month, year = dt.month, dt.year
+            if month == 12:
+                result["last_annual_end_date"] = f"{year}-12-31"
+            else:
+                result["last_annual_end_date"] = f"{year - 1}-12-31"
+        except (ValueError, TypeError):
+            result["last_annual_end_date"] = None
     for k in (
         "current_price",
         "rsi_14",
@@ -494,23 +540,40 @@ async def financial_metrics(
         fcf = None
         fcf_source = None
     result["free_cash_flow_source"] = fcf_source
-    result["free_cash_flow_yield"] = (
-        _pct(_safe_div(fcf, market_cap)) if fcf is not None and market_cap else None
-    )
     result["peg_ratio"] = (
         _safe_div(pe, peg_growth)
         if pe is not None and peg_growth is not None and peg_growth > 0
         else None
     )
 
-    result["gross_margin"] = None
+    # Gross margin = (revenue - cost of revenue) / revenue. NSE integrated
+    # filings don't always tag COGS; fall back to (revenue - expenses) with
+    # other income excluded, and to None when neither is available.
+    gross_profit = None
+    if ttm_cor is not None and ttm_rev is not None:
+        gross_profit = ttm_rev - ttm_cor
+    elif ttm_exp is not None and ttm_rev is not None:
+        gross_profit = ttm_rev - ttm_exp
+    result["gross_margin"] = (
+        _pct(_safe_div(gross_profit, ttm_rev))
+        if gross_profit is not None and ttm_rev
+        else None
+    )
     result["ebitda_margin"] = (
         _pct(_safe_div(val_ebit + val_dep, val_rev))
         if val_ebit is not None and val_dep is not None and val_rev
         else None
     )
-    result["operating_margin"] = _pct(_safe_div(ebit, rev)) if rev else None
-    result["net_margin"] = _pct(_safe_div(pat, rev)) if rev else None
+    # Margins are on a TTM basis; a single quarter overstates/understates
+    # (Amazon operating margin 39.65% quarterly vs 12.68% TTM).
+    result["operating_margin"] = (
+        _pct(_safe_div(val_ebit, val_rev)) if val_rev else None
+    )
+    result["net_margin"] = (
+        _pct(_safe_div(ttm_pat, val_rev))
+        if ttm_pat is not None and val_rev
+        else None
+    )
     # Return ratios compare TTM flows against point-in-time stocks; a single
     # quarter's PAT over equity understates ROE ~4x.
     ret_pat = ttm_pat if ttm_pat is not None else pat
@@ -521,47 +584,109 @@ async def financial_metrics(
     result["return_on_assets"] = (
         _pct(_safe_div(ret_pat, assets_t)) if assets_t else None
     )
+    # ROIC: TTM NOPAT (EBIT x (1 - effective tax rate)) / invested capital
+    # (total debt + equity). Screener-style convention; the old assets-minus-
+    # non-current-liabilities proxy understated it for cash-rich firms.
+    invested_capital = total_debt + total_equity
+    nopat = None
+    if ret_ebit is not None:
+        if ttm_pbt is not None and ttm_tax is not None and ttm_pbt != 0:
+            tax_rate = max(0.0, min(ttm_tax / ttm_pbt, 1.0))
+            nopat = ret_ebit * (1 - tax_rate)
+        elif ttm_pat is not None:
+            nopat = ttm_pat + ttm_fc if ttm_fc is not None else None
     result["return_on_invested_capital"] = (
-        _pct(_safe_div(ret_ebit, (assets_t or 0) - (ncl or 0)))
-        if ret_ebit is not None and assets_t is not None
+        _pct(_safe_div(nopat, invested_capital))
+        if nopat is not None and invested_capital
         else None
     )
 
     result["asset_turnover"] = _safe_div(val_rev, assets_t) if assets_t else None
-    result["inventory_turnover"] = None
-    result["receivables_turnover"] = None
-    result["days_sales_outstanding"] = None
-    result["operating_cycle"] = None
-    result["working_capital_turnover"] = None
-
-    result["current_ratio"] = None
-    result["quick_ratio"] = None
-    # True cash/OCF ratios use current liabilities; fall back to current
-    # borrowings for older filings that don't carry the CurrentLiabilities tag.
     current_liab = _to_float(latest.get("current_liabilities"))
-    liq_base = current_liab if current_liab else borrowings_c
-    result["cash_ratio"] = _safe_div(cash_eq, liq_base) if liq_base else None
-    result["operating_cash_flow_ratio"] = (
-        _safe_div(val_ocf, liq_base) if val_ocf is not None and liq_base else None
+    assets_cur = _to_float(latest.get("assets_current"))
+    inventories = _to_float(latest.get("inventories"))
+    receivables = _to_float(latest.get("trade_receivables_current"))
+    payables = _to_float(latest.get("trade_payables"))
+
+    result["inventory_turnover"] = (
+        _safe_div(ttm_cor if ttm_cor is not None else val_rev, inventories)
+        if inventories
+        else None
+    )
+    result["working_capital_turnover"] = (
+        _safe_div(val_rev, assets_cur - current_liab)
+        if assets_cur is not None and current_liab is not None
+        and (assets_cur - current_liab) != 0
+        else None
     )
 
-    result["debt_to_equity"] = (
-        debt_eq_ratio
-        if debt_eq_ratio is not None
-        else _safe_div(total_debt, total_equity)
+    # Liquidity ratios need the current-assets/current-liabilities detail;
+    # stay None (not zero) when the filing omits them.
+    result["current_ratio"] = (
+        _safe_div(assets_cur, current_liab)
+        if assets_cur is not None and current_liab
+        else None
     )
-    result["debt_to_assets"] = _safe_div(total_debt, assets_t) if assets_t else None
-    result["interest_coverage"] = _safe_div(ebit, fc) if fc else None
+    if assets_cur is not None and current_liab:
+        quick_assets = assets_cur - (inventories or 0)
+        result["quick_ratio"] = _safe_div(quick_assets, current_liab)
+    else:
+        result["quick_ratio"] = None
+
+    result["days_inventory_outstanding"] = (
+        round(365.0 / result["inventory_turnover"], 2)
+        if result["inventory_turnover"]
+        else None
+    )
+    dso = (
+        _safe_div(receivables, val_rev) if receivables is not None and val_rev else None
+    )
+    result["days_receivable_outstanding"] = round(dso * 365, 2) if dso is not None else None
+    dpo = (
+        _safe_div(payables, ttm_cor if ttm_cor is not None else val_rev)
+        if payables is not None and (ttm_cor is not None or val_rev)
+        else None
+    )
+    result["days_payable_outstanding"] = round(dpo * 365, 2) if dpo is not None else None
+
+    # Always compute from balance-sheet components; the XBRL DebtEquityRatio
+    # tag is unreliable (Skygold tagged 0.007 vs a real ~0.7).
+    result["debt_to_equity"] = (
+        _safe_div(total_debt, total_equity)
+        if total_debt is not None and total_equity
+        else None
+    )
+    result["interest_coverage"] = _safe_div(val_ebit, ttm_fc) if ttm_fc else None
 
     result["revenue_growth"] = revenue_growth
+    result["revenue_growth_qoq"] = _qoq("revenue_from_operations")
+    result["revenue_growth_yoy"] = _yoy("revenue_from_operations")
     result["earnings_growth"] = earnings_growth
+    result["earnings_growth_qoq"] = _qoq("profit_loss_for_period")
+    result["earnings_growth_yoy"] = _yoy("profit_loss_for_period")
     result["book_value_growth"] = book_value_growth
+    result["book_value_growth_qoq"] = _growth_rate(
+        total_equity if total_equity else None,
+        (
+            (_to_float(prev_q_rec.get("equity_share_capital")) or 0)
+            + (_to_float(prev_q_rec.get("other_equity")) or 0)
+        )
+        if prev_q_rec
+        else None,
+    )
+    result["book_value_growth_yoy"] = book_value_growth
     result["earnings_per_share_growth"] = eps_growth
+    result["earnings_per_share_growth_qoq"] = _qoq(
+        "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations"
+    )
+    result["earnings_per_share_growth_yoy"] = _yoy(
+        "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations"
+    )
     result["free_cash_flow_growth"] = ocf_growth
     result["operating_income_growth"] = op_income_growth
     result["ebitda_growth"] = ebitda_growth
 
-    result["earnings_per_share"] = eps
+    result["earnings_per_share"] = val_eps
     result["book_value_per_share"] = bvps
     result["free_cash_flow_per_share"] = (
         _safe_div(fcf, shares_outstanding)
@@ -569,10 +694,16 @@ async def financial_metrics(
         else None
     )
 
-    result["payout_ratio"] = None
+    # Payout ratio: TTM dividends paid / TTM PAT.
+    result["payout_ratio"] = (
+        _pct(_safe_div(ttm_div, ttm_pat))
+        if ttm_div is not None and ttm_pat
+        else None
+    )
     result["market_capitalization"] = market_cap
     result["total_debt"] = total_debt if total_debt else None
     result["total_equity"] = total_equity if total_equity else None
     result["cash_and_equivalents"] = cash_eq
 
-    return result
+    # Max 2 decimal places on every numeric metric in the response.
+    return {k: _round2(v) for k, v in result.items()}

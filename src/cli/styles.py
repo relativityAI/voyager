@@ -149,7 +149,19 @@ METRIC_LABELS = {
     "total_debt": "Total Debt",
     "total_equity": "Total Equity",
     "cash_and_equivalents": "Cash & Equivalents",
-    "period_end_date": "Period End",
+    "last_quarter_end_date": "Last Quarter End",
+    "last_annual_end_date": "Last Annual End",
+    "days_inventory_outstanding": "Days Inventory",
+    "days_receivable_outstanding": "Days Receivable",
+    "days_payable_outstanding": "Days Payable",
+    "revenue_growth_qoq": "Revenue Growth (QoQ)",
+    "revenue_growth_yoy": "Revenue Growth (YoY)",
+    "earnings_growth_qoq": "Earnings Growth (QoQ)",
+    "earnings_growth_yoy": "Earnings Growth (YoY)",
+    "book_value_growth_qoq": "Book Value Growth (QoQ)",
+    "book_value_growth_yoy": "Book Value Growth (YoY)",
+    "earnings_per_share_growth_qoq": "EPS Growth (QoQ)",
+    "earnings_per_share_growth_yoy": "EPS Growth (YoY)",
 }
 
 METRIC_GROUPS = {
@@ -182,7 +194,6 @@ METRIC_GROUPS = {
         "price_to_sales_ratio",
         "enterprise_value_to_ebitda_ratio",
         "enterprise_value_to_revenue_ratio",
-        "free_cash_flow_yield",
         "peg_ratio",
     ],
     "Profitability": [
@@ -196,18 +207,16 @@ METRIC_GROUPS = {
     "Efficiency": [
         "asset_turnover",
         "inventory_turnover",
-        "receivables_turnover",
-        "days_sales_outstanding",
-        "operating_cycle",
+        "days_inventory_outstanding",
+        "days_receivable_outstanding",
+        "days_payable_outstanding",
         "working_capital_turnover",
     ],
     "Liquidity": [
         "current_ratio",
         "quick_ratio",
-        "cash_ratio",
-        "operating_cash_flow_ratio",
     ],
-    "Solvency": ["debt_to_equity", "debt_to_assets", "interest_coverage"],
+    "Solvency": ["debt_to_equity", "interest_coverage"],
     "Growth": [
         "revenue_growth",
         "earnings_growth",

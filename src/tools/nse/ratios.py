@@ -556,6 +556,30 @@ FINANCIAL_FIELDS: List[FinancialField] = [
         "category": "balance_sheet",
     },
     {
+        "id": "AssetsCurrent",
+        "name": "Total Current Assets",
+        "type": "currency",
+        "category": "balance_sheet",
+    },
+    {
+        "id": "Inventories",
+        "name": "Inventories",
+        "type": "currency",
+        "category": "balance_sheet",
+    },
+    {
+        "id": "TradeReceivablesCurrent",
+        "name": "Trade Receivables (Current)",
+        "type": "currency",
+        "category": "balance_sheet",
+    },
+    {
+        "id": "TradePayables",
+        "name": "Trade Payables",
+        "type": "currency",
+        "category": "balance_sheet",
+    },
+    {
         "id": "CashAndCashEquivalents",
         "name": "Cash & Cash Equivalents",
         "type": "currency",
@@ -594,6 +618,12 @@ FINANCIAL_FIELDS: List[FinancialField] = [
     {
         "id": "CashFlowsFromUsedInFinancingActivities",
         "name": "Cash Flow from Financing Activities",
+        "type": "currency",
+        "category": "cash_flow",
+    },
+    {
+        "id": "DividendPaid",
+        "name": "Dividends Paid",
         "type": "currency",
         "category": "cash_flow",
     },

@@ -183,6 +183,55 @@ def collection_detail(engine, name: str) -> dict:
 
 
 @safe
+def metrics_field_coverage(engine) -> List[dict]:
+    """Coverage of the financial-metrics source fields per statement table.
+
+    The 2026-09 metrics overhaul added assets_current / inventories /
+    trade_receivables_current / trade_payables (balance sheets), dividends_paid
+    (cash flows) and cost_of_revenue (income statements). Rows show how many
+    documents carry each field so you can tell whether a re-pull backfill is
+    needed before the new ratios (current/quick ratio, DIO/DSO/DPO, payout,
+    gross margin) will appear in /financial-metrics.
+    """
+    checks = [
+        ("balance_sheets", "assets_current"),
+        ("balance_sheets", "inventories"),
+        ("balance_sheets", "trade_receivables_current"),
+        ("balance_sheets", "trade_payables"),
+        ("cash_flows", "dividends_paid"),
+        ("income_statements", "cost_of_revenue"),
+        ("balance_sheets", "current_liabilities"),
+        ("balance_sheets", "bank_balance_other_than_cash_and_cash_equivalents"),
+        ("income_statements", "expenses"),
+        ("cash_flows", "payments_for_purchase_of_noncurrent_assets"),
+    ]
+    rows = []
+    with engine.connect() as conn:
+        for table, field in checks:
+            try:
+                r = conn.execute(
+                    text(
+                        f"SELECT COUNT(*) AS total, "
+                        f"COUNT({field}) AS filled FROM {table}"
+                    )
+                ).fetchone()
+                filled = r.filled or 0
+                total = r.total or 0
+                rows.append(
+                    {
+                        "table": table,
+                        "field": field,
+                        "filled": filled,
+                        "total": total,
+                        "coverage_pct": round(filled / total * 100, 1) if total else 0.0,
+                    }
+                )
+            except Exception as exc:
+                rows.append({"table": table, "field": field, "error": str(exc)})
+    return rows
+
+
+@safe
 def job_stats(engine) -> dict:
     with engine.connect() as conn:
         total = conn.execute(text("SELECT COUNT(*) FROM pull_jobs")).scalar() or 0

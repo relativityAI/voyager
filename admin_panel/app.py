@@ -837,6 +837,34 @@ def tab_db_stats():
                     st.json(detail["sample_doc"])
 
     st.divider()
+    st.markdown("**Financial-metrics field coverage**")
+    st.caption(
+        "Fields feeding /financial-metrics (TTM flows + liquidity/turnover "
+        "ratios). 0% on the newer fields means a re-pull with refresh=true is "
+        "needed to backfill."
+    )
+    cov_rows = db_stats.metrics_field_coverage(engine)
+    if isinstance(cov_rows, dict) and "error" in cov_rows:
+        st.error(cov_rows["error"])
+    elif cov_rows:
+        cov_df = pd.DataFrame(cov_rows)
+        cov_ok = cov_df[~cov_df.get("error", pd.Series(dtype=object)).notna()]
+        if not cov_ok.empty:
+            st.dataframe(
+                cov_ok.drop(columns=[c for c in ["error"] if c in cov_ok.columns]),
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "coverage_pct": st.column_config.ProgressColumn(
+                        "coverage_pct", min_value=0, max_value=100, format="%.1f%%"
+                    ),
+                },
+            )
+        errs = cov_df[cov_df.get("error", pd.Series(dtype=object)).notna()]
+        for _, e in errs.iterrows():
+            st.caption(f"{e['table']}.{e['field']}: {e['error']}")
+
+    st.divider()
     st.markdown("**Pull job analytics**")
     jstats = db_stats.job_stats(engine)
     if isinstance(jstats, dict) and "error" in jstats:

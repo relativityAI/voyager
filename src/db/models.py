@@ -162,6 +162,7 @@ class IncomeStatement(Base):
     depreciation_depletion_and_amortisation_expense = Column(Numeric, nullable=True)
     other_expenses = Column(Numeric, nullable=True)
     expenses = Column(Numeric, nullable=True)
+    cost_of_revenue = Column(Numeric, nullable=True)
     profit_before_exceptional_items_and_tax = Column(Numeric, nullable=True)
     exceptional_items_before_tax = Column(Numeric, nullable=True)
     profit_before_tax = Column(Numeric, nullable=True)
@@ -240,6 +241,10 @@ class BalanceSheet(Base):
     goodwill = Column(Numeric, nullable=True)
     other_intangible_assets = Column(Numeric, nullable=True)
     assets = Column(Numeric, nullable=True)
+    assets_current = Column(Numeric, nullable=True)
+    inventories = Column(Numeric, nullable=True)
+    trade_receivables_current = Column(Numeric, nullable=True)
+    trade_payables = Column(Numeric, nullable=True)
     cash_and_cash_equivalents = Column(Numeric, nullable=True)
     bank_balance_other_than_cash_and_cash_equivalents = Column(Numeric, nullable=True)
     reserve_excluding_revaluation_reserves = Column(Numeric, nullable=True)
@@ -287,6 +292,7 @@ class CashFlow(Base):
     cash_flows_from_used_in_investing_activities = Column(Numeric, nullable=True)
     cash_flows_from_used_in_financing_activities = Column(Numeric, nullable=True)
     payments_for_purchase_of_noncurrent_assets = Column(Numeric, nullable=True)
+    dividends_paid = Column(Numeric, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("symbol", "period_end_date", "consolidated", "source_endpoint",

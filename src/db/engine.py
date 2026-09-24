@@ -62,9 +62,15 @@ async def init_db():
         for ddl in [
             "ALTER TABLE pull_jobs ADD COLUMN IF NOT EXISTS task TEXT",
             "ALTER TABLE pull_jobs ADD COLUMN IF NOT EXISTS task_args JSONB",
+            "ALTER TABLE income_statements ADD COLUMN IF NOT EXISTS cost_of_revenue NUMERIC",
             "ALTER TABLE cash_flows ADD COLUMN IF NOT EXISTS cash_flows_from_used_in_investing_activities NUMERIC",
             "ALTER TABLE cash_flows ADD COLUMN IF NOT EXISTS cash_flows_from_used_in_financing_activities NUMERIC",
             "ALTER TABLE cash_flows ADD COLUMN IF NOT EXISTS payments_for_purchase_of_noncurrent_assets NUMERIC",
+            "ALTER TABLE cash_flows ADD COLUMN IF NOT EXISTS dividends_paid NUMERIC",
+            "ALTER TABLE balance_sheets ADD COLUMN IF NOT EXISTS assets_current NUMERIC",
+            "ALTER TABLE balance_sheets ADD COLUMN IF NOT EXISTS inventories NUMERIC",
+            "ALTER TABLE balance_sheets ADD COLUMN IF NOT EXISTS trade_receivables_current NUMERIC",
+            "ALTER TABLE balance_sheets ADD COLUMN IF NOT EXISTS trade_payables NUMERIC",
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_nse_announcements_raw ON nse_announcements (symbol, raw_data)",
         ]:
             await conn.execute(text(ddl))

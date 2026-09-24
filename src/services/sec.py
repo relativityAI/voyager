@@ -94,6 +94,11 @@ _INCOME_MAP = {
         "us-gaap_DepreciationDepletionAndAmortizationExcludingFinancingCosts",
     ],
     "expenses": ["us-gaap_CostsAndExpenses", "us-gaap_OperatingExpenses"],
+    "cost_of_revenue": [
+        "us-gaap_CostOfRevenue",
+        "us-gaap_CostOfGoodsAndServicesSold",
+        "us-gaap_CostOfGoodsSold",
+    ],
     "current_tax": ["us-gaap_CurrentIncomeTaxExpenseBenefit"],
     "deferred_tax": ["us-gaap_DeferredIncomeTaxExpenseBenefit"],
     "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": [
@@ -107,6 +112,19 @@ _INCOME_MAP = {
 _BALANCE_MAP = {
     "assets": ["us-gaap_Assets"],
     "assets_current": ["us-gaap_AssetsCurrent"],
+    "inventories": [
+        "us-gaap_InventoryNet",
+        "us-gaap_InventoryGross",
+    ],
+    "trade_receivables_current": [
+        "us-gaap_AccountsReceivableNetCurrent",
+        "us-gaap_ReceivablesNetCurrent",
+        "us-gaap_AccountsNotesAndLoansReceivableNetCurrent",
+    ],
+    "trade_payables": [
+        "us-gaap_AccountsPayableCurrent",
+        "us-gaap_AccountsPayableTradeCurrent",
+    ],
     "noncurrent_assets": ["us-gaap_AssetsNoncurrent"],
     "current_liabilities": ["us-gaap_LiabilitiesCurrent"],
     "noncurrent_liabilities": ["us-gaap_LiabilitiesNoncurrent"],
@@ -141,6 +159,11 @@ _CASHFLOW_MAP = {
         "us-gaap_NetCashProvidedByUsedInOperatingActivities",
         "us-gaap_NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
         "us-gaap_NetCashProvidedByUsedInOperatingActivitiesExcludingDividendsPaidNetOfDiscontinuedOperations",
+    ],
+    "dividends_paid": [
+        "us-gaap_PaymentsOfDividends",
+        "us-gaap_PaymentsOfDividendsCommonStock",
+        "us-gaap_PaymentsOfDividendsPreferredStockAndPreferenceStock",
     ],
 }
 
@@ -266,6 +289,7 @@ def _income_rows(
             df, _INCOME_MAP, "depreciation_depletion_and_amortisation_expense", period
         )
         row["expenses"] = _lookup_value(df, _INCOME_MAP, "expenses", period)
+        row["cost_of_revenue"] = _lookup_value(df, _INCOME_MAP, "cost_of_revenue", period)
         eps_b = _lookup_value(
             df, _INCOME_MAP, "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations", period
         )
@@ -290,6 +314,12 @@ def _balance_rows(
         row = _base_row(symbol, period, source_endpoint, is_annual)
         row["assets"] = _lookup_value(df, _BALANCE_MAP, "assets", period)
         row["noncurrent_assets"] = _lookup_value(df, _BALANCE_MAP, "noncurrent_assets", period)
+        row["assets_current"] = _lookup_value(df, _BALANCE_MAP, "assets_current", period)
+        row["inventories"] = _lookup_value(df, _BALANCE_MAP, "inventories", period)
+        row["trade_receivables_current"] = _lookup_value(
+            df, _BALANCE_MAP, "trade_receivables_current", period
+        )
+        row["trade_payables"] = _lookup_value(df, _BALANCE_MAP, "trade_payables", period)
         row["current_liabilities"] = _lookup_value(df, _BALANCE_MAP, "current_liabilities", period)
         row["noncurrent_liabilities"] = _lookup_value(df, _BALANCE_MAP, "noncurrent_liabilities", period)
         row["borrowings_current"] = _lookup_value(df, _BALANCE_MAP, "borrowings_current", period)
@@ -324,6 +354,7 @@ def _cashflow_rows(
         ocf = _lookup_value(df, _CASHFLOW_MAP, "cash_flows_from_used_in_operating_activities", period)
         row["cash_flows_from_used_in_operations"] = ocf
         row["cash_flows_from_used_in_operating_activities"] = ocf
+        row["dividends_paid"] = _lookup_value(df, _CASHFLOW_MAP, "dividends_paid", period)
         rows.append(row)
     return rows
 

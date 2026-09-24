@@ -330,7 +330,7 @@ async def financial_metrics_endpoint(
     consolidated: bool = Query(
         True, description="True for consolidated, False for standalone"
     ),
-    filing_type: str = Query("quarterly", description="quarterly, annual, or ttm"),
+    filing_type: str = Query("ttm", description="quarterly, annual, or ttm"),
 ):
     return await financial_metrics(symbol, None, source, consolidated, filing_type)
 

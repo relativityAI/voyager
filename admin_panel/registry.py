@@ -177,15 +177,16 @@ DATA: List[Endpoint] = [
         "method": "GET",
         "path": "/financial-metrics",
         "auth": "key",
-        "description": "Valuation, profitability, growth, solvency, per-share metrics.",
+        "description": "All financial metrics in one call: TTM flows + latest-quarter balance sheet. Response uses last_quarter_end_date / last_annual_end_date; all values rounded to 2 decimals.",
         "params": _symbol_params()
         + [
             {"name": "consolidated", "type": "bool", "default": True},
             {
                 "name": "filing_type",
                 "type": "select",
-                "default": "quarterly",
-                "options": ["quarterly", "annual", "ttm"],
+                "default": "ttm",
+                "options": ["ttm", "quarterly", "annual"],
+                "help": "ttm (default) computes flows over the trailing twelve months; quarterly/annual are overrides.",
             },
         ],
     },

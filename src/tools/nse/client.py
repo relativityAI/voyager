@@ -55,6 +55,10 @@ tags = [
         "Goodwill",
         "OtherIntangibleAssets",
         "Assets",
+        "AssetsCurrent",
+        "Inventories",
+        "TradeReceivablesCurrent",
+        "TradePayables",
         "EquityShareCapital",
         "OtherEquity",
         "DebtEquityRatio",
@@ -63,7 +67,8 @@ tags = [
         "NoncurrentLiabilities",
         "BorrowingsCurrent",
         "CashFlowsFromUsedInOperations",
-        "CashFlowsFromUsedInOperatingActivities"
+        "CashFlowsFromUsedInOperatingActivities",
+        "DividendPaid"
             ]
 
 """

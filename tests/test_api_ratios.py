@@ -181,8 +181,8 @@ class TestFinancialMetrics:
         assert response.status_code == 200
         data = response.json()
         assert data["symbol"] == "TEST"
-        assert data["filing_type"] == "quarterly"
-        assert data["period_end_date"] == "2024-12-31"
+        assert data["filing_type"] == "ttm"
+        assert data["last_quarter_end_date"] == "2024-12-31"
         assert data["price_to_earnings_ratio"] == pytest.approx(250.0)
         assert data["net_margin"] == pytest.approx(15.0)
         assert data["rsi_14"] == 55.5
@@ -302,13 +302,13 @@ class TestFinancialMetrics:
         assert response.status_code == 200
         data = response.json()
         assert data["filing_type"] == "ttm"
-        assert data["period_end_date"] == "2025-03-31"
+        assert data["last_quarter_end_date"] == "2025-03-31"
         assert data["earnings_per_share"] == pytest.approx(34.0)
-        assert data["revenue_growth"] == pytest.approx(88.8889, abs=0.01)
-        assert data["earnings_growth"] == pytest.approx(118.1818, abs=0.01)
-        assert data["price_to_earnings_ratio"] == pytest.approx(2500.0 / 34.0)
-        assert data["net_margin"] == pytest.approx(14.1176, abs=0.01)
-        assert data["operating_margin"] == pytest.approx(22.9412, abs=0.01)
+        assert data["revenue_growth"] == pytest.approx(88.89, abs=0.01)
+        assert data["earnings_growth"] == pytest.approx(118.18, abs=0.01)
+        assert data["price_to_earnings_ratio"] == pytest.approx(73.53, abs=0.01)
+        assert data["net_margin"] == pytest.approx(14.12, abs=0.01)
+        assert data["operating_margin"] == pytest.approx(22.94, abs=0.01)
 
     def test_annual_does_not_sum_ttm(self):
         self._setup_db_mock(
@@ -439,7 +439,8 @@ class TestFinancialMetrics:
         assert response.status_code == 200
         data = response.json()
         assert data["total_equity"] == 200000
-        assert data["book_value_per_share"] == pytest.approx(200000 / 50000000)
+        # 2-dp rounding: bvps 0.004 rounds to 0.0
+        assert data["book_value_per_share"] == pytest.approx(0.0, abs=1e-9)
         assert data["price_to_book_ratio"] is not None
         assert data["return_on_equity"] == pytest.approx(15000 / 200000 * 100)
         assert data["cash_and_equivalents"] == 10000
@@ -519,7 +520,6 @@ class TestFinancialMetrics:
 
         response = client.get("/financial-metrics?symbol=TEST&country=in&source=nse")
         data = response.json()
-        assert data["free_cash_flow_yield"] is None
         assert data["free_cash_flow_per_share"] is None
 
     def test_fcf_is_ocf_minus_capex_when_present(self):
@@ -607,5 +607,5 @@ class TestFinancialMetrics:
         ttm_pat = 15 + 13 + 11 + 9  # last four quarters' PAT
         ttm_rev = 100 + 90 + 80 + 70
         equity = (50000 + 150000)
-        assert data["return_on_equity"] == pytest.approx(ttm_pat / equity * 100)
-        assert data["asset_turnover"] == pytest.approx(ttm_rev / 500000)
+        assert data["return_on_equity"] == pytest.approx(round(ttm_pat / equity * 100, 2))
+        assert data["asset_turnover"] == pytest.approx(round(ttm_rev / 500000, 2))
