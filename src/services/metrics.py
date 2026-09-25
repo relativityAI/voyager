@@ -39,11 +39,17 @@ def _pct(v: Optional[float]) -> Optional[float]:
 
 
 def _round2(v: Any) -> Any:
-    """Round a numeric metric to max 2 decimals for the response."""
+    """Round a numeric metric to max 2 decimals for the response.
+
+    Small-magnitude values (abs < 1) keep 4 decimals: collapsing a true
+    0.019 debt/equity to 0.0 erases the signal (eval finding D5.8/H8).
+    """
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         return v
     f = float(v)
-    return None if (f != f or abs(f) == float("inf")) else round(f, 2)
+    if f != f or abs(f) == float("inf"):
+        return None
+    return round(f, 4) if (f != 0 and abs(f) < 1) else round(f, 2)
 
 
 def _ttm_window(
@@ -103,6 +109,50 @@ def _carry_forward_balance_sheets(records: list, balance_docs: dict) -> None:
             for k in fields:
                 if r.get(k) is None and src.get(k) is not None:
                     r[k] = src[k]
+
+
+_FYE_MONTHS = {3: 31, 6: 30, 9: 30, 12: 31}
+
+
+def _fye_day(month: int) -> int:
+    """Calendar day of a fiscal-year-end month (Mar 31, Jun 30, Sep 30, Dec 31)."""
+    return _FYE_MONTHS.get(month, 28 if month == 2 else 30)
+
+
+def _infer_fye_month(records: list) -> Optional[int]:
+    """Infer the fiscal-year-end month from the filings' own fiscal_period
+    tags: SEC and NSE parsers both stamp the quarter ending the fiscal year
+    (Q4) with the FYE month, so the modal month of Q4 rows IS the FYE month.
+    Falls back to the least-common quarter-end month when the tag is absent;
+    returns None when there is not enough signal to decide."""
+    q4_months: list[int] = []
+    months: list[int] = []
+    for r in records:
+        d = r.get("period_end_date")
+        if not isinstance(d, str):
+            continue
+        try:
+            m = datetime.strptime(d, "%Y-%m-%d").month
+        except ValueError:
+            continue
+        months.append(m)
+        if (r.get("fiscal_period") or "").upper() == "Q4":
+            q4_months.append(m)
+    if q4_months:
+        counts: dict[int, int] = {}
+        for m in q4_months:
+            counts[m] = counts.get(m, 0) + 1
+        return max(counts, key=lambda k: counts[k])
+    if len(months) < 4:
+        return None
+    # The FYE month is the least common quarter-end month (appears once per
+    # year, while the three interim months appear three times).
+    counts = {}
+    for m in months:
+        counts[m] = counts.get(m, 0) + 1
+    min_count = min(counts.values())
+    candidates = sorted(m for m, c in counts.items() if c == min_count)
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _find_record(records: list, ref_date: str, offset_months: int) -> Optional[dict]:
@@ -171,7 +221,7 @@ async def financial_metrics(
     balance_docs: dict = {}
     cashflow_docs: dict = {}
 
-    db_ft = "quarterly" if filing_type == "ttm" else filing_type
+    db_ft = "quarterly" if filing_type in ("ttm", "annual") else filing_type
 
     yf_exchange = source
     factory = get_session_factory()
@@ -227,10 +277,24 @@ async def financial_metrics(
                         "id",
                     ):
                         merged[k] = v
+                # fiscal_period (Q1..Q4) drives FYE inference but is a
+                # statement-level tag: keep the first non-null seen for this
+                # date, never let a later statement clobber it with null.
+                fp = doc.get("fiscal_period")
+                if fp and "fiscal_period" not in merged:
+                    merged["fiscal_period"] = fp
         merged_records.append(merged)
 
     if not merged_records:
-        return {}
+        # An empty dict is indistinguishable from "all metrics null"; return an
+        # explicit no-data shape so consumers never misread absence as zeroes.
+        return {
+            "symbol": symbol,
+            "source": source.lower(),
+            "consolidated": is_cons,
+            "filing_type": filing_type,
+            "data_available": False,
+        }
 
     records = merged_records
     _carry_forward_balance_sheets(records, balance_docs)
@@ -285,6 +349,18 @@ async def financial_metrics(
     }
     ttm_values: dict = {f: None for f in flow_fields}
 
+    # Count distinct stored quarters inside the strict TTM window so the
+    # response can disclose window completeness instead of silently
+    # degrading to a single quarter while still claiming filing_type=ttm.
+    # Flow windows are computed for ttm AND annual alike: annual = the sum of
+    # the four quarters of the latest fiscal year, never a silent {} or a
+    # relabelled single quarter (eval finding D8.6).
+    ttm_quarters_used = sum(
+        1
+        for r in records[:4]
+        if r.get("revenue_from_operations") is not None
+    )
+
     def _compute_ttm_windows():
         for f in flow_fields:
             ttm_values[f] = _ttm_window(
@@ -294,12 +370,12 @@ async def financial_metrics(
                 require_all=(f not in sparse_flows),
             )
 
-    if filing_type != "annual":
-        _compute_ttm_windows()
+    _compute_ttm_windows()
 
     # Graceful degradation: when fewer than 4 quarters are stored, the strict
     # TTM window returns None. Fall back to the latest single quarter so the
     # response stays populated (degraded, not empty) for newly listed symbols.
+    # The degradation is disclosed via ttm_window_complete=False below.
     if ttm_values.get("revenue_from_operations") is None:
         for f in flow_fields:
             latest_val = _to_float(latest.get(f))
@@ -475,6 +551,9 @@ async def financial_metrics(
         )
     peg_growth = eps_growth
 
+    # TTM window completeness is a consumer-visible basis fact: a degraded
+    # window means flow fields are the latest single quarter, not a 4Q sum.
+    ttm_window_complete = ttm_quarters_used >= 4
     result: Dict[str, Any] = {
         "symbol": symbol,
         "last_quarter_end_date": latest.get("period_end_date"),
@@ -482,25 +561,44 @@ async def financial_metrics(
         "consolidated": is_cons,
         "filing_type": filing_type,
         "price_data": "live" if current_price is not None else "unavailable",
+        "ttm_window_complete": ttm_window_complete,
+        "ttm_quarters_used": ttm_quarters_used,
+        "statement_periods": {
+            "income_statement": income_docs and max(income_docs) or None,
+            "balance_sheet": balance_docs and max(balance_docs) or None,
+            "cash_flow": cashflow_docs and max(cashflow_docs) or None,
+        },
     }
     # Last annual period end: prefer an annual filing_type row if present,
-    # else infer the fiscal year-end from stored quarterly periods.
+    # else infer the fiscal year-end from the stored period-end months (the
+    # modal month of quarterly filings approximates the fiscal calendar —
+    # Mar for India, Jun/Sep/Dec for US filers; never a hardcoded December).
     annual_dates = [
         k for k, d in balance_docs.items()
         if (d.get("filing_type") == "annual")
     ]
     if annual_dates:
         result["last_annual_end_date"] = max(annual_dates)
+        result["last_annual_end_date_source"] = "filing"
     else:
+        fye_month = _infer_fye_month(records)
         try:
             dt = datetime.strptime(latest_date, "%Y-%m-%d")
-            month, year = dt.month, dt.year
-            if month == 12:
-                result["last_annual_end_date"] = f"{year}-12-31"
+            if fye_month is not None:
+                # Latest fiscal-year-end: the most recent period-end whose
+                # month equals the fiscal-year-end month.
+                if dt.month == fye_month:
+                    result["last_annual_end_date"] = f"{dt.year}-{fye_month:02d}-{_fye_day(fye_month)}"
+                else:
+                    y = dt.year if dt.month > fye_month else dt.year - 1
+                    result["last_annual_end_date"] = f"{y}-{fye_month:02d}-{_fye_day(fye_month)}"
+                result["last_annual_end_date_source"] = "inferred"
             else:
-                result["last_annual_end_date"] = f"{year - 1}-12-31"
+                result["last_annual_end_date"] = None
+                result["last_annual_end_date_source"] = "unknown"
         except (ValueError, TypeError):
             result["last_annual_end_date"] = None
+            result["last_annual_end_date_source"] = "unknown"
     for k in (
         "current_price",
         "rsi_14",
@@ -586,11 +684,15 @@ async def financial_metrics(
 
     # Gross margin = (revenue - cost of revenue) / revenue. NSE integrated
     # filings don't always tag COGS; fall back to (revenue - expenses) with
-    # other income excluded, and to None when neither is available.
+    # other income excluded — but only for NSE-style statements, where
+    # `expenses` aggregates operating costs. SEC filings report COGS via
+    # cost_of_revenue; when absent, gross_margin stays null rather than
+    # relabelling (revenue - expenses) which excludes COGS and overstates
+    # the margin ~1.8x for a US filer like Apple.
     gross_profit = None
     if ttm_cor is not None and ttm_rev is not None:
         gross_profit = ttm_rev - ttm_cor
-    elif ttm_exp is not None and ttm_rev is not None:
+    elif ttm_exp is not None and ttm_rev is not None and source == "NSE":
         gross_profit = ttm_rev - ttm_exp
     result["gross_margin"] = (
         _pct(_safe_div(gross_profit, ttm_rev))
@@ -740,9 +842,10 @@ async def financial_metrics(
         else None
     )
     result["market_capitalization"] = market_cap
-    result["total_debt"] = total_debt if total_debt else None
+    result["total_debt"] = total_debt if total_debt is not None else None
     result["total_equity"] = total_equity if total_equity else None
     result["cash_and_equivalents"] = cash_eq
 
-    # Max 2 decimal places on every numeric metric in the response.
+    # Max 2 decimal places on every numeric metric in the response; small
+    # ratios keep 4 decimals so a true 0.019 never reads as an exact 0.
     return {k: _round2(v) for k, v in result.items()}
