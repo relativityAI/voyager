@@ -131,12 +131,23 @@ def _get_yf_raw(symbol: str, exchange: str) -> Tuple[Any, Any]:
             return entry["data"]["ticker"], entry["data"]["hist"]
 
         yf_symbol = _generate_yf_symbol(symbol, exchange)
-        ticker = yf.Ticker(yf_symbol)
+        try:
+            ticker = yf.Ticker(yf_symbol)
+        except Exception as exc:  # noqa: BLE001 - never crash a metrics call
+            # The missing-yfinance bug hid here for a long time: a NameError
+            # from yf.Ticker surfaced as a silently null price, not an error.
+            logger.warning(f"yfinance Ticker() failed for {yf_symbol}: {exc!r}")
+            return None, pd.DataFrame()
         try:
             hist = ticker.history(period="1y")
         except Exception as exc:  # noqa: BLE001 - rate limits should not crash callers
-            logger.debug(f"yfinance history failed for {yf_symbol}: {exc}")
+            logger.warning(f"yfinance history failed for {yf_symbol}: {exc!r}")
             hist = pd.DataFrame()
+        if hist is None or hist.empty:
+            logger.warning(
+                f"yfinance returned no history for {yf_symbol} "
+                f"(Yahoo often rate-limits shared/datacenter IPs)"
+            )
 
         _RAW_CACHE[key] = {
             "ts": time.time(),
@@ -147,21 +158,25 @@ def _get_yf_raw(symbol: str, exchange: str) -> Tuple[Any, Any]:
 
 def fetch_price_info(symbol: str, exchange: str = "NSE") -> Dict[str, Any]:
     ticker, hist = _get_yf_raw(symbol, exchange)
-    with _yf_lock:
-        try:
-            info = ticker.info or {}
-        except Exception as exc:  # noqa: BLE001 - rate limits should not crash callers
-            logger.debug(f"yfinance info failed for {symbol}.{exchange}: {exc}")
-            info = {}
+    info: Dict[str, Any] = {}
+    if ticker is not None:
+        with _yf_lock:
+            try:
+                info = ticker.info or {}
+            except Exception as exc:  # noqa: BLE001 - rate limits should not crash callers
+                logger.warning(
+                    f"yfinance info failed for {symbol}.{exchange}: {exc!r}"
+                )
+                info = {}
     shares = _to_valid_float(info.get("sharesOutstanding"))
     current_price = _to_valid_float(
         info.get("currentPrice") or info.get("regularMarketPrice")
     )
-    if current_price is None and not hist.empty and "Close" in hist:
+    if current_price is None and hist is not None and not hist.empty and "Close" in hist:
         valid_closes = hist["Close"].dropna()
         if not valid_closes.empty:
             current_price = _to_valid_float(valid_closes.iloc[-1])
-    logger.debug(
+    logger.info(
         f"[PRICE] {symbol}.{exchange} current_price={current_price} shares={shares}"
     )
     return {"current_price": current_price, "shares_outstanding": shares}

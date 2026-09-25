@@ -481,7 +481,7 @@ async def financial_metrics(
         "last_annual_end_date": None,
         "consolidated": is_cons,
         "filing_type": filing_type,
-        "price_data": "live" if price_info else "unavailable",
+        "price_data": "live" if current_price is not None else "unavailable",
     }
     # Last annual period end: prefer an annual filing_type row if present,
     # else infer the fiscal year-end from stored quarterly periods.
