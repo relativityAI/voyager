@@ -73,10 +73,27 @@ class TestFetchPriceInfo:
         with patch(
             "src.tools.nse.technicals._get_yf_raw",
             return_value=(mock_ticker, pd.DataFrame()),
-        ):
+        ), patch("src.tools.nse.technicals._chart_price", return_value=None):
             result = fetch_price_info("TEST", "NSE")
             assert result["current_price"] is None
             assert result["shares_outstanding"] is None
+
+    def test_chart_fallback_when_yfinance_blocked(self):
+        """Yahoo blocks yfinance's crumb handshake on Render's IP; the
+        crumbless /v8/chart endpoint still answers and must supply the price."""
+        mock_ticker = MagicMock()
+        mock_ticker.info = {}
+        mock_ticker.history.return_value = pd.DataFrame()
+
+        with patch(
+            "src.tools.nse.technicals._get_yf_raw",
+            return_value=(mock_ticker, pd.DataFrame()),
+        ), patch(
+            "src.tools.nse.technicals._chart_price", return_value=225.51
+        ) as chart:
+            result = fetch_price_info("IBM", "NYSE")
+            assert result["current_price"] == 225.51
+            chart.assert_called_once_with("IBM")
 
     def test_nan_price_falls_back_to_last_valid(self):
         dates = [datetime.now() - timedelta(days=i) for i in range(5)]

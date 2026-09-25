@@ -156,6 +156,38 @@ def _get_yf_raw(symbol: str, exchange: str) -> Tuple[Any, Any]:
         return ticker, hist
 
 
+_chart_sess: Any = None
+
+
+def _chart_price(yf_symbol: str) -> Optional[float]:
+    """Last price straight from Yahoo's chart endpoint.
+
+    yfinance's .info/.history need a cookie+crumb handshake that Yahoo
+    blocks for shared/datacenter IPs (Render), which silently nulls the
+    price. The /v8/chart endpoint answers without a crumb, so it survives
+    that block. Uses curl_cffi, already a pinned dependency.
+    """
+    global _chart_sess
+    url = (
+        "https://query1.finance.yahoo.com/v8/finance/chart/"
+        f"{yf_symbol}?range=1d&interval=1d"
+    )
+    try:
+        if _chart_sess is None:
+            from curl_cffi import requests as _creq
+
+            _chart_sess = _creq.Session(impersonate="chrome")
+        r = _chart_sess.get(url, timeout=15)
+        if r.status_code != 200:
+            logger.warning(f"chart fallback HTTP {r.status_code} for {yf_symbol}")
+            return None
+        meta = (r.json()["chart"]["result"] or [{}])[0].get("meta") or {}
+        return _to_valid_float(meta.get("regularMarketPrice"))
+    except Exception as exc:  # noqa: BLE001 - never crash a metrics call
+        logger.warning(f"chart fallback failed for {yf_symbol}: {exc!r}")
+        return None
+
+
 def fetch_price_info(symbol: str, exchange: str = "NSE") -> Dict[str, Any]:
     ticker, hist = _get_yf_raw(symbol, exchange)
     info: Dict[str, Any] = {}
@@ -176,6 +208,8 @@ def fetch_price_info(symbol: str, exchange: str = "NSE") -> Dict[str, Any]:
         valid_closes = hist["Close"].dropna()
         if not valid_closes.empty:
             current_price = _to_valid_float(valid_closes.iloc[-1])
+    if current_price is None:
+        current_price = _chart_price(_generate_yf_symbol(symbol, exchange))
     logger.info(
         f"[PRICE] {symbol}.{exchange} current_price={current_price} shares={shares}"
     )
