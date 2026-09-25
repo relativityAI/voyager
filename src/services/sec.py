@@ -210,6 +210,24 @@ _CASHFLOW_MAP = {
         "us-gaap_PaymentsOfDividendsCommonStock",
         "us-gaap_PaymentsOfDividendsPreferredStockAndPreferenceStock",
     ],
+    "payments_for_purchase_of_noncurrent_assets": [
+        "us-gaap_PaymentsToAcquirePropertyPlantAndEquipment",
+        "us-gaap_PaymentsToAcquireProductiveAssets",
+        "us-gaap_PaymentsToAcquireOtherPropertyPlantAndEquipment",
+    ],
+}
+
+# US filers report depreciation and intangible amortisation in the cash-flow
+# statement, not the income statement, and split them across two tags (IBM
+# tags Depreciation + AmortizationOfIntangibleAssets, never
+# DepreciationDepletionAndAmortization). Looked up in the cash-flow frame;
+# _lookup_sum adds the parts together.
+_DA_MAP = {
+    "depreciation_depletion_and_amortisation_expense": [
+        "us-gaap_Depreciation",
+        "us-gaap_AmortizationOfIntangibleAssets",
+        "us-gaap_AmortizationOfDeferredCharges",
+    ],
 }
 
 _MAX_INSIDER_PCT = 100.0
@@ -260,6 +278,19 @@ def _lookup_value(
     return None
 
 
+def _lookup_sum(
+    df: pd.DataFrame, mappings: Dict[str, List[str]], field: str, period_col: str
+) -> Optional[float]:
+    """Add up every concept mapped to `field` (D&A is split across tags)."""
+    total, found = 0.0, False
+    for tag in mappings.get(field, []):
+        v = _lookup_value(df, {field: [tag]}, field, period_col)
+        if v is not None:
+            total += v
+            found = True
+    return total if found else None
+
+
 def _diff_cumulative(df: pd.DataFrame, periods: List[str]) -> pd.DataFrame:
     """Convert a cumulative-YTD frame (income/cash-flow from 10-Qs) into
     single-quarter values.
@@ -308,7 +339,12 @@ def _base_row(symbol: str, period: str, source_endpoint: str, is_annual: bool) -
 
 
 def _income_rows(
-    symbol: str, df: pd.DataFrame, periods: List[str], source_endpoint: str, is_annual: bool
+    symbol: str,
+    df: pd.DataFrame,
+    periods: List[str],
+    source_endpoint: str,
+    is_annual: bool,
+    cash_df: Optional[pd.DataFrame] = None,
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for period in periods:
@@ -333,6 +369,10 @@ def _income_rows(
         row["depreciation_depletion_and_amortisation_expense"] = _lookup_value(
             df, _INCOME_MAP, "depreciation_depletion_and_amortisation_expense", period
         )
+        if row["depreciation_depletion_and_amortisation_expense"] is None and cash_df is not None:
+            row["depreciation_depletion_and_amortisation_expense"] = _lookup_sum(
+                cash_df, _DA_MAP, "depreciation_depletion_and_amortisation_expense", period
+            )
         row["expenses"] = _lookup_value(df, _INCOME_MAP, "expenses", period)
         row["cost_of_revenue"] = _lookup_value(df, _INCOME_MAP, "cost_of_revenue", period)
         eps_b = _lookup_value(
@@ -400,6 +440,9 @@ def _cashflow_rows(
         row["cash_flows_from_used_in_operations"] = ocf
         row["cash_flows_from_used_in_operating_activities"] = ocf
         row["dividends_paid"] = _lookup_value(df, _CASHFLOW_MAP, "dividends_paid", period)
+        row["payments_for_purchase_of_noncurrent_assets"] = _lookup_value(
+            df, _CASHFLOW_MAP, "payments_for_purchase_of_noncurrent_assets", period
+        )
         rows.append(row)
     return rows
 
@@ -412,6 +455,33 @@ def _tag_value(df: pd.DataFrame, tag: str, col: str) -> Optional[float]:
     return None
 
 
+def _q4_cash_frame(
+    cash_annual_df: Optional[pd.DataFrame],
+    cash_ytd_df: Optional[pd.DataFrame],
+    annual_period: str,
+    ytd_period: str,
+) -> Optional[pd.DataFrame]:
+    """Q4 cash-flow figures (FY total - 9-month YTD) as a one-column frame.
+
+    D&A and capex live in the cash-flow statement, so the derived Q4 income
+    row still needs them to stay in the TTM window.
+    """
+    if cash_annual_df is None or cash_ytd_df is None:
+        return None
+    a = cash_annual_df.reset_index(drop=True)
+    q = cash_ytd_df.reset_index(drop=True)
+    data = []
+    for tag in set(a["concept"].astype(str)) & set(q["concept"].astype(str)):
+        av = _tag_value(a, tag, annual_period)
+        qv = _tag_value(q, tag, ytd_period)
+        if av is None or qv is None:
+            continue
+        data.append({"concept": tag, annual_period: av - qv})
+    if not data:
+        return None
+    return pd.DataFrame(data, columns=["concept", annual_period])
+
+
 def _q4_rows(
     symbol: str,
     kind: str,
@@ -419,6 +489,8 @@ def _q4_rows(
     q_ytd_df: pd.DataFrame,
     annual_period: str,
     ytd_period: str,
+    cash_annual_df: Optional[pd.DataFrame] = None,
+    cash_ytd_df: Optional[pd.DataFrame] = None,
 ) -> List[Dict[str, Any]]:
     """Fiscal-year-end quarter: 10-K FY total minus the Q3 10-Q's 9-month YTD."""
     annual_df = annual_df.reset_index(drop=True)
@@ -438,7 +510,8 @@ def _q4_rows(
         return []
     source_endpoint = "10-Q"
     if kind == "income":
-        rows = _income_rows(symbol, frame, [annual_period], source_endpoint, False)
+        cash_q4 = _q4_cash_frame(cash_annual_df, cash_ytd_df, annual_period, ytd_period)
+        rows = _income_rows(symbol, frame, [annual_period], source_endpoint, False, cash_q4)
         ni = _tag_value(frame, "us-gaap_NetIncomeLoss", annual_period)
         if ni is not None:
             shares = _tag_value(annual_df, "us-gaap_WeightedAverageNumberOfSharesOutstandingBasic", annual_period)
@@ -483,6 +556,23 @@ def _frames_for_batch(batch: list) -> tuple:
     return frames
 
 
+def _merge_frames(frames: List[pd.DataFrame]) -> Optional[pd.DataFrame]:
+    """Union per-batch frames into one statement frame.
+
+    The same concept can appear in several batches (overlapping periods), so
+    keep the first non-null value per (concept, period) column. Group by the
+    concept column, not level=0: these frames carry a plain RangeIndex, so
+    grouping by index welded row 0 of one filing to row 0 of the next and
+    blended unrelated concepts into single rows.
+    """
+    if not frames:
+        return None
+    if len(frames) == 1:
+        return frames[0]
+    merged = pd.concat(frames, axis=0, ignore_index=False)
+    return merged.groupby("concept", sort=False, as_index=False).first()
+
+
 def _stitch_batched(filings: list, symbol: str, form: str) -> tuple:
     """Stitch statement frames from filings in small batches.
 
@@ -511,18 +601,11 @@ def _stitch_batched(filings: list, symbol: str, form: str) -> tuple:
             cash_frames.append(cash)
     _release_memory()
 
-    def _merge(frames):
-        if not frames:
-            return None
-        if len(frames) == 1:
-            return frames[0]
-        merged = pd.concat(frames, axis=0, ignore_index=False)
-        # Same concept can appear in multiple batches (overlapping periods);
-        # keep the first non-null value per (concept, period) column.
-        merged = merged.groupby(level=0, sort=False).first()
-        return merged
-
-    return _merge(income_frames), _merge(balance_frames), _merge(cash_frames)
+    return (
+        _merge_frames(income_frames),
+        _merge_frames(balance_frames),
+        _merge_frames(cash_frames),
+    )
 
 
 def _one_company(symbol: str):
@@ -649,7 +732,7 @@ async def pull_sec_data(
         income_k, balance_k, cashflow_k = annual
         if "concept" in income_k.columns:
             k_periods = _period_columns(income_k)
-            rows_by_coll["income_statements"].extend(_income_rows(symbol, income_k, k_periods, "10-K", True))
+            rows_by_coll["income_statements"].extend(_income_rows(symbol, income_k, k_periods, "10-K", True, cashflow_k))
             if "concept" in balance_k.columns:
                 rows_by_coll["balance_sheets"].extend(_balance_rows(symbol, balance_k, _period_columns(balance_k), "10-K", True))
             if "concept" in cashflow_k.columns:
@@ -671,7 +754,7 @@ async def pull_sec_data(
             q_periods = _period_columns(income_q)
             income_q = _diff_cumulative(income_q, q_periods)
             cashflow_q = _diff_cumulative(cashflow_q, _period_columns(cashflow_q))
-            rows_by_coll["income_statements"].extend(_income_rows(symbol, income_q, q_periods, "10-Q", False))
+            rows_by_coll["income_statements"].extend(_income_rows(symbol, income_q, q_periods, "10-Q", False, cashflow_q))
             rows_by_coll["cash_flows"].extend(_cashflow_rows(symbol, cashflow_q, _period_columns(cashflow_q), "10-Q", False))
             if "concept" in balance_q.columns:
                 rows_by_coll["balance_sheets"].extend(_balance_rows(symbol, balance_q, _period_columns(balance_q), "10-Q", False))
@@ -694,7 +777,8 @@ async def pull_sec_data(
                         if not pick:
                             continue
                         rows_by_coll["income_statements"].extend(
-                            _q4_rows(symbol, "income", income_k, income_raw_q, P, pick[0])
+                            _q4_rows(symbol, "income", income_k, income_raw_q, P, pick[0],
+                                     cashflow_k, cashflow_raw_q)
                         )
                         rows_by_coll["cash_flows"].extend(
                             _q4_rows(symbol, "cashflow", cashflow_k, cashflow_raw_q, P, pick[0])

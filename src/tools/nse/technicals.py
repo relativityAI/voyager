@@ -4,6 +4,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
+import yfinance as yf
 from loguru import logger
 
 # ponytail: pandas_ta was dropped — it drags in numba/llvmlite (~60MB RSS

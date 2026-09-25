@@ -11,6 +11,12 @@ from src.db.models import BalanceSheet, CashFlow, IncomeStatement, NSEStockMetad
 from ._common import InvalidRequestError, _validate_source
 
 
+def _capex_magnitude(v) -> Optional[float]:
+    """Capex is stored as a signed outflow (SEC tags it negative); FCF
+    subtracts it, so compare on magnitude and ignore which way it points."""
+    return abs(v) if v is not None else None
+
+
 def _to_float(v) -> Optional[float]:
     if v is None:
         return None
@@ -304,7 +310,7 @@ async def financial_metrics(
     ttm_pbt = ttm_values.get("profit_before_tax")
     ttm_fc = ttm_values.get("finance_costs")
     ttm_ocf = ttm_values.get("cash_flows_from_used_in_operating_activities")
-    ttm_capex = ttm_values.get("payments_for_purchase_of_noncurrent_assets")
+    ttm_capex = _capex_magnitude(ttm_values.get("payments_for_purchase_of_noncurrent_assets"))
     ttm_dep = ttm_values.get("depreciation_depletion_and_amortisation_expense")
     ttm_eps = ttm_values.get(
         "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations"
@@ -328,7 +334,7 @@ async def financial_metrics(
         fc = _to_float(latest.get("finance_costs"))
         dep = _to_float(latest.get("depreciation_depletion_and_amortisation_expense"))
         ocf = _to_float(latest.get("cash_flows_from_used_in_operating_activities"))
-        capex = _to_float(latest.get("payments_for_purchase_of_noncurrent_assets"))
+        capex = _capex_magnitude(_to_float(latest.get("payments_for_purchase_of_noncurrent_assets")))
         eps = _to_float(
             latest.get(
                 "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations"
@@ -384,6 +390,12 @@ async def financial_metrics(
         ocf_prior = _ttm_window(
             records, "cash_flows_from_used_in_operating_activities", 4
         )
+        capex_prior = _capex_magnitude(
+            _ttm_window(records, "payments_for_purchase_of_noncurrent_assets", 4)
+        )
+        dep_prior = _ttm_window(
+            records, "depreciation_depletion_and_amortisation_expense", 4
+        )
         pbt_prior = _ttm_window(records, "profit_before_tax", 4)
         fc_prior = _ttm_window(records, "finance_costs", 4)
         ebit_prior = (
@@ -395,8 +407,21 @@ async def financial_metrics(
         revenue_growth = _growth_rate(ttm_rev, rev_prior)
         earnings_growth = _growth_rate(ttm_pat, pat_prior)
         eps_growth = _growth_rate(ttm_eps, eps_prior)
-        ocf_growth = _growth_rate(ttm_ocf, ocf_prior)
         op_income_growth = _growth_rate(ttm_ebit, ebit_prior)
+        # FCF and EBITDA need capex / D&A; without both, growth falls back to
+        # the OCF and EBIT series rather than reporting a fabricated number.
+        fcf_now, fcf_prior = ttm_ocf, ocf_prior
+        if ttm_capex is not None and capex_prior is not None:
+            fcf_now = ttm_ocf - ttm_capex if ttm_ocf is not None else None
+            fcf_prior = (
+                ocf_prior - capex_prior if ocf_prior is not None else None
+            )
+        fcf_growth = _growth_rate(fcf_now, fcf_prior)
+        ebitda_now = ebitda_prior = None
+        if ttm_dep is not None and dep_prior is not None:
+            ebitda_now = (ttm_ebit or 0) + ttm_dep
+            ebitda_prior = (ebit_prior or 0) + dep_prior
+        ebitda_growth = _growth_rate(ebitda_now, ebitda_prior)
     else:
         revenue_growth = _growth_rate(
             _to_float(latest.get("revenue_from_operations")),
@@ -420,12 +445,6 @@ async def financial_metrics(
             if yoy_rec
             else None,
         )
-        ocf_growth = _growth_rate(
-            _to_float(latest.get("cash_flows_from_used_in_operating_activities")),
-            _to_float(yoy_rec.get("cash_flows_from_used_in_operating_activities"))
-            if yoy_rec
-            else None,
-        )
         op_income_growth = _growth_rate(
             ebit,
             (_to_float(yoy_rec.get("profit_before_tax")) or 0)
@@ -441,8 +460,19 @@ async def financial_metrics(
         if yoy_rec
         else None,
     )
-    ebitda_growth = op_income_growth
-
+    if not is_ttm:
+        yoy_ocf = _to_float(yoy_rec.get("cash_flows_from_used_in_operating_activities")) if yoy_rec else None
+        yoy_capex = _capex_magnitude(_to_float(yoy_rec.get("payments_for_purchase_of_noncurrent_assets"))) if yoy_rec else None
+        fcf_growth = _growth_rate(
+            (ocf - capex) if (ocf is not None and capex is not None) else ocf,
+            (yoy_ocf - yoy_capex) if (yoy_ocf is not None and yoy_capex is not None) else yoy_ocf,
+        )
+        yoy_dep = _to_float(yoy_rec.get("depreciation_depletion_and_amortisation_expense")) if yoy_rec else None
+        ebitda_growth = (
+            _growth_rate(ebit + dep, (yoy_rec.get("profit_before_tax") or 0) + (yoy_rec.get("finance_costs") or 0) + yoy_dep)
+            if yoy_rec is not None and dep is not None and yoy_dep is not None
+            else op_income_growth
+        )
     peg_growth = eps_growth
 
     result: Dict[str, Any] = {
@@ -521,8 +551,16 @@ async def financial_metrics(
     result["price_to_sales_ratio"] = (
         _safe_div(current_price, sps) if current_price else None
     )
+    # One EBITDA for both the multiple and the margin: US filers report D&A in
+    # the cash-flow statement, and when it is absent the multiple falls back to
+    # EBIT rather than dividing by a fabricated zero.
+    ebitda = (
+        val_ebit + val_dep
+        if val_ebit is not None and val_dep is not None
+        else val_ebit
+    )
     result["enterprise_value_to_ebitda_ratio"] = (
-        _safe_div(enterprise_value, val_ebit) if enterprise_value is not None else None
+        _safe_div(enterprise_value, ebitda) if enterprise_value is not None else None
     )
     result["enterprise_value_to_revenue_ratio"] = (
         _safe_div(enterprise_value, val_rev) if enterprise_value is not None else None
@@ -560,8 +598,8 @@ async def financial_metrics(
         else None
     )
     result["ebitda_margin"] = (
-        _pct(_safe_div(val_ebit + val_dep, val_rev))
-        if val_ebit is not None and val_dep is not None and val_rev
+        _pct(_safe_div(ebitda, val_rev))
+        if ebitda is not None and val_dep is not None and val_rev
         else None
     )
     # Margins are on a TTM basis; a single quarter overstates/understates
@@ -682,7 +720,7 @@ async def financial_metrics(
     result["earnings_per_share_growth_yoy"] = _yoy(
         "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations"
     )
-    result["free_cash_flow_growth"] = ocf_growth
+    result["free_cash_flow_growth"] = fcf_growth
     result["operating_income_growth"] = op_income_growth
     result["ebitda_growth"] = ebitda_growth
 
@@ -694,9 +732,10 @@ async def financial_metrics(
         else None
     )
 
-    # Payout ratio: TTM dividends paid / TTM PAT.
+    # Payout ratio: TTM dividends paid / TTM PAT. Filings store dividends as a
+    # negative outflow, so take the absolute value or every payer reads negative.
     result["payout_ratio"] = (
-        _pct(_safe_div(ttm_div, ttm_pat))
+        _pct(_safe_div(abs(ttm_div), ttm_pat))
         if ttm_div is not None and ttm_pat
         else None
     )
