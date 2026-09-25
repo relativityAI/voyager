@@ -509,7 +509,12 @@ async def pull_sec_data(
     def _count(key: str, n: int = 1) -> None:
         timing["counts"][key] = timing["counts"].get(key, 0) + n
 
-    company = _one_company(symbol)
+    # edgartools is synchronous: it does its own HTTP calls, time.sleep()
+    # backoffs and heavy XBRL parsing. Running it on the event loop blocks
+    # every other request (including POST /pull) for the whole pull, which on a
+    # rate-limited EDGAR IP can be tens of minutes. Offload to a thread; the
+    # DB writes below stay on the loop so engine connections stay loop-bound.
+    company = await asyncio.to_thread(_one_company, symbol)
     _tick("company")
 
     want_annual = filing_type in ("annual", None)
@@ -517,7 +522,7 @@ async def pull_sec_data(
 
     exchange = None
     try:
-        ex = company.get_exchanges()
+        ex = await asyncio.to_thread(company.get_exchanges)
         if ex:
             exchange = str(ex[0]).upper()
     except Exception:
@@ -586,7 +591,7 @@ async def pull_sec_data(
 
     annual = None
     if want_quarterly or want_annual:
-        p = _parse("10-K")
+        p = await asyncio.to_thread(_parse, "10-K")
         if p is not None:
             annual = (p[0], p[1], p[2])
             records_pulled += p[3]
@@ -604,7 +609,7 @@ async def pull_sec_data(
                 rows_by_coll["cash_flows"].extend(_cashflow_rows(symbol, cashflow_k, _period_columns(cashflow_k), "10-K", True))
 
     if want_quarterly:
-        q = _parse("10-Q")
+        q = await asyncio.to_thread(_parse, "10-Q")
         if q is not None:
             income_q, balance_q, cashflow_q, _ = q
             records_pulled += q[3]

@@ -4,8 +4,14 @@ POST /pull is long-running (NSE XBRL fetch + parse can take 30-120s+) and
 Render hard-timeouts web requests at ~60s. Instead of blocking, the endpoint
 submits a job and returns 202 with a job_id; clients poll GET /pull/jobs/{id}.
 
-Jobs run as in-process asyncio tasks, so a worker restart orphans them; the
-startup sweep (`reap_stale_jobs`) fails any job stuck in queued/running.
+Jobs run as in-process asyncio tasks, so a worker restart orphans them. Two
+guards keep a job from holding a concurrency slot forever:
+
+* `_run_job` bounds every job with `JOB_TIMEOUT_SECONDS`, so a pull that hangs
+  in this process fails itself and frees the slot.
+* `reap_stale_jobs` fails rows whose owner is gone (OOM-killed worker, rolled
+  deploy). It cannot rely on the owner to time itself out, so it also runs on a
+  timer (`reap_forever`) instead of only at startup.
 """
 
 import asyncio
@@ -23,6 +29,12 @@ from src.utils.helpers import utcnow
 
 MAX_CONCURRENT_PULLS = int(os.getenv("MAX_CONCURRENT_PULLS", "2"))
 STALE_JOB_MINUTES = int(os.getenv("STALE_JOB_MINUTES", "30"))
+# Hard ceiling on one job. Kept under STALE_JOB_MINUTES so the in-process
+# timeout wins over the reaper and reports the real reason. A slow source
+# (EDGAR rate-limiting a cloud IP) otherwise runs for hours and blocks every
+# later pull for the same key.
+JOB_TIMEOUT_SECONDS = int(os.getenv("JOB_TIMEOUT_SECONDS", str(STALE_JOB_MINUTES * 60 - 300)))
+REAP_INTERVAL_SECONDS = int(os.getenv("REAP_INTERVAL_SECONDS", "300"))
 
 JOB_STATUSES = {"queued", "running", "done", "failed"}
 ACTIVE_STATUSES = {"queued", "running"}
@@ -68,6 +80,21 @@ async def reap_stale_jobs() -> None:
             job.finished_at = utcnow()
             logger.warning(f"Reaped stale pull job {job.job_id} ({job.symbol})")
         await session.commit()
+
+
+async def reap_forever() -> None:
+    """Sweep orphaned jobs on a timer, not just at startup.
+
+    A job whose worker was killed leaves a queued/running row that only a
+    successful restart would clear, and until it is cleared every later pull
+    for that key fails with 409.
+    """
+    while True:
+        await asyncio.sleep(REAP_INTERVAL_SECONDS)
+        try:
+            await reap_stale_jobs()
+        except Exception:
+            logger.exception("Stale job sweep failed")
 
 
 async def _check_concurrency(created_by: Optional[str] = None) -> None:
@@ -161,18 +188,13 @@ async def _run_job(job: PullJobModel) -> None:
         await session.commit()
 
         try:
-            if db_job.task:
-                pull_result = await _run_task(db_job.task, db_job.task_args or {})
-            elif db_job.source == "SEC":
-                from src.services.sec import pull_sec_data
-
-                pull_result = await pull_sec_data(
-                    db_job.symbol, db_job.filing_type, db_job.refresh
-                )
-            else:
-                from src.services import pull_nse_data
-
-                pull_result = await pull_nse_data(db_job.symbol, db_job.filing_type, db_job.refresh)
+            # ponytail: cancelling this frees the job row and the slot, but work
+            # already offloaded to a thread (SEC/edgartools) keeps running until
+            # edgartools' own request timeouts expire. Process-level kill if that
+            # ever matters.
+            pull_result = await asyncio.wait_for(
+                _dispatch(db_job), timeout=JOB_TIMEOUT_SECONDS
+            )
             db_job.result = pull_result
             db_job.status = _pull_outcome(pull_result)
             if db_job.status == "failed":
@@ -180,6 +202,16 @@ async def _run_job(job: PullJobModel) -> None:
                     f"Pull produced no records (status={pull_result.get('status')}); "
                     "source returned empty/unparseable data. Check source accessibility."
                 )
+        except asyncio.TimeoutError:
+            logger.error(
+                f"Job {db_job.job_id} ({db_job.task or db_job.symbol}) exceeded "
+                f"{JOB_TIMEOUT_SECONDS}s; marking failed to free the slot"
+            )
+            db_job.status = "failed"
+            db_job.error = (
+                f"Timed out after {JOB_TIMEOUT_SECONDS}s. The source is too slow or "
+                "unreachable (upstream rate-limiting). Re-run the pull."
+            )
         except Exception as exc:
             logger.exception(f"Job {db_job.job_id} failed ({db_job.task or db_job.symbol})")
             db_job.error = str(exc)
@@ -188,6 +220,21 @@ async def _run_job(job: PullJobModel) -> None:
             db_job.finished_at = utcnow()
             await session.commit()
             _inflight.discard(db_job.job_id)
+
+
+async def _dispatch(db_job: PullJobModel) -> Dict[str, Any]:
+    """Run the work for a job row (task, SEC pull, or NSE pull)."""
+    if db_job.task:
+        return await _run_task(db_job.task, db_job.task_args or {})
+    if db_job.source == "SEC":
+        from src.services.sec import pull_sec_data
+
+        return await pull_sec_data(
+            db_job.symbol, db_job.filing_type, db_job.refresh
+        )
+    from src.services import pull_nse_data
+
+    return await pull_nse_data(db_job.symbol, db_job.filing_type, db_job.refresh)
 
 
 async def _run_task(task: str, task_args: Dict[str, Any]) -> Dict[str, Any]:

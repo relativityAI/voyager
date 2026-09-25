@@ -1,3 +1,4 @@
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -18,6 +19,7 @@ from src.jobs import (
     PullLimitReached,
     get_job,
     list_jobs,
+    reap_forever,
     reap_stale_jobs,
     submit_pull,
     submit_task,
@@ -61,7 +63,14 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing database...")
     await init_db()
     await reap_stale_jobs()
-    yield
+    # Startup alone is not enough: a job orphaned by a killed worker stays
+    # queued/running until a *successful* restart, and Render keeps serving the
+    # old instance when a deploy fails its health check.
+    reaper = asyncio.create_task(reap_forever())
+    try:
+        yield
+    finally:
+        reaper.cancel()
 
 
 openapi_tags = [
