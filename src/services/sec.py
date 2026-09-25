@@ -17,7 +17,9 @@ handles the throttling internally.
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import gc
+import multiprocessing as mp
 import os
 import time
 from datetime import date, datetime
@@ -71,9 +73,33 @@ def _ensure_edgar():
 EDGAR_MAX_ANNUAL_FILINGS = int(os.getenv("EDGAR_MAX_ANNUAL_FILINGS", "8"))
 EDGAR_MAX_QUARTERLY_FILINGS = int(os.getenv("EDGAR_MAX_QUARTERLY_FILINGS", "40"))
 # XBRLS.from_filings holds every filing's parsed facts in memory at once; on
-# a 512MB Render instance 40 quarters OOMs the worker. Parse in small batches
-# and release each batch before the next.
-EDGAR_PARSE_BATCH = int(os.getenv("EDGAR_PARSE_BATCH", "6"))
+# a 512MB Render instance 40 quarters OOMs the worker.
+# Filings parsed per forked child. One filing keeps the child's peak at the
+# largest single document (an IBM 10-K inline-XBRL instance is ~200MB+);
+# 2 filings per child measured 594MB against Render's 512MB limit. Raise it
+# only on a bigger instance.
+EDGAR_PARSE_BATCH = int(os.getenv("EDGAR_PARSE_BATCH", "1"))
+
+try:
+    _libc = ctypes.CDLL("libc.so.6")
+    _libc.malloc_trim.argtypes = [ctypes.c_size_t]
+except (OSError, AttributeError):  # non-glibc (musl): gc alone is all there is
+    _libc = None
+
+
+def _release_memory() -> None:
+    """Hand freed heap back to the OS, not just back to Python.
+
+    XBRL parsing allocates ~25MB of raw inline-XBRL markup per filing and
+    frees it again, but gc.collect() only returns the pages to glibc's arena:
+    measured RSS after a 4-filing parse stayed at 405MB with zero live strings
+    still allocated, and the peak grew with every batch until Render OOM-killed
+    the worker mid-pull. malloc_trim(0) returns those pages, so the peak tracks
+    the largest live batch instead of the sum of all of them.
+    """
+    gc.collect()
+    if _libc is not None:
+        _libc.malloc_trim(0)
 
 # A period gap larger than this (days) separates fiscal years in a 10-Q frame
 # (Q4 is reported in the 10-K, so the Jun->Dec gap is ~6 months).
@@ -437,32 +463,53 @@ def _q4_rows(
     return []
 
 
-def _stitch_batched(filings: list, symbol: str, form: str) -> tuple:
-    _ensure_edgar()  # no-op after first SEC use; keeps edgartools lazy
-    """Stitch statement frames from filings in small batches.
+def _frames_for_batch(batch: list) -> tuple:
+    """Parse one batch into (income, balance, cashflow) frames.
 
-    XBRLS.from_filings parses every filing's XBRL into memory at once; with
-    40 quarters that alone can exceed a 512MB Render instance. This chunks
-    the filings, extracts the three statement frames per batch, concatenates
-    them, and drops all batch state before the next chunk. Column sets are
-    unioned; missing cells become NaN, matching the single-shot stitch.
+    Runs in a short-lived forked child (see `_stitch_batched`). Each filing's
+    inline-XBRL source is ~25MB and stays live for as long as the stitched
+    object exists, so the frames have to leave the process that parsed them.
     """
     from edgar.xbrl import XBRLS
 
+    xbrls = XBRLS.from_filings(batch)
+    frames = (
+        xbrls.statements.income_statement().to_dataframe(),
+        xbrls.statements.balance_sheet().to_dataframe(),
+        xbrls.statements.cash_flow_statement().to_dataframe(),
+    )
+    del xbrls
+    gc.collect()
+    return frames
+
+
+def _stitch_batched(filings: list, symbol: str, form: str) -> tuple:
+    """Stitch statement frames from filings in small batches.
+
+    XBRLS.from_filings parses every filing's XBRL at once; with 40 quarters
+    that peaks near 1.4GB on a 512MB instance and the worker is OOM-killed
+    mid-pull. Batching in-process was not enough: the freed pages only return
+    to glibc's arena, so the peak still grew with every batch. Each batch
+    therefore runs in a forked child that exits, handing its (small) frames
+    back and taking its ~25MB-per-filing heap with it. Column sets are unioned;
+    missing cells become NaN, matching the single-shot stitch.
+    """
+    _ensure_edgar()  # no-op after first SEC use; keeps edgartools lazy
+
     income_frames, balance_frames, cash_frames = [], [], []
     filings = list(filings)
-    for start in range(0, len(filings), EDGAR_PARSE_BATCH):
-        batch = filings[start : start + EDGAR_PARSE_BATCH]
-        try:
-            xbrls = XBRLS.from_filings(batch)
-            income_frames.append(xbrls.statements.income_statement().to_dataframe())
-            balance_frames.append(xbrls.statements.balance_sheet().to_dataframe())
-            cash_frames.append(xbrls.statements.cash_flow_statement().to_dataframe())
-        finally:
-            # Release the batch's XBRL objects and any stitch caches before
-            # the next chunk; frames extracted above are standalone DataFrames.
-            del xbrls
-            gc.collect()
+    # ponytail: maxtasksperchild=1 bounds the peak to EDGAR_PARSE_BATCH
+    # filings (~270MB at 2) no matter how many filings are pulled; the cost is
+    # one cheap fork per batch. Raise EDGAR_PARSE_BATCH only on a bigger
+    # instance.
+    with mp.get_context("fork").Pool(1, maxtasksperchild=1) as pool:
+        for start in range(0, len(filings), EDGAR_PARSE_BATCH):
+            batch = filings[start : start + EDGAR_PARSE_BATCH]
+            income, balance, cash = pool.apply(_frames_for_batch, (batch,))
+            income_frames.append(income)
+            balance_frames.append(balance)
+            cash_frames.append(cash)
+    _release_memory()
 
     def _merge(frames):
         if not frames:
@@ -657,7 +704,7 @@ async def pull_sec_data(
     # Statement frames are no longer needed once rows are extracted; release
     # them before the DB write so peak RSS stays low on 512MB instances.
     del annual
-    gc.collect()
+    _release_memory()
 
     if existing_keys:
         for coll, rows in rows_by_coll.items():
