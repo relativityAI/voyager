@@ -33,7 +33,15 @@ async def get_youtube_search(query: str, limit: int = 15) -> Dict[str, Any]:
 async def get_youtube_transcript(video_id: str) -> Dict[str, Any]:
     if not video_id:
         raise InvalidRequestError("video_id is required")
-    transcript = await asyncio.to_thread(get_transcript, video_id)
+    try:
+        transcript = await asyncio.to_thread(get_transcript, video_id)
+    except UpstreamError:
+        raise  # already sanitized downstream — do not re-wrap
+    except Exception as exc:
+        # Audit P0-2: wrap any unexpected failure without leaking upstream text.
+        raise UpstreamError(
+            "Transcript unavailable: the YouTube captions service rejected the request."
+        ) from exc
     return {
         "video_id": video_id,
         "text": transcript_to_text(transcript),

@@ -338,18 +338,6 @@ async def shareholdings(
 
 
 @app.command()
-def funds():
-    """Fund data (GET /funds — not yet implemented)."""
-    render_not_implemented("funds")
-
-
-@app.command()
-def macro():
-    """Macroeconomic data (GET /macro — not yet implemented)."""
-    render_not_implemented("macro")
-
-
-@app.command()
 def news():
     """News data (GET /news — not yet implemented)."""
     render_not_implemented("news")

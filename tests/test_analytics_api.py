@@ -1,4 +1,4 @@
-"""Endpoint tests for the analytics suite: DCF, documents, news, social, sentiment."""
+"""Endpoint tests for the analytics suite: documents, news, social."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,46 +14,6 @@ try:
 except ImportError:
     HAS_API = False
     pytest.skip("Skipping API tests: import issue", allow_module_level=True)
-
-
-DCF_METRICS = {
-    "free_cash_flow_per_share": 10.0,
-    "current_price": 100.0,
-    "revenue_growth": 10.0,
-    "symbol": "TEST",
-}
-
-
-class TestDCF:
-    def test_dcf_returns_valuation(self):
-        with patch(
-            "src.services.dcf.financial_metrics",
-            new=AsyncMock(return_value=DCF_METRICS),
-        ):
-            resp = client.get("/dcf?symbol=TEST")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["symbol"] == "TEST"
-        # 10 @ g=10%, r=10.6% -> a positive intrinsic value
-        assert data["intrinsic_value_per_share"] > 0
-        assert data["assumptions"]["fcf_per_share"] == 10.0
-
-    def test_dcf_rejects_bad_years(self):
-        resp = client.get("/dcf?symbol=TEST&years=0")
-        assert resp.status_code == 422
-        resp = client.get("/dcf?symbol=TEST&years=30")
-        assert resp.status_code == 422
-
-    def test_dcf_discount_must_exceed_terminal_growth(self):
-        with patch(
-            "src.services.dcf.financial_metrics",
-            new=AsyncMock(return_value=DCF_METRICS),
-        ):
-            resp = client.get(
-                "/dcf?symbol=TEST&discount_rate=0.02&terminal_growth_rate=0.04"
-            )
-        assert resp.status_code == 400
-
 
 class TestDocuments:
     def test_parse_submits_task(self):
@@ -145,16 +105,165 @@ class TestSocial:
         assert resp.json()["video_id"] == "abc"
 
 
-class TestSentiment:
-    def test_requires_input(self):
-        resp = client.post("/sentiment/management")
+class TestSearch:
+    def test_search_substring(self):
+        with patch(
+            "api.search_symbols",
+            new=AsyncMock(
+                return_value={"query": "relian", "source": "NSE", "count": 1,
+                              "results": [{"symbol": "RELIANCE", "has_data": True}]}
+            ),
+        ):
+            resp = client.get("/search?q=relian")
+        assert resp.status_code == 200
+        assert resp.json()["results"][0]["symbol"] == "RELIANCE"
+
+    def test_search_requires_q(self):
+        resp = client.get("/search")
+        assert resp.status_code == 422
+
+    def test_search_min_length(self):
+        resp = client.get("/search?q=a")
+        assert resp.status_code == 422
+
+
+class TestCachingAndPagination:
+    def test_news_gets_etag_and_cache_control(self):
+        with patch(
+            "api.get_news_stories",
+            new=AsyncMock(return_value={"country": "in", "stories": []}),
+        ):
+            resp = client.get("/news/stories?country=in")
+        assert resp.status_code == 200
+        assert resp.headers.get("Cache-Control") == "public, max-age=120"
+        assert resp.headers.get("ETag", "").startswith('"')
+
+    def test_conditional_get_returns_304(self):
+        body = {"country": "in", "stories": []}
+        with patch("api.get_news_stories", new=AsyncMock(return_value=body)):
+            first = client.get("/news/stories?country=in")
+            second = client.get(
+                "/news/stories?country=in",
+                headers={"If-None-Match": first.headers["ETag"]},
+            )
+        assert second.status_code == 304
+
+    def test_non_cacheable_paths_unaffected(self):
+        with patch(
+            "api.search_symbols",
+            new=AsyncMock(return_value={"query": "x", "results": [], "count": 0}),
+        ):
+            resp = client.get("/search?q=xx")
+        assert resp.status_code == 200
+        assert "Cache-Control" not in resp.headers or "max-age" not in (
+            resp.headers.get("Cache-Control") or ""
+        )
+
+
+class TestStatementPagination:
+    def test_statement_offset_and_total(self):
+        rows = [{"symbol": "T", "period_end_date": f"2026-0{i}-30"} for i in range(1, 5)]
+        with patch(
+            "api.get_statement_data",
+            new=AsyncMock(
+                return_value={
+                    "income_statements": rows[2:],
+                    "pagination": {"total": 4, "offset": 2, "limit": 2, "returned": 2},
+                }
+            ),
+        ) as m:
+            resp = client.get(
+                "/financials/income-statements?symbol=T&limit=2&offset=2"
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["pagination"] == {
+            "total": 4, "offset": 2, "limit": 2, "returned": 2
+        }
+        # offset must be forwarded to the service
+        assert m.await_args.args[7] == 2
+
+
+class TestFieldFilterAndBatch:
+    def test_fields_keeps_meta_and_requested(self):
+        full = {
+            "symbol": "T",
+            "filing_type": "ttm",
+            "price_data": "live",
+            "price_to_earnings_ratio": 20.0,
+            "return_on_equity": 12.0,
+            "revenue_growth": 5.0,
+            "enterprise_value": 1.0,
+        }
+        with patch(
+            "api.financial_metrics", new=AsyncMock(return_value=full)
+        ):
+            resp = client.get(
+                "/financial-metrics?symbol=T&fields=price_to_earnings_ratio"
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body == {
+            "symbol": "T",
+            "filing_type": "ttm",
+            "price_data": "live",
+            "price_to_earnings_ratio": 20.0,
+        }
+
+    def test_batch_returns_per_symbol_results(self):
+        full = {"symbol": "X", "filing_type": "ttm", "price_to_earnings_ratio": 20.0}
+        with patch("api.financial_metrics", new=AsyncMock(return_value=full)):
+            resp = client.get(
+                "/financial-metrics/batch?symbols=X,Y&fields=price_to_earnings_ratio"
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["count"] == 2
+        assert body["metrics"]["X"]["price_to_earnings_ratio"] == 20.0
+
+    def test_batch_survives_symbol_errors(self):
+        from src.services._common import NotFoundError
+
+        async def _fail(sym, *a, **kw):
+            if sym == "BAD":
+                raise NotFoundError("no data")
+            return {"symbol": sym, "filing_type": "ttm"}
+
+        with patch("api.financial_metrics", new=AsyncMock(side_effect=_fail)):
+            resp = client.get("/financial-metrics/batch?symbols=OK,BAD")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["metrics"]["OK"]["symbol"] == "OK"
+        assert body["metrics"]["BAD"]["status"] == 404
+
+    def test_batch_rejects_too_many(self):
+        syms = ",".join(f"S{i}" for i in range(11))
+        resp = client.get(f"/financial-metrics/batch?symbols={syms}")
         assert resp.status_code == 400
 
-    def test_submits_job(self):
+
+class TestJobCancel:
+    def test_cancel_unknown_job_404(self):
+        with patch("api.cancel_job", new=AsyncMock(side_effect=ValueError("not found"))):
+            resp = client.request("DELETE", "/pull/jobs/nope")
+        assert resp.status_code == 404
+
+    def test_cancel_finished_job_409(self):
+        from src.jobs import JobNotCancellable
+
+        with patch("api.cancel_job", new=AsyncMock(side_effect=JobNotCancellable("already done"))):
+            resp = client.request("DELETE", "/pull/jobs/j1")
+        assert resp.status_code == 409
+
+    def test_cancel_other_keys_job_403(self):
+        with patch("api.cancel_job", new=AsyncMock(side_effect=PermissionError("other key"))):
+            resp = client.request("DELETE", "/pull/jobs/j1")
+        assert resp.status_code == 403
+
+    def test_cancel_ok(self):
         job = MagicMock()
-        job.job_id = "sent-1"
-        job.status = "queued"
-        with patch("api.submit_task", new=AsyncMock(return_value=job)):
-            resp = client.post("/sentiment/management?text=hello")
-        assert resp.status_code == 202
-        assert resp.json()["job_id"] == "sent-1"
+        job.to_public_dict.return_value = {"job_id": "j1", "status": "failed"}
+        with patch("api.cancel_job", new=AsyncMock(return_value=job)):
+            resp = client.request("DELETE", "/pull/jobs/j1")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "failed"

@@ -57,6 +57,9 @@ htmlcov/
 .coverage
 .coverage.*
 .cache
+
+# Eval run artifacts (results are never committed; the specs in evals/*.md are)
+evals/runs/
 nosetests.xml
 coverage.xml
 *.cover
@@ -187,3 +190,8 @@ pyrightconfig.json
 
 # Runtime data (never commit)
 data/
+
+# Archify generated diagram artifacts (the JSON spec in archify/ is tracked)
+archify/*.html
+archify/*.visual-check.*
+archify/*.png

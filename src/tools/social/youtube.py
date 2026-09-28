@@ -2,7 +2,7 @@
 
 Search runs through ``yt-search-python`` (innertube endpoints, no API key).
 Transcripts come from ``youtube-transcript-api`` (captions, no headless
-browser). Both feeds the management/sentiment pipeline.
+browser). Both feed the documents pipeline.
 """
 
 from typing import Any, Dict, List
@@ -100,7 +100,7 @@ def _ytdlp_transcript(video_id: str, cause: BaseException) -> List[Dict[str, Any
     }
     try:
         with YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}")
+            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}")  # noqa: S310
         tracks = []
         for group in (
             info.get("automatic_captions") or {},
@@ -125,8 +125,10 @@ def _ytdlp_transcript(video_id: str, cause: BaseException) -> List[Dict[str, Any
             resp.raise_for_status()
             return _parse_caption_json(resp.json())
     except Exception as exc:  # noqa: BLE001
+        # Audit P0-2: never leak upstream traceback/URL text to API clients.
         raise _err("UpstreamError")(
-            f"Failed to fetch transcript: {cause}; yt-dlp fallback failed too: {exc}"
+            "Transcript unavailable: YouTube blocked both the captions client and "
+            "the yt-dlp fallback for this video (likely bot-detection from this IP)."
         ) from exc
     raise _err("NotFoundError")("No transcript available for this video")
 

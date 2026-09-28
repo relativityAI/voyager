@@ -563,6 +563,7 @@ async def get_statement_data(
     consolidated: Optional[bool] = True,
     filing_type: str = "quarterly",
     limit: int = 0,
+    offset: int = 0,
     all_fields: bool = False,
 ) -> Dict[str, Any]:
     symbol = symbol.upper()
@@ -579,14 +580,21 @@ async def get_statement_data(
 
     factory = get_session_factory()
     async with factory() as session:
-        stmt = select(model_class).where(
+        base = select(model_class).where(
             model_class.symbol == symbol,
             model_class.filing_type == filing_type,
             model_class.source == source,
         )
         if consolidated is not None:
-            stmt = stmt.where(model_class.consolidated == consolidated)
-        stmt = stmt.order_by(model_class.period_end_date.desc())
+            base = base.where(model_class.consolidated == consolidated)
+
+        total = (
+            await session.execute(select(func.count()).select_from(base.subquery()))
+        ).scalar() or 0
+
+        stmt = base.order_by(model_class.period_end_date.desc())
+        if offset > 0:
+            stmt = stmt.offset(offset)
         if limit > 0:
             stmt = stmt.limit(limit)
 
@@ -594,7 +602,15 @@ async def get_statement_data(
         docs = result.scalars().all()
 
     records = [_filter_priority_fields(d.to_dict(), priority_set, all_fields) for d in docs]
-    return {priority_key: records}
+    return {
+        priority_key: records,
+        "pagination": {
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "returned": len(records),
+        },
+    }
 
 
 async def get_pull_status(

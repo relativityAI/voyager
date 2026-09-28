@@ -15,8 +15,10 @@ from src.auth import APIKey, require_api_key, require_scope
 from src.auth.routes import router as admin_router
 from src.db.connection import init_db, ping_database
 from src.jobs import (
+    JobNotCancellable,
     PullAlreadyActive,
     PullLimitReached,
+    cancel_job,
     get_job,
     list_jobs,
     reap_forever,
@@ -26,6 +28,7 @@ from src.jobs import (
 )
 from src.logging_config import setup_logging
 from src.observability import (
+    HttpCacheMiddleware,
     PrometheusMiddleware,
     init_observability,
     metrics_enabled,
@@ -34,7 +37,6 @@ from src.observability import (
 from src.services import (
     InvalidRequestError,
     ServiceError,
-    dcf_valuation,
     financial_metrics,
     get_announcements,
     get_financials,
@@ -47,6 +49,7 @@ from src.services import (
     get_youtube_search,
     get_youtube_transcript,
     list_category,
+    search_symbols,
 )
 from src.services._common import _validate_source
 from src.services.documents import get_document_index
@@ -79,9 +82,8 @@ openapi_tags = [
     {"name": "Financials", "description": "Financial statements and computed financial metrics."},
     {"name": "Corporate Actions", "description": "Corporate announcements and shareholding patterns."},
     {"name": "Data Pulls", "description": "Pull raw data from the exchange and track async pull jobs."},
-    {"name": "Advanced Data Suite", "description": "Valuation, news, social signals, documents and sentiment analysis."},
+    {"name": "Advanced Data Suite", "description": "News, social signals and document structuring."},
     {"name": "Admin", "description": "API key management (guarded by VOYAGER_ADMIN_KEY)."},
-    {"name": "Coming Soon", "description": "Placeholder endpoints not yet implemented."},
 ]
 
 app = FastAPI(
@@ -101,6 +103,7 @@ if _cors_origins:
     )
 
 app.add_middleware(PrometheusMiddleware)
+app.add_middleware(HttpCacheMiddleware)
 
 app.include_router(admin_router)
 
@@ -108,6 +111,37 @@ app.include_router(admin_router)
 @app.exception_handler(ServiceError)
 async def service_error_handler(request: Request, exc: ServiceError):
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
+
+
+# Meta keys never stripped by ?fields= — a filtered response still identifies
+# the stock, its periods and its data availability.
+_META_FIELDS = {
+    "symbol",
+    "source",
+    "consolidated",
+    "filing_type",
+    "last_quarter_end_date",
+    "last_annual_end_date",
+    "last_annual_end_date_source",
+    "ttm_window_complete",
+    "ttm_quarters_used",
+    "statement_periods",
+    "data_available",
+    "price_data",
+    "data_quality",
+}
+
+
+def _filter_fields(data: dict, fields: Optional[str]) -> dict:
+    """Keep only the requested metric fields (+ meta) when ?fields= is given."""
+    if not fields:
+        return data
+    wanted = {f.strip() for f in fields.split(",") if f.strip()}
+    if not wanted:
+        return data
+    return {
+        k: v for k, v in data.items() if k in _META_FIELDS or k in wanted
+    }
 
 
 @app.get("/", summary="Health check", tags=["System"])
@@ -151,6 +185,20 @@ def list_category_endpoint(
 
 
 @app.get(
+    "/search",
+    summary="Search symbols stored in the DB (case-insensitive substring match)",
+    tags=["Lists"],
+    dependencies=[Depends(require_api_key)],
+)
+async def search_endpoint(
+    q: str = Query(..., min_length=2, description="Search text, e.g. 'relian'"),
+    source: str = Query("nse", description="Data source"),
+    limit: int = Query(20, ge=1, le=50),
+):
+    return await search_symbols(q, None, source, limit)
+
+
+@app.get(
     "/financials",
     summary="Get merged financial data (income, balance, cash flow) for a stock",
     tags=["Financials"],
@@ -185,6 +233,7 @@ async def financials_income_statements(
     ),
     filing_type: str = Query("quarterly", description="quarterly or annual"),
     limit: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, description="Rows to skip (pagination)"),
     all_fields: bool = Query(
         False, description="Return all stored fields instead of only priority metrics"
     ),
@@ -197,6 +246,7 @@ async def financials_income_statements(
         consolidated,
         filing_type,
         limit,
+        offset,
         all_fields,
     )
 
@@ -213,6 +263,7 @@ async def financials_balance_sheets(
     consolidated: Optional[bool] = Query(True),
     filing_type: str = Query("quarterly", description="quarterly or annual"),
     limit: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, description="Rows to skip (pagination)"),
     all_fields: bool = Query(False),
 ):
     return await get_statement_data(
@@ -223,6 +274,7 @@ async def financials_balance_sheets(
         consolidated,
         filing_type,
         limit,
+        offset,
         all_fields,
     )
 
@@ -239,6 +291,7 @@ async def financials_cash_flows(
     consolidated: Optional[bool] = Query(True),
     filing_type: str = Query("quarterly", description="quarterly or annual"),
     limit: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, description="Rows to skip (pagination)"),
     all_fields: bool = Query(False),
 ):
     return await get_statement_data(
@@ -249,6 +302,7 @@ async def financials_cash_flows(
         consolidated,
         filing_type,
         limit,
+        offset,
         all_fields,
     )
 
@@ -309,10 +363,27 @@ async def financials_pull_status(
     tags=["Data Pulls"],
     dependencies=[Depends(require_scope("data:write"))],
 )
-async def pull_job_status(job_id: str):
+async def pull_job_status(job_id: str, key: APIKey = Depends(require_scope("data:write"))):
     job = await get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Pull job not found")
+    return job.to_public_dict()
+
+
+@app.delete(
+    "/pull/jobs/{job_id}",
+    summary="Cancel a queued/running job (frees its concurrency slot)",
+    tags=["Data Pulls"],
+)
+async def pull_job_cancel(job_id: str, key: APIKey = Depends(require_scope("data:write"))):
+    try:
+        job = await cancel_job(job_id, created_by=key.prefix)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Pull job not found")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except JobNotCancellable as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     return job.to_public_dict()
 
 
@@ -340,39 +411,51 @@ async def financial_metrics_endpoint(
         True, description="True for consolidated, False for standalone"
     ),
     filing_type: str = Query("ttm", description="quarterly, annual, or ttm"),
+    fields: str = Query(
+        None,
+        description="Comma-separated metric names to keep (e.g. 'price_to_earnings_ratio,return_on_equity'). Unknown names are ignored; price/identifier meta is always kept.",
+    ),
 ):
-    return await financial_metrics(symbol, None, source, consolidated, filing_type)
+    data = await financial_metrics(symbol, None, source, consolidated, filing_type)
+    return _filter_fields(data, fields)
 
 
 @app.get(
-    "/dcf",
-    summary="Two-stage discounted cash flow valuation from stored data",
-    tags=["Advanced Data Suite"],
+    "/financial-metrics/batch",
+    summary="Computed financial metrics for several symbols in one call",
+    tags=["Financials"],
     dependencies=[Depends(require_api_key)],
 )
-async def dcf_endpoint(
-    symbol: str,
+async def financial_metrics_batch(
+    symbols: str = Query(
+        ..., description="Comma-separated symbols, e.g. 'RELIANCE,TCS' (max 10)"
+    ),
     source: str = Query("nse"),
-    growth_rate: Optional[float] = Query(
-        None, ge=0, le=0.5, description="Stage-1 FCF growth rate (default: revenue growth)"
-    ),
-    terminal_growth_rate: Optional[float] = Query(
-        None, ge=0, le=0.1, description="Terminal growth rate (default 0.04)"
-    ),
-    discount_rate: Optional[float] = Query(
-        None, ge=0, le=0.5, description="WACC/discount rate (default: CAPM cost of equity)"
-    ),
-    years: int = Query(5, ge=1, le=20),
-    beta: float = Query(1.0),
+    consolidated: bool = Query(True),
+    filing_type: str = Query("ttm", description="quarterly, annual, or ttm"),
+    fields: str = Query(None, description="Comma-separated metric names to keep"),
 ):
-    return await dcf_valuation(
-        symbol, source,
-        growth_rate=growth_rate,
-        terminal_growth_rate=terminal_growth_rate,
-        discount_rate=discount_rate,
-        years=years,
-        beta=beta,
-    )
+    wanted = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    if not wanted:
+        raise InvalidRequestError("Provide at least one symbol")
+    if len(wanted) > 10:
+        raise InvalidRequestError("Max 10 symbols per batch call")
+    results = {}
+    for sym in wanted:
+        try:
+            results[sym] = _filter_fields(
+                await financial_metrics(sym, None, source, consolidated, filing_type),
+                fields,
+            )
+        except ServiceError as exc:
+            results[sym] = {"error": exc.message, "status": exc.status_code}
+    return {
+        "source": source.lower(),
+        "consolidated": consolidated,
+        "filing_type": filing_type,
+        "count": len(results),
+        "metrics": results,
+    }
 
 
 @app.get(
@@ -400,29 +483,6 @@ async def shareholdings(
     source: str = Query("nse"),
 ):
     return await get_shareholdings(symbol, None, source)
-
-
-@app.get(
-    "/funds",
-    summary="Fund data (not yet implemented)",
-    tags=["Coming Soon"],
-    dependencies=[Depends(require_api_key)],
-)
-def funds():
-    return {"status": "not_implemented", "note": "Fund data not yet implemented"}
-
-
-@app.get(
-    "/macro",
-    summary="Macroeconomic data (not yet implemented)",
-    tags=["Coming Soon"],
-    dependencies=[Depends(require_api_key)],
-)
-def macro():
-    return {
-        "status": "not_implemented",
-        "note": "Macroeconomic data not yet implemented",
-    }
 
 
 @app.get(
@@ -463,12 +523,15 @@ async def documents_parse(
     url: str = Query(..., description="PDF URL or path to structure"),
     symbol: str = Query(None),
     source: str = Query("nse"),
+    callback_url: str = Query(
+        None, description="Optional webhook URL; POSTed the job result on completion"
+    ),
     key: APIKey = Depends(require_scope("data:write")),
 ):
     try:
         job = await submit_task(
             "documents.parse",
-            {"url": url, "symbol": symbol, "source": source},
+            {"url": url, "symbol": symbol, "source": source, "callback_url": callback_url},
             created_by=key.prefix,
         )
     except PullLimitReached as exc:
@@ -528,45 +591,6 @@ async def social_youtube_transcript(
     video_id: str,
 ):
     return await get_youtube_transcript(video_id)
-
-
-@app.post(
-    "/sentiment/management",
-    summary="Analyze management commentary for facts (async job)",
-    status_code=status.HTTP_202_ACCEPTED,
-    tags=["Advanced Data Suite"],
-)
-async def sentiment_management_run(
-    url: str = Query(None, description="PDF/transcript URL to analyze"),
-    text: str = Query(None, description="Or, raw text to analyze"),
-    symbol: str = Query(None),
-    source: str = Query("nse"),
-    model: str = Query(None, description="LiteLLM model override"),
-    key: APIKey = Depends(require_scope("data:write")),
-):
-    if url is None and text is None:
-        raise InvalidRequestError("Provide either 'url' or 'text'")
-    try:
-        job = await submit_task(
-            "sentiment.management",
-            {
-                "url": url,
-                "text": text,
-                "symbol": symbol,
-                "source": source,
-                "model": model,
-            },
-            created_by=key.prefix,
-        )
-    except PullLimitReached as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
-    except PullAlreadyActive as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-    return {
-        "job_id": job.job_id,
-        "status": job.status,
-        "status_url": f"/pull/jobs/{job.job_id}",
-    }
 
 
 if __name__ == "__main__":

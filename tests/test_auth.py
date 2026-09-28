@@ -134,18 +134,23 @@ def test_admin_key_rejects_missing_header(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@patch("src.auth.security.check_rate_limit", new=AsyncMock(return_value=True))
+@patch("src.auth.security.check_rate_limit", new=AsyncMock(return_value=1))
 async def _resolve(header=None, bearer=None, find_result=None):
+    request = MagicMock()
+    request.state = MagicMock()
     with patch(
         "src.auth.security.find_by_key", new=AsyncMock(return_value=find_result)
     ):
-        return await get_current_api_key(x_api_key=header, authorization=bearer)
+        return await get_current_api_key(
+            request=request, x_api_key=header, authorization=bearer
+        )
 
 
 def test_api_key_missing_header():
     with pytest.raises(HTTPException) as exc:
         asyncio.run(_resolve(header=None))
     assert exc.value.status_code == 401
+    assert exc.value.detail["code"] == "missing_api_key"
 
 
 def test_api_key_bearer_accepted():
@@ -160,12 +165,14 @@ def test_api_key_unknown_rejected():
     with pytest.raises(HTTPException) as exc:
         asyncio.run(_resolve(header=generate_api_key(), find_result=None))
     assert exc.value.status_code == 401
+    assert exc.value.detail["code"] == "invalid_api_key"
 
 
 def test_api_key_disabled_rejected():
     with pytest.raises(HTTPException) as exc:
         asyncio.run(_resolve(header="k", find_result=_StubKey(enabled=False)))
     assert exc.value.status_code == 401
+    assert exc.value.detail["code"] == "revoked_api_key"
 
 
 def test_api_key_revoked_rejected():
@@ -174,12 +181,14 @@ def test_api_key_revoked_rejected():
     with pytest.raises(HTTPException) as exc:
         asyncio.run(_resolve(header="k", find_result=_StubKey(revoked_at=utcnow())))
     assert exc.value.status_code == 401
+    assert exc.value.detail["code"] == "revoked_api_key"
 
 
 def test_api_key_expired_rejected():
     with pytest.raises(HTTPException) as exc:
         asyncio.run(_resolve(header="k", find_result=_StubKey(is_expired=True)))
     assert exc.value.status_code == 401
+    assert exc.value.detail["code"] == "expired_api_key"
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +208,7 @@ def test_require_scope_rejects_missing():
     with pytest.raises(HTTPException) as exc:
         asyncio.run(dep(key=key))
     assert exc.value.status_code == 403
+    assert exc.value.detail["code"] == "insufficient_scope"
     assert "data:write" in str(exc.value.detail)
 
 

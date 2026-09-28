@@ -3,7 +3,9 @@ import os
 import secrets
 from typing import Optional
 
-from fastapi import Depends, Header, HTTPException, status
+import time
+
+from fastapi import Depends, Header, HTTPException, Request, status
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -48,6 +50,7 @@ def _extract_bearer(authorization: Optional[str]) -> Optional[str]:
 
 
 async def get_current_api_key(
+    request: Request,
     x_api_key: Optional[str] = Header(default=None),
     authorization: Optional[str] = Header(default=None),
 ) -> APIKeyModel:
@@ -55,17 +58,41 @@ async def get_current_api_key(
     if not raw:
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
-            "Missing API key. Provide it via 'X-API-Key' or 'Authorization: Bearer <key>'.",
+            detail={
+                "code": "missing_api_key",
+                "message": "Missing API key. Provide it via 'X-API-Key' or 'Authorization: Bearer <key>'.",
+            },
             headers={"WWW-Authenticate": "Bearer"},
         )
 
     api_key = await find_by_key(raw)
-    if api_key is None or not api_key.enabled or api_key.is_revoked:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid API key")
+    if api_key is None:
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "invalid_api_key", "message": "Invalid API key"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if api_key.is_revoked or not api_key.enabled:
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "revoked_api_key", "message": "API key has been revoked or disabled"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     if api_key.is_expired:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "API key has expired")
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "expired_api_key", "message": "API key has expired"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-    await check_rate_limit(api_key)
+    count = await check_rate_limit(api_key)
+
+    # Stash rate-limit window info for the response middleware (X-RateLimit-*).
+    request.state.rate_limit_info = {
+        "X-RateLimit-Limit": api_key.rpm,
+        "X-RateLimit-Remaining": max(0, api_key.rpm - count),
+        "X-RateLimit-Reset": (int(time.time()) // 60 + 1) * 60,
+    }
 
     asyncio.create_task(_mark_used(api_key))
     return api_key
@@ -89,7 +116,10 @@ def require_scope(scope: str):
         if scope not in scopes:
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN,
-                f"This key requires the '{scope}' scope",
+                detail={
+                    "code": "insufficient_scope",
+                    "message": f"This key requires the '{scope}' scope",
+                },
             )
         return key
 

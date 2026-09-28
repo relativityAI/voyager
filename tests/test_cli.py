@@ -85,8 +85,3 @@ def test_service_error_exits_1(buf_console):
     assert result.exit_code == 1
     assert "No data found for VBL" in buf_console.getvalue()
 
-
-def test_funds_not_implemented(buf_console):
-    result = runner.invoke(cli.app, ["funds"])
-    assert result.exit_code == 0
-    assert "not yet implemented" in buf_console.getvalue()

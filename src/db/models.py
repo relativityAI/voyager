@@ -80,7 +80,7 @@ class PullJob(Base):
     source = Column(Text, default="nse")
     filing_type = Column(Text, nullable=True)
     refresh = Column(Boolean, default=False)
-    # Generic async task (e.g. "documents.parse", "sentiment.management").
+    # Generic async task (e.g. "documents.parse").
     # When set, the job runs the named task instead of a symbol pull.
     task = Column(Text, nullable=True)
     task_args = Column(JSONB, nullable=True)
@@ -417,21 +417,4 @@ class NewsArticle(Base):
 
     __table_args__ = (
         UniqueConstraint("url", name="uq_news_article_url"),
-    )
-
-
-class SentimentResult(Base):
-    """Cached management-sentiment analysis, keyed by text hash + model."""
-
-    __tablename__ = "sentiment_results"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    source_key = Column(Text, nullable=False)
-    content_hash = Column(Text, nullable=False)
-    model = Column(Text, nullable=False)
-    result = Column(JSONB, nullable=False)
-    analyzed_at = Column(DateTime, nullable=False, default=_utcnow)
-
-    __table_args__ = (
-        UniqueConstraint("content_hash", "model", name="uq_sentiment_hash_model"),
     )

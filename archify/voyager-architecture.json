@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Voyager — Financial Data API Runtime Architecture",
+    "output": "voyager-architecture-rendered.html",
+    "quality_profile": "showcase"
+  },
+  "components": [
+    { "id": "clients", "type": "external", "label": "Consumer Apps / CLI", "sublabel": "client/ Typer CLI · evals", "pos": [40, 340], "size": [150, 64] },
+    { "id": "admin", "type": "frontend", "label": "Admin Panel", "sublabel": "Streamlit (local operator)", "pos": [40, 540], "size": [150, 64], "tag": "operator tool" },
+    { "id": "auth", "type": "security", "label": "API Key Auth", "sublabel": "src/auth", "pos": [290, 150], "size": [150, 64], "tag": "SHA-256 hashed keys" },
+    { "id": "api", "type": "backend", "label": "Voyager API", "sublabel": "FastAPI :8001", "pos": [290, 340], "size": [160, 64] },
+    { "id": "services", "type": "backend", "label": "Services Layer", "sublabel": "metrics · news · social", "pos": [560, 340], "size": [170, 64] },
+    { "id": "jobs", "type": "backend", "label": "Async Job Runner", "sublabel": "src/jobs.py (in-process)", "pos": [560, 540], "size": [170, 64], "tag": "202 + job_id" },
+    { "id": "scrapers", "type": "backend", "label": "XBRL Scrapers", "sublabel": "src/scrapers (NSE / SEC)", "pos": [840, 540], "size": [160, 64], "tag": "throttle + proxy pool" },
+    { "id": "db", "type": "database", "label": "MongoDB", "sublabel": "Atlas or local :27017", "pos": [840, 340], "size": [160, 64] },
+    { "id": "yahoo", "type": "external", "label": "Yahoo Finance", "sublabel": "live quotes / technicals", "pos": [1100, 180], "size": [150, 64], "tag": "best-effort" },
+    { "id": "filings", "type": "external", "label": "NSE / SEC EDGAR", "sublabel": "XBRL filings", "pos": [1100, 540], "size": [150, 64], "tag": "rate-limited" }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Voyager Service (Render / local)", "wraps": ["api", "auth", "services", "jobs", "scrapers", "db"] },
+    { "kind": "security-group", "label": "X-API-Key + scope gate", "wraps": ["api", "auth"] }
+  ],
+  "connections": [
+    { "id": "clients-api", "from": "clients", "to": "api", "label": "HTTPS (X-API-Key)", "variant": "emphasis" },
+    { "id": "admin-api", "from": "admin", "to": "api", "label": "keys · pulls · playground", "variant": "dashed" },
+    { "id": "auth-api", "from": "auth", "to": "api", "label": "verify key + scope", "variant": "security", "route": "orthogonal-v" },
+    { "id": "api-services", "from": "api", "to": "services", "label": "dispatch", "variant": "emphasis" },
+    { "id": "services-db", "from": "services", "to": "db", "label": "read statements", "variant": "emphasis", "labelDy": 16 },
+    { "id": "services-yahoo", "from": "services", "to": "yahoo", "label": "live price", "variant": "dashed" },
+    { "id": "api-jobs", "from": "api", "to": "jobs", "label": "enqueue pull / task", "variant": "dashed" },
+    { "id": "jobs-scrapers", "from": "jobs", "to": "scrapers", "label": "run fetch+parse" },
+    { "id": "scrapers-filings", "from": "scrapers", "to": "filings", "label": "download XBRL" },
+    { "id": "scrapers-db", "from": "scrapers", "to": "db", "label": "write parsed rows" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Primary read path", "items": ["Client → FastAPI → services → MongoDB → computed metrics JSON", "GET /financial-metrics merges income, balance and cash-flow rows, then adds live price/technicals when Yahoo is reachable", "price_data = 'unavailable' degrades gracefully instead of failing the request"] },
+    { "dot": "violet", "title": "Async pull path", "items": ["POST /pull (data:write scope) returns 202 + job_id; work runs as in-process asyncio tasks", "MAX_CONCURRENT_PULLS=2, one active pull per key; per-job timeout and stale-job reaper free orphaned slots", "Scrapers write parsed XBRL into MongoDB, which the read path then serves"] },
+    { "dot": "amber", "title": "External dependencies", "items": ["NSE / SEC EDGAR: XBRL filings (SEC needs SEC_IDENTITY, throttled to 10 req/s)", "Yahoo Finance: quotes, 52-week range, SMA/EMA, RSI, Bollinger, ATR", "MongoDB Atlas in production; local Mongo via docker-compose for development"] },
+    { "dot": "rose", "title": "Trust boundaries", "items": ["Service keys: only SHA-256 hash + 12-char prefix stored; raw key shown once at creation", "Scopes: data:read for reads, data:write for pulls; fixed-window rpm cap in Mongo", "/admin/keys guarded by VOYAGER_ADMIN_KEY; health/metrics endpoints intentionally public", "Admin panel is operator-local and assumes network trust — it is not exposed by Render"] },
+    { "dot": "emerald", "title": "Observability & ops", "items": ["Prometheus /metrics via middleware; /readyz probes the DB", "Sentry error reporting when SENTRY_DSN is set", "Render serves reads; pulls run locally against the same Atlas cluster (read-replica pattern)"] }
+  ]
+}

@@ -117,6 +117,24 @@ LIST: List[Endpoint] = [
             },
         ],
     },
+    {
+        "name": "Search symbols",
+        "group": "Lists",
+        "method": "GET",
+        "path": "/search",
+        "auth": "key",
+        "description": "Case-insensitive substring search over symbols in the DB, ranked by data coverage.",
+        "params": [
+            {"name": "q", "type": "text", "required": True, "help": "e.g. 'relian'"},
+            {
+                "name": "source",
+                "type": "select",
+                "default": "nse",
+                "options": ["nse", "sec"],
+            },
+            {"name": "limit", "type": "int", "default": 20, "min": 1, "max": 50},
+        ],
+    },
 ]
 
 DATA: List[Endpoint] = [
@@ -187,6 +205,47 @@ DATA: List[Endpoint] = [
                 "default": "ttm",
                 "options": ["ttm", "quarterly", "annual"],
                 "help": "ttm (default) computes flows over the trailing twelve months; quarterly/annual are overrides.",
+            },
+            {
+                "name": "fields",
+                "type": "text",
+                "default": "",
+                "help": "Comma-separated metric names to keep (identifier meta always kept).",
+            },
+        ],
+    },
+    {
+        "name": "Financial metrics batch",
+        "group": "Computed metrics",
+        "method": "GET",
+        "path": "/financial-metrics/batch",
+        "auth": "key",
+        "description": "Computed metrics for up to 10 symbols in one call; a bad symbol reports per-symbol error without failing the batch.",
+        "params": [
+            {
+                "name": "symbols",
+                "type": "text",
+                "required": True,
+                "help": "Comma-separated, e.g. RELIANCE,TCS",
+            },
+            {
+                "name": "source",
+                "type": "select",
+                "default": "nse",
+                "options": ["nse", "sec"],
+            },
+            {"name": "consolidated", "type": "bool", "default": True},
+            {
+                "name": "filing_type",
+                "type": "select",
+                "default": "ttm",
+                "options": ["ttm", "quarterly", "annual"],
+            },
+            {
+                "name": "fields",
+                "type": "text",
+                "default": "",
+                "help": "Comma-separated metric names to keep.",
             },
         ],
     },
@@ -279,40 +338,20 @@ PULLS: List[Endpoint] = [
             {"name": "limit", "type": "int", "default": 20, "min": 1, "max": 100}
         ],
     },
+    {
+        "name": "Cancel pull job",
+        "group": "Pulls",
+        "method": "DELETE",
+        "path": "/pull/jobs/{job_id}",
+        "auth": "write",
+        "description": "Cancel a queued/running job to free its concurrency slot (stuck-job escape hatch).",
+        "params": [
+            {"name": "job_id", "type": "text", "required": True, "in_path": True}
+        ],
+    },
 ]
 
 ADVANCED: List[Endpoint] = [
-    {
-        "name": "DCF valuation",
-        "group": "Advanced Data Suite",
-        "method": "GET",
-        "path": "/dcf",
-        "auth": "key",
-        "description": "Two-stage discounted cash flow valuation from stored data.",
-        "params": _symbol_params()
-        + [
-            {
-                "name": "growth_rate",
-                "type": "text",
-                "default": "",
-                "help": "Stage-1 FCF growth 0–0.5 (default: revenue growth).",
-            },
-            {
-                "name": "terminal_growth_rate",
-                "type": "text",
-                "default": "0.04",
-                "help": "Terminal growth 0–0.1.",
-            },
-            {
-                "name": "discount_rate",
-                "type": "text",
-                "default": "",
-                "help": "WACC/discount rate 0–0.5 (default: CAPM cost of equity).",
-            },
-            {"name": "years", "type": "int", "default": 5, "min": 1, "max": 20},
-            {"name": "beta", "type": "text", "default": "1.0"},
-        ],
-    },
     {
         "name": "News stories",
         "group": "Advanced Data Suite",
@@ -424,58 +463,9 @@ ADVANCED: List[Endpoint] = [
             {"name": "video_id", "type": "text", "required": True},
         ],
     },
-    {
-        "name": "Management sentiment",
-        "group": "Advanced Data Suite",
-        "method": "POST",
-        "path": "/sentiment/management",
-        "auth": "write",
-        "description": "Analyze management commentary for facts (async job, 202).",
-        "params": [
-            {
-                "name": "url",
-                "type": "text",
-                "default": "",
-                "help": "PDF/transcript URL to analyze.",
-            },
-            {
-                "name": "text",
-                "type": "text",
-                "default": "",
-                "help": "Or, raw text to analyze.",
-            },
-            {"name": "symbol", "type": "symbol", "default": ""},
-            {
-                "name": "source",
-                "type": "select",
-                "default": "nse",
-                "options": ["nse", "sec"],
-            },
-            {
-                "name": "model",
-                "type": "text",
-                "default": "",
-                "help": "LiteLLM model override.",
-            },
-        ],
-    },
 ]
 
 DUMMY: List[Endpoint] = [
-    {
-        "name": "Funds (not implemented)",
-        "group": "Placeholders",
-        "method": "GET",
-        "path": "/funds",
-        "auth": "key",
-    },
-    {
-        "name": "Macro (not implemented)",
-        "group": "Placeholders",
-        "method": "GET",
-        "path": "/macro",
-        "auth": "key",
-    },
     {
         "name": "News (not implemented)",
         "group": "Placeholders",

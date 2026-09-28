@@ -3,7 +3,7 @@
 RSS-first by design: feeds are cheap, structured, and rarely rate-limited.
 A dead feed is skipped, never fatal. Full-article text is extracted with
 trafilatura only when requested (``include_text``), else the feed summary is
-used — enough for ticker matching, dedupe, and sentiment inputs.
+used — enough for ticker matching and dedupe.
 """
 
 import asyncio

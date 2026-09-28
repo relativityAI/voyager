@@ -16,7 +16,12 @@ RATE_LIMIT_COLLECTION = "api_key_usage"
 ADMIN_KEY_CREATE_LIMIT = 10
 
 
-async def check_rate_limit(api_key: APIKey, now: int | None = None) -> None:
+async def check_rate_limit(api_key: APIKey, now: int | None = None) -> int:
+    """Count the request against the key's fixed window; return the count.
+
+    The count is used by the response middleware to set X-RateLimit-* headers
+    (audit P2-12) so clients can self-throttle.
+    """
     now = int(time.time()) if now is None else now
     window_start = now // 60 * 60
     doc_id = f"{api_key.prefix}:{window_start}"
@@ -40,7 +45,14 @@ async def check_rate_limit(api_key: APIKey, now: int | None = None) -> None:
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
             f"Rate limit exceeded for this key ({api_key.rpm} req/min)",
+            headers={
+                "X-RateLimit-Limit": str(api_key.rpm),
+                "X-RateLimit-Remaining": "0",
+                "X-RateLimit-Reset": str(window_start + 60),
+                "Retry-After": str(window_start + 60 - now),
+            },
         )
+    return count
 
 
 async def check_admin_key_rate_limit(now: int | None = None) -> None:

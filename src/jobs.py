@@ -47,7 +47,11 @@ class PullLimitReached(Exception):
 
 
 class PullAlreadyActive(Exception):
-    """This key already has a pull in progress."""
+    """This key already has a job of this type in progress."""
+
+
+class JobNotCancellable(Exception):
+    """Job cannot be cancelled (unknown, or already finished)."""
 
 
 def _pull_outcome(pull_result: Dict[str, Any]) -> str:
@@ -97,22 +101,30 @@ async def reap_forever() -> None:
             logger.exception("Stale job sweep failed")
 
 
-async def _check_concurrency(created_by: Optional[str] = None) -> None:
+async def _check_concurrency(created_by: Optional[str] = None, task: Optional[str] = None) -> None:
+    """Enforce per-task-type slot limits.
+
+    Slots are counted per task kind (symbol pull vs documents.parse), so one
+    stuck documents job can no longer block a pull — the audit's P0 finding.
+    """
     factory = get_session_factory()
     async with factory() as session:
-        result = await session.execute(
-            select(PullJobModel).where(
-                PullJobModel.status.in_(list(ACTIVE_STATUSES))
-            )
-        )
+        stmt = select(PullJobModel).where(PullJobModel.status.in_(list(ACTIVE_STATUSES)))
+        if task:
+            stmt = stmt.where(PullJobModel.task == task)
+        else:
+            stmt = stmt.where(PullJobModel.task.is_(None))
+        result = await session.execute(stmt)
         active = list(result.scalars().all())
 
     if len(active) >= MAX_CONCURRENT_PULLS:
+        kind = task or "pull"
         raise PullLimitReached(
-            f"Too many jobs in progress ({len(active)} >= {MAX_CONCURRENT_PULLS}). Try again shortly."
+            f"Too many {kind} jobs in progress ({len(active)} >= {MAX_CONCURRENT_PULLS}). Try again shortly."
         )
     if created_by and any(j.created_by == created_by for j in active):
-        raise PullAlreadyActive("A job for this key is already in progress.")
+        kind = task or "pull"
+        raise PullAlreadyActive(f"A {kind} job for this key is already in progress.")
 
 
 async def submit_pull(
@@ -151,8 +163,8 @@ async def submit_task(
     task_args: Dict[str, Any],
     created_by: Optional[str] = None,
 ) -> PullJobModel:
-    """Submit a generic async analytics job (parse PDF, sentiment, etc.)."""
-    await _check_concurrency(created_by)
+    """Submit a generic async analytics job (e.g. parse PDF)."""
+    await _check_concurrency(created_by, task=task)
 
     symbol = task_args.get("symbol") or "*"
     job = PullJobModel(
@@ -221,6 +233,47 @@ async def _run_job(job: PullJobModel) -> None:
             await session.commit()
             _inflight.discard(db_job.job_id)
 
+    # Optional webhook (audit P3-13): notify the submitter instead of polling.
+    callback_url = (db_job.task_args or {}).get("callback_url") or (
+        job.task_args or {}
+    ).get("callback_url")
+    if callback_url:
+        await asyncio.to_thread(
+            _post_callback,
+            callback_url,
+            {
+                "event": "job.completed",
+                "job_id": db_job.job_id,
+                "task": db_job.task,
+                "symbol": db_job.symbol,
+                "status": db_job.status,
+                "error": db_job.error,
+                "finished_at": db_job.finished_at.isoformat()
+                if db_job.finished_at
+                else None,
+            },
+        )
+
+
+def _post_callback(url: str, payload: Dict[str, Any]) -> None:
+    """Fire-and-forget webhook; failures are logged, never raised."""
+    import json as _json
+    from urllib.request import Request, urlopen
+
+    try:
+        req = Request(  # noqa: S310
+            url,
+            data=_json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(req, timeout=10) as resp:  # noqa: S310
+            logger.info(
+                f"Callback for job {payload.get('job_id')} -> {url}: HTTP {resp.status}"
+            )
+    except Exception as exc:  # noqa: BLE001 - a webhook failure must not fail the job
+        logger.warning(f"Callback to {url} failed for job {payload.get('job_id')}: {exc}")
+
 
 async def _dispatch(db_job: PullJobModel) -> Dict[str, Any]:
     """Run the work for a job row (task, SEC pull, or NSE pull)."""
@@ -243,10 +296,6 @@ async def _run_task(task: str, task_args: Dict[str, Any]) -> Dict[str, Any]:
         from src.services.documents import parse_document
 
         return await parse_document(task_args)
-    if task == "sentiment.management":
-        from src.services.sentiment import run_sentiment_analysis
-
-        return await run_sentiment_analysis(task_args)
     raise ValueError(f"Unknown task: {task}")
 
 
@@ -268,3 +317,35 @@ async def list_jobs(limit: int = 20) -> List[PullJobModel]:
             .limit(max(1, min(limit, 100)))
         )
         return list(result.scalars().all())
+
+
+async def cancel_job(job_id: str, created_by: Optional[str] = None) -> PullJobModel:
+    """Cancel a queued/running job so it frees its concurrency slot.
+
+    Escape hatch for the stuck-job case observed in the audit: a documents job
+    hung in 'running' on Render blocked every later task for the key with 409s.
+    In-process asyncio tasks cannot be force-killed across a restart, so this
+    marks the row failed; when the orphaned task eventually finishes it finds a
+    terminal row and its write is harmless. Only the owning key (or an
+    already-anonymous job) may cancel.
+    """
+    factory = get_session_factory()
+    async with factory() as session:
+        result = await session.execute(
+            select(PullJobModel).where(PullJobModel.job_id == job_id)
+        )
+        job = result.scalar_one_or_none()
+        if job is None:
+            raise ValueError("not found")
+        if job.status not in ACTIVE_STATUSES:
+            raise JobNotCancellable(
+                f"Job {job_id} is already '{job.status}' and cannot be cancelled."
+            )
+        if created_by and job.created_by and job.created_by != created_by:
+            raise PermissionError("Job belongs to a different API key.")
+        job.status = "failed"
+        job.error = "Cancelled by request."
+        job.finished_at = utcnow()
+        await session.commit()
+        logger.warning(f"Job {job_id} cancelled via API (by {created_by or 'unknown'})")
+        return job

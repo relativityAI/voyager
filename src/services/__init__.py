@@ -6,8 +6,7 @@ from ._common import (
     UnsupportedSourceError,
     UpstreamError,
 )
-from .dcf import dcf_valuation
-from .lists import list_category
+from .lists import list_category, search_symbols
 from .metrics import financial_metrics
 from .news import get_news_stories, get_ticker_mentions
 from .nse import (
@@ -34,7 +33,7 @@ __all__ = [
     "ServiceUnavailableError",
     "UpstreamError",
     "list_category",
-    "dcf_valuation",
+    "search_symbols",
     "get_news_stories",
     "get_ticker_mentions",
     "get_reddit",

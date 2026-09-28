@@ -137,22 +137,27 @@ Data endpoints require an API key via the `X-API-Key` (or `Authorization: Bearer
 | `GET /readyz` | 🔓 | Readiness probe — 503 when the DB is unreachable |
 | `GET /metrics` | 🔓 | Prometheus metrics (default on; disable with `METRICS_ENABLED=false`) |
 | `GET /list?category=sources` | 🔑 | Available categories: `sources`, `countries`, `industries`, `sectors`, `indices` |
+| `GET /search?q=relian` | 🔑 | Case-insensitive symbol search over the DB, ranked by data coverage |
 | `GET /financials?symbol=VBL` | 🔑 | Latest income + balance + cash-flow merged into one doc |
 | `GET /financials/income-statements` | 🔑 | Raw statement rows (also `balance-sheets`, `cash-flows`) |
 | `POST /pull?symbol=VBL&filing_type=quarterly` | ✍️ | Submit async pull job → `202` with `job_id` (see [Async pulls](#async-pulls)) |
 | `GET /pull?symbol=VBL` | 🔑 | Pull history, record counts, date coverage per collection |
 | `GET /pull/jobs/{job_id}` | ✍️ | Poll status of a pull job |
+| `DELETE /pull/jobs/{job_id}` | ✍️ | Cancel a queued/running job (frees its concurrency slot) |
 | `GET /pull/jobs?limit=20` | ✍️ | Recent pull jobs |
-| `GET /financial-metrics?symbol=VBL` | 🔑 | Computed metrics (this repo's core) |
+| `GET /financial-metrics?symbol=VBL` | 🔑 | Computed metrics (this repo's core). `&fields=pe_field,roe_field` keeps only those metrics (+ identifier meta) |
+| `GET /financial-metrics/batch?symbols=VBL,TCS` | 🔑 | Same, for up to 10 symbols in one call; per-symbol errors don't fail the batch |
 | `GET /announcements?symbol=VBL&market=equities` | 🔑 | Corporate announcements (`equities` or `sme`) |
 | `GET /shareholdings?symbol=VBL` | 🔑 | Latest promoter / FII / DII / public holding pattern |
 | `GET /admin/keys` | 🛡️ | List API keys (prefixes only — hashes never returned) |
 | `POST /admin/keys` | 🛡️ | Create a key; body `{name, owner?, scopes?, rpm?, expires_in_days?}` |
 | `DELETE /admin/keys/{prefix}` | 🛡️ | Revoke a key |
 | `POST /admin/keys/{prefix}/enable` | 🛡️ | Re-enable a revoked key |
-| `GET /funds`, `/macro`, `/news` | 🔑 | Not yet implemented |
+| `GET /news` | 🔑 | Not yet implemented |
 
 Financial endpoints take a single `source` query param (`source=sec` for US/EDGAR, `source=nse` for India/NSE, the default); the country is derived from the source. An unknown source returns `501`.
+
+**Not-found convention**: a symbol with no pulled data returns `200` with `"data_available": false` from metrics endpoints (so batch calls never break), while endpoints that address a single known resource (`/pull?symbol=`, `/pull/jobs/{id}`, documents) return `404`.
 
 ```bash
 curl -H "X-API-Key: $VOYAGER_API_KEY" \
@@ -187,7 +192,7 @@ curl -X POST -H "X-API-Key: $VOYAGER_API_KEY" \
 curl -H "X-API-Key: $VOYAGER_API_KEY" "http://localhost:8001/pull/jobs/$JOB_ID"
 ```
 
-Concurrency is capped (default `MAX_CONCURRENT_PULLS=2`, one active pull per symbol) and stale jobs are reaped on startup. Pulls mutate the database — that's why they need `data:write`.
+Concurrency is capped (default `MAX_CONCURRENT_PULLS=2`, **per task kind**: symbol pulls and document parses each get their own slots) and stale jobs are reaped on a timer. A job that outstays `JOB_TIMEOUT_SECONDS` fails itself; a stuck job can also be cancelled explicitly with `DELETE /pull/jobs/{job_id}`. Pulls mutate the database — that's why they need `data:write`.
 
 ### Remote client CLI
 

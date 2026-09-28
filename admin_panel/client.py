@@ -22,6 +22,7 @@ JOB_TIMEOUT = 30
 WAKE_RETRIES = 20
 WAKE_GAP_SECONDS = 5
 RETRYABLE_STATUS = {502, 503}
+SAFE_METHODS = {"GET", "HEAD"}
 
 
 @dataclass
@@ -73,10 +74,16 @@ class VoyagerClient:
         admin: bool = False,
         timeout: int = DATA_TIMEOUT,
         ok_status: tuple = (200, 201, 202),
-        retries: int = 3,
+        retries: Optional[int] = None,
     ) -> Response:
         if not self.base_url:
             raise PanelHTTPError(0, "No API endpoint configured.")
+        if retries is None:
+            # Only idempotent methods may be replayed. A cold-start 502 after
+            # POST /pull or POST /admin/keys was already processed server-side,
+            # so retrying it queued a duplicate job and burned the key-creation
+            # rate limit instead of helping.
+            retries = 3 if method.upper() in SAFE_METHODS else 0
         headers = self._headers(admin)
         attempt = 0
         while True:
@@ -130,19 +137,19 @@ class VoyagerClient:
 
     # -- convenience ---------------------------------------------------------
 
-    def get(self, path: str, params=None, admin=False, timeout=DATA_TIMEOUT, retries=3,
+    def get(self, path: str, params=None, admin=False, timeout=DATA_TIMEOUT, retries=None,
             ok_status=(200, 201, 202)) -> Response:
         return self.request("GET", path, params=params, admin=admin, timeout=timeout,
                             retries=retries, ok_status=ok_status)
 
     def post(self, path: str, params=None, json=None, admin=False, timeout=DATA_TIMEOUT,
-             retries=3, ok_status=(200, 201, 202)) -> Response:
+             retries=None, ok_status=(200, 201, 202)) -> Response:
         return self.request(
             "POST", path, params=params, json=json, admin=admin, timeout=timeout,
             retries=retries, ok_status=ok_status,
         )
 
-    def delete(self, path: str, admin=False, retries=3) -> Response:
+    def delete(self, path: str, admin=False, retries=None) -> Response:
         return self.request("DELETE", path, admin=admin, ok_status=(200,), retries=retries)
 
     # -- health / wake --------------------------------------------------------

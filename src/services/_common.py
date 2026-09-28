@@ -54,6 +54,9 @@ def _load_priority_metrics() -> Dict[str, Set[str]]:
     return result
 
 
+# Fields always kept in filtered (default) responses. Scraper internals with
+# raw XBRL noise (source_endpoint, context_ref_type dimension lists) are
+# excluded by default — pass all_fields=true to see them (audit P1-6).
 _PRIORITY_FIELD_KEEP = {
     "symbol",
     "period_end_date",
@@ -65,8 +68,6 @@ _PRIORITY_FIELD_KEEP = {
     "entity_identifier",
     "fiscal_period",
     "filing_type",
-    "source_endpoint",
-    "context_ref_type",
     "pulled_at",
     "data_quality",
 }

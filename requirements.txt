@@ -42,9 +42,6 @@ youtube-transcript-api==1.2.4
 yt-dlp==2026.8.19
 praw==8.0.3
 
-# Multi-provider LLM calls (management sentiment)
-litellm==1.100.0
-
 # Config / logging
 python-dotenv==1.1.0
 loguru==0.7.3

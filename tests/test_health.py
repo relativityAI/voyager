@@ -76,6 +76,6 @@ def test_admin_keys_wrong_admin_header(plain_client, no_auth_override):
 
 
 def test_keyed_endpoint_works_with_valid_key(client):
-    resp = client.get("/funds")
+    resp = client.get("/list", params={"category": "sources"})
     assert resp.status_code == 200
-    assert resp.json()["status"] == "not_implemented"
+    assert resp.json()["category"] == "sources"
