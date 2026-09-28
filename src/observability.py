@@ -53,7 +53,13 @@ class HttpCacheMiddleware(BaseHTTPMiddleware):
         etag = _etag_for(body)
         response.headers["Cache-Control"] = f"public, max-age={_CACHE_MAX_AGE}"
         response.headers["ETag"] = etag
-        if request.headers.get("if-none-match") == etag:
+        # Compare tolerant of a W/ weak prefix: some proxies (e.g. Render's)
+        # rewrite ETags to weak form, and RFC 7232 says a weak comparison is
+        # valid for If-None-Match on GET.
+        if_none = request.headers.get("if-none-match", "").strip()
+        if if_none.startswith("W/"):
+            if_none = if_none[2:]
+        if if_none == etag:
             return Response(status_code=304, headers=dict(response.headers))
         return Response(
             content=body,

@@ -148,6 +148,18 @@ class TestCachingAndPagination:
             )
         assert second.status_code == 304
 
+    def test_conditional_get_tolerates_weak_etag(self):
+        """Proxies like Render's rewrite ETags to W/ form; 304 must still fire."""
+        body = {"country": "in", "stories": []}
+        with patch("api.get_news_stories", new=AsyncMock(return_value=body)):
+            first = client.get("/news/stories?country=in")
+            weak = 'W/' + first.headers["ETag"]
+            second = client.get(
+                "/news/stories?country=in",
+                headers={"If-None-Match": weak},
+            )
+        assert second.status_code == 304
+
     def test_non_cacheable_paths_unaffected(self):
         with patch(
             "api.search_symbols",
