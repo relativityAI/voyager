@@ -145,6 +145,11 @@ class TestFetchTechnicals:
             index=dates[::-1],
         )
 
+    def _mock_history(self, hist: pd.DataFrame):
+        """fetch_technicals reads via fetch_history since the multi-timeframe
+        refactor; patch at the same seam the tests always targeted."""
+        return patch("src.tools.nse.technicals.fetch_history", return_value=hist)
+
     def _clear_caches(self):
         from src.tools.nse.technicals import _RAW_CACHE, _cache
 
@@ -157,9 +162,7 @@ class TestFetchTechnicals:
         mock_ticker = MagicMock()
         mock_ticker.history.return_value = hist
 
-        with patch(
-            "src.tools.nse.technicals._get_yf_raw", return_value=(mock_ticker, hist)
-        ):
+        with self._mock_history(hist):
             result = fetch_technicals("TSTSUCC", "NSE")
             assert "current_price" in result
             assert result["current_price"] is not None
@@ -171,9 +174,7 @@ class TestFetchTechnicals:
         mock_ticker = MagicMock()
         mock_ticker.history.return_value = hist
 
-        with patch(
-            "src.tools.nse.technicals._get_yf_raw", return_value=(mock_ticker, hist)
-        ):
+        with self._mock_history(hist):
             result = fetch_technicals("TSTALL", "NSE")
             expected_keys = [
                 "current_price",
@@ -204,9 +205,7 @@ class TestFetchTechnicals:
         mock_ticker = MagicMock()
         mock_ticker.history.return_value = hist
 
-        with patch(
-            "src.tools.nse.technicals._get_yf_raw", return_value=(mock_ticker, hist)
-        ):
+        with self._mock_history(hist):
             result = fetch_technicals("TSTINSF", "NSE")
             assert result["current_price"] is not None
             assert "sma_200" not in result
@@ -219,9 +218,7 @@ class TestFetchTechnicals:
         mock_ticker = MagicMock()
         mock_ticker.history.return_value = hist
 
-        with patch(
-            "src.tools.nse.technicals._get_yf_raw", return_value=(mock_ticker, hist)
-        ):
+        with self._mock_history(hist):
             result = fetch_technicals("TSTNAN", "NSE")
             for key, val in result.items():
                 if isinstance(val, float):
@@ -233,10 +230,7 @@ class TestFetchTechnicals:
         mock_ticker = MagicMock()
         mock_ticker.history.return_value = pd.DataFrame()
 
-        with patch(
-            "src.tools.nse.technicals._get_yf_raw",
-            return_value=(mock_ticker, pd.DataFrame()),
-        ):
+        with self._mock_history(pd.DataFrame()):
             result = fetch_technicals("TSTEMPT", "NSE")
             assert "error" in result
 
@@ -248,12 +242,15 @@ class TestFetchTechnicals:
 
         call_count = 0
 
-        def raw_side_effect(*args, **kwargs):
+        def hist_side_effect(*args, **kwargs):
             nonlocal call_count
             call_count += 1
-            return (mock_ticker, hist)
+            return hist
 
-        with patch("src.tools.nse.technicals._get_yf_raw", side_effect=raw_side_effect):
+        with patch(
+            "src.tools.nse.technicals.fetch_history",
+            side_effect=hist_side_effect,
+        ):
             result1 = fetch_technicals("TSTCACH", "NSE")
             result2 = fetch_technicals("TSTCACH", "NSE")
             assert result1 == result2

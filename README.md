@@ -147,6 +147,8 @@ Data endpoints require an API key via the `X-API-Key` (or `Authorization: Bearer
 | `GET /pull/jobs?limit=20` | ✍️ | Recent pull jobs |
 | `GET /financial-metrics?symbol=VBL` | 🔑 | Computed metrics (this repo's core). `&fields=pe_field,roe_field` keeps only those metrics (+ identifier meta) |
 | `GET /financial-metrics/batch?symbols=VBL,TCS` | 🔑 | Same, for up to 10 symbols in one call; per-symbol errors don't fail the batch |
+| `GET /history?symbol=VBL&period=1y&interval=1d` | 🔑 | Raw OHLCV price history (daily, or intraday via `interval=5m`/`15m`/`1h`) |
+| `GET /technicals?symbol=VBL&timeframes=daily,weekly,monthly` | 🔑 | End-to-end technical analysis report: multi-timeframe indicators, structure, patterns, levels, scenarios. Sections degrade to `unsupported` with a reason instead of failing |
 | `GET /announcements?symbol=VBL&market=equities` | 🔑 | Corporate announcements (`equities` or `sme`) |
 | `GET /shareholdings?symbol=VBL` | 🔑 | Latest promoter / FII / DII / public holding pattern |
 | `GET /admin/keys` | 🛡️ | List API keys (prefixes only — hashes never returned) |
@@ -154,6 +156,8 @@ Data endpoints require an API key via the `X-API-Key` (or `Authorization: Bearer
 | `DELETE /admin/keys/{prefix}` | 🛡️ | Revoke a key |
 | `POST /admin/keys/{prefix}/enable` | 🛡️ | Re-enable a revoked key |
 | `GET /news` | 🔑 | Not yet implemented |
+
+> The advanced suite also serves `GET /technicals` (60-section technical analysis report) and `GET /history` (raw OHLCV) — see the [Advanced Data Suite](#advanced-data-suite-1) tag in `/docs`.
 
 Financial endpoints take a single `source` query param (`source=sec` for US/EDGAR, `source=nse` for India/NSE, the default); the country is derived from the source. An unknown source returns `501`.
 
@@ -215,6 +219,7 @@ python -m client pull VBL --watch        # submit + poll until done (needs data:
 python -m client pull-jobs
 python -m client pull-job <job_id>      # status + endpoint breakdown
 python -m client pull-status VBL
+python -m client technicals VBL --out report.json   # end-to-end technical analysis
 ```
 
 Key management needs `VOYAGER_ADMIN_KEY`:

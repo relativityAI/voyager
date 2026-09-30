@@ -3,6 +3,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 import yfinance as yf
 from loguru import logger
@@ -110,6 +111,111 @@ def _obv(close: pd.Series, volume: pd.Series) -> pd.Series:
     return (direction * volume).cumsum()
 
 
+def _adx(high: pd.Series, low: pd.Series, close: pd.Series, length: int = 14):
+    """Wilder's ADX with +DI / -DI. Returns (adx, plus_di, minus_di)."""
+    up = high.diff()
+    down = -low.diff()
+    plus_dm = up.where((up > down) & (up > 0), 0.0)
+    minus_dm = down.where((down > up) & (down > 0), 0.0)
+    prev_close = close.shift(1)
+    tr = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
+    ).max(axis=1)
+    atr = tr.ewm(alpha=1.0 / length, adjust=False).mean()
+    plus_di = 100.0 * plus_dm.ewm(alpha=1.0 / length, adjust=False).mean() / atr
+    minus_di = 100.0 * minus_dm.ewm(alpha=1.0 / length, adjust=False).mean() / atr
+    di_sum = (plus_di + minus_di)
+    dx = 100.0 * (plus_di - minus_di).abs() / di_sum
+    dx = dx.where(di_sum != 0)  # avoid div-by-zero -> NaN, keep float dtype
+    adx = dx.ewm(alpha=1.0 / length, adjust=False).mean()
+    return adx, plus_di, minus_di
+
+
+def _cci(high: pd.Series, low: pd.Series, close: pd.Series, length: int = 20) -> pd.Series:
+    tp = (high + low + close) / 3.0
+    sma_tp = tp.rolling(length).mean()
+    mean_dev = tp.rolling(length).apply(lambda w: float(np.abs(w - w.mean()).mean()), raw=True)
+    return (tp - sma_tp) / (0.015 * mean_dev)
+
+
+def _williams_r(high: pd.Series, low: pd.Series, close: pd.Series, length: int = 14) -> pd.Series:
+    hh = high.rolling(length).max()
+    ll = low.rolling(length).min()
+    rng = hh - ll
+    wr = -100.0 * (hh - close) / rng
+    return wr.where(rng != 0)  # degenerate flat range -> NaN, never +-inf
+
+
+def _acc_dist(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series) -> pd.Series:
+    """Chaikin Accumulation/Distribution line: CLV-weighted volume cumsum."""
+    hl_range = (high - low).where((high - low) != 0)  # NaN, keep float dtype
+    clv = ((close - low) - (high - close)) / hl_range
+    return ((clv * volume).fillna(0.0)).cumsum()
+
+
+def _vwap_session(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series) -> pd.Series:
+    """Rolling 1-bar-anchored VWAP proxy on intraday frames; on daily frames
+    callers compute the anchored (session-start) variant instead."""
+    tp = (high + low + close) / 3.0
+    vol_cum = volume.cumsum()
+    vwap = (tp * volume).cumsum() / vol_cum
+    return vwap.where(vol_cum != 0)  # avoid div-by-zero -> NaN, keep float dtype
+
+
+def _hist_volatility(close: pd.Series, length: int = 20, bars_per_year: int = 252) -> pd.Series:
+    log_ret = np.log(close / close.shift(1))
+    return log_ret.rolling(length).std(ddof=1) * math.sqrt(bars_per_year) * 100.0
+
+
+def _ichimoku(high: pd.Series, low: pd.Series, close: pd.Series):
+    def _mid(length: int) -> pd.Series:
+        return (high.rolling(length).max() + low.rolling(length).min()) / 2.0
+
+    tenkan = _mid(9)
+    kijun = _mid(26)
+    senkou_a = ((tenkan + kijun) / 2.0).shift(26)
+    senkou_b = _mid(52).shift(26)
+    chikou = close.shift(-26)
+    return tenkan, kijun, senkou_a, senkou_b, chikou
+
+
+def _fib_levels(high: pd.Series, low: pd.Series, lookback: int = 120) -> Dict[str, Any]:
+    """Retracement levels from the dominant swing of the last `lookback` bars.
+    `direction` records which way the swing ran so consumers know whether the
+    levels are retracements of an up-move or a down-move."""
+    window = high.tail(lookback)
+    window_low = low.tail(lookback)
+    swing_high = _to_valid_float(window.max())
+    swing_low = _to_valid_float(window_low.min())
+    if swing_high is None or swing_low is None or swing_high == swing_low:
+        return {}
+    swing_high_idx = window.idxmax()
+    swing_low_idx = window_low.idxmin()
+    direction = "up" if swing_high_idx >= swing_low_idx else "down"
+    diff = swing_high - swing_low
+    ratios = {
+        "0.0%": 0.0,
+        "23.6%": 0.236,
+        "38.2%": 0.382,
+        "50.0%": 0.5,
+        "61.8%": 0.618,
+        "78.6%": 0.786,
+        "100.0%": 1.0,
+    }
+    levels = {}
+    for label, r in ratios.items():
+        if direction == "up":
+            levels[label] = round(swing_high - diff * r, 4)
+        else:
+            levels[label] = round(swing_low + diff * r, 4)
+    return {
+        "swing_high": swing_high,
+        "swing_low": swing_low,
+        "direction": direction,
+        "levels": levels,
+    }
+
+
 def _get_cached(key: str) -> Optional[Dict[str, Any]]:
     entry = _cache.get(key)
     if entry and (time.time() - entry["ts"]) < CACHE_TTL:
@@ -204,6 +310,8 @@ def fetch_price_info(symbol: str, exchange: str = "NSE") -> Dict[str, Any]:
     current_price = _to_valid_float(
         info.get("currentPrice") or info.get("regularMarketPrice")
     )
+    # Live info may lag or be blocked; the last *completed* close is the
+    # next-best source. fetch_history() drops the NaN partial candle.
     if current_price is None and hist is not None and not hist.empty and "Close" in hist:
         valid_closes = hist["Close"].dropna()
         if not valid_closes.empty:
@@ -216,36 +324,101 @@ def fetch_price_info(symbol: str, exchange: str = "NSE") -> Dict[str, Any]:
     return {"current_price": current_price, "shares_outstanding": shares}
 
 
+def fetch_history(
+    symbol: str,
+    exchange: str = "NSE",
+    period: str = "1y",
+    interval: str = "1d",
+) -> pd.DataFrame:
+    """Raw OHLCV history (cached). Partial candles (a live day whose OHLC is
+    still NaN) are dropped so indicator last-values are never poisoned."""
+    key = f"{symbol}:{exchange}:hist:{period}:{interval}"
+    with _yf_lock:
+        entry = _RAW_CACHE.get(key)
+        if entry and (time.time() - entry["ts"]) < RAW_CACHE_TTL:
+            return entry["data"]
+
+    yf_symbol = _generate_yf_symbol(symbol, exchange)
+    try:
+        with _yf_lock:
+            ticker = yf.Ticker(yf_symbol)
+            hist = ticker.history(period=period, interval=interval)
+    except Exception as exc:  # noqa: BLE001 - never crash callers
+        logger.warning(f"yfinance history failed for {yf_symbol}: {exc!r}")
+        hist = pd.DataFrame()
+    if hist is not None and not hist.empty:
+        # Drop the live bar when Yahoo pre-allocates it with NaN OHLC:
+        # every rolling indicator would otherwise read NaN at idx -1.
+        hist = hist.dropna(subset=["Open", "High", "Low", "Close"], how="any")
+    if hist is None or hist.empty:
+        logger.warning(
+            f"yfinance returned no history for {yf_symbol} "
+            f"(Yahoo often rate-limits shared/datacenter IPs)"
+        )
+        hist = pd.DataFrame()
+
+    with _yf_lock:
+        _RAW_CACHE[key] = {"ts": time.time(), "data": hist}
+        _cache_evict(_RAW_CACHE)
+        _cache_evict(_cache)
+    return hist
+
+
+def _resample_ohlcv(hist: pd.DataFrame, rule: str) -> pd.DataFrame:
+    """Daily -> weekly/monthly OHLCV. 'W' keeps Sunday week-start labels
+    (pandas default); periods are anchored on actual timestamps so the
+    last-value extraction stays correct either way."""
+    agg = {
+        "Open": "first",
+        "High": "max",
+        "Low": "min",
+        "Close": "last",
+    }
+    if "Volume" in hist.columns:
+        agg["Volume"] = "sum"
+    return hist.resample(rule).agg(agg).dropna(subset=["Open", "Close"], how="any")
+
+
+_TIMEFRAMES = {
+    "daily": (None, "1y"),
+    "weekly": ("W", "2y"),
+    "monthly": ("ME", "5y"),
+}
+
+
 def fetch_technicals(
-    symbol: str, exchange: str = "NSE", period: str = "1y"
+    symbol: str,
+    exchange: str = "NSE",
+    period: str = "1y",
+    timeframe: str = "daily",
 ) -> Dict[str, Any]:
-    yf_key = f"{symbol}:{exchange}:technicals"
+    """Indicator last-values on one timeframe. weekly/monthly resample the
+    daily feed (no extra fetches); timeframes beyond `daily` are exposed by
+    the /history and /technicals endpoints."""
+    if timeframe not in _TIMEFRAMES:
+        raise ValueError(f"Unknown timeframe '{timeframe}'. Use: {list(_TIMEFRAMES)}")
+
+    yf_key = f"{symbol}:{exchange}:technicals:{timeframe}"
     cached = _get_cached(yf_key)
     if cached is not None:
         return cached
 
-    ticker, hist = _get_yf_raw(symbol, exchange)
-
+    resample_rule, fetch_period = _TIMEFRAMES[timeframe]
+    hist = fetch_history(symbol, exchange, period=fetch_period)
     if hist.empty:
         return {
             "current_price": None,
             "error": f"No price data for {symbol}.{exchange}",
         }
+    if resample_rule is not None:
+        hist = _resample_ohlcv(hist, resample_rule)
+        if hist.empty:
+            return {
+                "current_price": None,
+                "error": f"No resampled data for {symbol}.{exchange}",
+            }
 
-    info = {}
-    with _yf_lock:
-        try:
-            info = ticker.info or {}
-        except Exception as exc:  # noqa: BLE001 - rate limits should not crash callers
-            logger.debug(f"yfinance info failed for {symbol}.{exchange}: {exc}")
-    current_price = _to_valid_float(
-        info.get("currentPrice") or info.get("regularMarketPrice")
-    )
-    if current_price is None:
-        valid_closes = hist["Close"].dropna()
-        current_price = (
-            _to_valid_float(valid_closes.iloc[-1]) if not valid_closes.empty else None
-        )
+    current_price = _to_valid_float(hist["Close"].dropna().iloc[-1])
 
     technicals: Dict[str, Any] = {
         "current_price": current_price,
@@ -286,12 +459,33 @@ def fetch_technicals(
         _add("bb_lower", bbl)
     if len(close) >= 14:
         _add("atr_14", _atr(high, low, close, 14))
+        _add("williams_r_14", _williams_r(high, low, close, 14))
+        adx, plus_di, minus_di = _adx(high, low, close, 14)
+        _add("adx_14", adx)
+        _add("plus_di_14", plus_di)
+        _add("minus_di_14", minus_di)
+    if len(close) >= 20:
+        _add("cci_20", _cci(high, low, close, 20))
     if len(close) >= 14:
         k_line, d_line = _stoch(high, low, close, 14, 3, 3)
         _add("stoch_k", k_line)
         _add("stoch_d", d_line)
     if volume is not None and not volume.empty:
         _add("obv", _obv(close, volume))
+        _add("acc_dist", _acc_dist(high, low, close, volume))
+    if len(close) >= 26:
+        tenkan, kijun, senkou_a, senkou_b, chikou = _ichimoku(high, low, close)
+        _add("ichimoku_tenkan", tenkan)
+        _add("ichimoku_kijun", kijun)
+        _add("ichimoku_senkou_a", senkou_a)
+        _add("ichimoku_senkou_b", senkou_b)
+        # chikou is shifted into the future; guard the slice explicitly.
+        if len(close) > 26:
+            _add("ichimoku_chikou", chikou)
+
+    # Bounded extra output (volume profile, fib, gaps) comes from
+    # patterns.py — the raw frame is handed over there, not recomputed.
+    technicals["bars"] = int(len(close))
 
     _set_cache(yf_key, technicals)
     return technicals
@@ -299,6 +493,17 @@ def fetch_technicals(
 
 TECHNICALS_METRICS: List[Dict[str, Any]] = [
     {"id": "current_price", "name": "Current Price", "type": "price"},
+    {"id": "adx_14", "name": "Average Directional Index (14)", "type": "trend"},
+    {"id": "plus_di_14", "name": "Plus Directional Indicator (+DI 14)", "type": "trend"},
+    {"id": "minus_di_14", "name": "Minus Directional Indicator (-DI 14)", "type": "trend"},
+    {"id": "cci_20", "name": "Commodity Channel Index (20)", "type": "oscillator"},
+    {"id": "williams_r_14", "name": "Williams %R (14)", "type": "oscillator"},
+    {"id": "acc_dist", "name": "Accumulation/Distribution Line", "type": "volume"},
+    {"id": "ichimoku_tenkan", "name": "Ichimoku Tenkan-sen (9)", "type": "price"},
+    {"id": "ichimoku_kijun", "name": "Ichimoku Kijun-sen (26)", "type": "price"},
+    {"id": "ichimoku_senkou_a", "name": "Ichimoku Senkou Span A", "type": "price"},
+    {"id": "ichimoku_senkou_b", "name": "Ichimoku Senkou Span B", "type": "price"},
+    {"id": "ichimoku_chikou", "name": "Ichimoku Chikou Span", "type": "price"},
     {"id": "sma_20", "name": "Simple Moving Average (20)", "type": "price"},
     {"id": "sma_50", "name": "Simple Moving Average (50)", "type": "price"},
     {"id": "sma_200", "name": "Simple Moving Average (200)", "type": "price"},

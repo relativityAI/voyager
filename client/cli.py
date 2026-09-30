@@ -294,6 +294,50 @@ def shareholdings(
 
 
 @app.command()
+def technicals(
+    symbol: str,
+    timeframes: str = typer.Option(
+        "daily,weekly,monthly",
+        help="Comma-separated: intraday, daily, weekly, monthly",
+    ),
+    source: str = typer.Option("nse"),
+    out: Optional[str] = typer.Option(
+        None, "--out", help="Write the full JSON report to this file"
+    ),
+):
+    """End-to-end technical analysis report (GET /technicals)."""
+    try:
+        data = _client().get(
+            "/technicals",
+            params={"symbol": symbol, "timeframes": timeframes, "source": source},
+        )
+    except VoyagerError as exc:
+        _fatal(exc)
+        return
+
+    sections = data.get("sections", {})
+    ok = sum(1 for s in sections.values() if s.get("status") == "ok")
+    console.print(
+        f"[bold cyan]Technical report: {symbol}[/bold cyan]  "
+        f"{ok}/{len(sections)} sections supported"
+    )
+
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("section")
+    table.add_column("status")
+    for name, sec in sections.items():
+        status = sec.get("status", "?")
+        style = "green" if status == "ok" else "yellow"
+        table.add_row(name, f"[{style}]{status}[/{style}]")
+    console.print(table)
+
+    if out:
+        with open(out, "w") as f:
+            json.dump(data, f, indent=2, default=str)
+        console.print(f"[green]Full report written to {out}[/green]")
+
+
+@app.command()
 def list_categories(
     category: str = typer.Option("sources"),
     country: str = typer.Option("in"),

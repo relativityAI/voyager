@@ -53,6 +53,7 @@ from src.services import (
 )
 from src.services._common import _validate_source
 from src.services.documents import get_document_index
+from src.services.technical_report import build_technical_report
 
 load_dotenv()
 
@@ -396,6 +397,83 @@ async def pull_job_cancel(job_id: str, key: APIKey = Depends(require_scope("data
 async def pull_job_list(limit: int = Query(20, ge=1, le=100)):
     jobs = await list_jobs(limit)
     return [j.to_public_dict() for j in jobs]
+
+
+@app.get(
+    "/history",
+    summary="Raw OHLCV price history (daily, or intraday via interval)",
+    tags=["Advanced Data Suite"],
+    dependencies=[Depends(require_api_key)],
+)
+async def price_history(
+    symbol: str,
+    source: str = Query("nse"),
+    period: str = Query(
+        "1y",
+        description="3mo, 6mo, 1y, 2y, 5y, or max",
+    ),
+    interval: str = Query(
+        "1d",
+        description="1d (default) or an intraday interval like 5m, 15m, 1h",
+    ),
+):
+    from src.tools.nse.technicals import fetch_history
+    from src.services._common import InvalidRequestError
+
+    _, source_u = _validate_source(None, source)
+    if source_u != "NSE":
+        raise InvalidRequestError("/history currently supports source=nse")
+    period = period.lower()
+    if period not in ("3mo", "6mo", "1y", "2y", "5y", "max"):
+        raise InvalidRequestError("period must be one of 3mo, 6mo, 1y, 2y, 5y, max")
+    hist = await asyncio.to_thread(fetch_history, symbol.upper(), "NSE", period, interval)
+    if hist is None or hist.empty:
+        raise HTTPException(status_code=404, detail=f"No price history for {symbol.upper()}")
+    rows = [
+        {
+            "date": str(ts),
+            "open": float(r["Open"]),
+            "high": float(r["High"]),
+            "low": float(r["Low"]),
+            "close": float(r["Close"]),
+            "volume": int(r["Volume"]) if r.get("Volume") == r.get("Volume") else None,
+        }
+        for ts, r in hist.iterrows()
+    ]
+    return {
+        "symbol": symbol.upper(),
+        "period": period,
+        "interval": interval,
+        "bars": len(rows),
+        "data": rows,
+    }
+
+
+@app.get(
+    "/technicals",
+    summary=(
+        "End-to-end technical analysis report: 60 sections covering "
+        "multi-timeframe indicators, structure, patterns, levels and scenarios"
+    ),
+    tags=["Advanced Data Suite"],
+    dependencies=[Depends(require_api_key)],
+)
+async def technicals_report(
+    symbol: str,
+    source: str = Query("nse"),
+    timeframes: str = Query(
+        "daily,weekly,monthly",
+        description="Comma-separated: intraday, daily, weekly, monthly",
+    ),
+):
+    _, source_u = _validate_source(None, source)
+    if source_u != "NSE":
+        raise InvalidRequestError("/technicals currently supports source=nse")
+    announcements = await get_announcements(symbol, None, source, "equities")
+    ann_items = announcements.get("announcements") if isinstance(announcements, dict) else None
+    return await build_technical_report(
+        symbol.upper(), source_u, timeframes, ann_items
+    )
 
 
 @app.get(

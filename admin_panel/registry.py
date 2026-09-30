@@ -353,6 +353,46 @@ PULLS: List[Endpoint] = [
 
 ADVANCED: List[Endpoint] = [
     {
+        "name": "Technicals report",
+        "group": "Advanced Data Suite",
+        "method": "GET",
+        "path": "/technicals",
+        "auth": "key",
+        "description": "End-to-end technical analysis report: multi-timeframe indicators, structure, patterns, levels, scenarios. Each section degrades to 'unsupported' rather than failing.",
+        "params": _symbol_params()
+        + [
+            {
+                "name": "timeframes",
+                "type": "text",
+                "default": "daily,weekly,monthly",
+                "help": "Comma-separated: intraday, daily, weekly, monthly",
+            },
+        ],
+    },
+    {
+        "name": "Price history (OHLCV)",
+        "group": "Advanced Data Suite",
+        "method": "GET",
+        "path": "/history",
+        "auth": "key",
+        "description": "Raw OHLCV bars from the price provider (daily, or intraday intervals).",
+        "params": _symbol_params()
+        + [
+            {
+                "name": "period",
+                "type": "select",
+                "default": "1y",
+                "options": ["3mo", "6mo", "1y", "2y", "5y", "max"],
+            },
+            {
+                "name": "interval",
+                "type": "text",
+                "default": "1d",
+                "help": "1d (default) or intraday like 5m, 15m, 1h",
+            },
+        ],
+    },
+    {
         "name": "News stories",
         "group": "Advanced Data Suite",
         "method": "GET",
