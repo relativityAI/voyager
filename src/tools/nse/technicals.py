@@ -324,6 +324,14 @@ def fetch_price_info(symbol: str, exchange: str = "NSE") -> Dict[str, Any]:
     return {"current_price": current_price, "shares_outstanding": shares}
 
 
+# A rate-limited (empty) response must not be cached for the full TTL: one
+# Yahoo 429 would blank a symbol's report for 5 minutes. Empty frames get a
+# short negative-cache so a burst of requests doesn't hammer Yahoo either.
+NEG_CACHE_TTL = 20  # seconds
+_HISTORY_ATTEMPTS = 2
+_HISTORY_RETRY_DELAY = 1.0  # seconds
+
+
 def fetch_history(
     symbol: str,
     exchange: str = "NSE",
@@ -331,25 +339,37 @@ def fetch_history(
     interval: str = "1d",
 ) -> pd.DataFrame:
     """Raw OHLCV history (cached). Partial candles (a live day whose OHLC is
-    still NaN) are dropped so indicator last-values are never poisoned."""
+    still NaN) are dropped so indicator last-values are never poisoned.
+
+    A transient provider failure is retried once and, if still empty,
+    negative-cached for NEG_CACHE_TTL — not RAW_CACHE_TTL — so the next
+    request self-heals instead of re-serving the failure for 5 minutes."""
     key = f"{symbol}:{exchange}:hist:{period}:{interval}"
     with _yf_lock:
         entry = _RAW_CACHE.get(key)
-        if entry and (time.time() - entry["ts"]) < RAW_CACHE_TTL:
-            return entry["data"]
+        if entry:
+            ttl = RAW_CACHE_TTL if not entry["data"].empty else NEG_CACHE_TTL
+            if (time.time() - entry["ts"]) < ttl:
+                return entry["data"]
 
     yf_symbol = _generate_yf_symbol(symbol, exchange)
-    try:
-        with _yf_lock:
-            ticker = yf.Ticker(yf_symbol)
-            hist = ticker.history(period=period, interval=interval)
-    except Exception as exc:  # noqa: BLE001 - never crash callers
-        logger.warning(f"yfinance history failed for {yf_symbol}: {exc!r}")
-        hist = pd.DataFrame()
-    if hist is not None and not hist.empty:
-        # Drop the live bar when Yahoo pre-allocates it with NaN OHLC:
-        # every rolling indicator would otherwise read NaN at idx -1.
-        hist = hist.dropna(subset=["Open", "High", "Low", "Close"], how="any")
+    hist = pd.DataFrame()
+    for attempt in range(_HISTORY_ATTEMPTS):
+        try:
+            with _yf_lock:
+                ticker = yf.Ticker(yf_symbol)
+                hist = ticker.history(period=period, interval=interval)
+        except Exception as exc:  # noqa: BLE001 - never crash callers
+            logger.warning(f"yfinance history failed for {yf_symbol}: {exc!r}")
+            hist = pd.DataFrame()
+        if hist is not None and not hist.empty:
+            # Drop the live bar when Yahoo pre-allocates it with NaN OHLC:
+            # every rolling indicator would otherwise read NaN at idx -1.
+            hist = hist.dropna(subset=["Open", "High", "Low", "Close"], how="any")
+        if hist is not None and not hist.empty:
+            break
+        if attempt < _HISTORY_ATTEMPTS - 1:
+            time.sleep(_HISTORY_RETRY_DELAY)
     if hist is None or hist.empty:
         logger.warning(
             f"yfinance returned no history for {yf_symbol} "

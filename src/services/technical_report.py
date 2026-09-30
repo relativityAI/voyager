@@ -146,21 +146,21 @@ def _anchored_vwap(hist: pd.DataFrame, anchor: str = "year") -> Optional[float]:
 # --------------------------------------------------------------------------
 
 def _collect_timeframe(
-    symbol: str,
-    exchange: str,
     timeframe: str,
+    hist_full: pd.DataFrame,
     resample_rule: Optional[str],
-    fetch_period: str,
 ) -> Dict[str, Any]:
-    """Indicators + structure for one timeframe. Never raises."""
+    """Indicators + structure for one timeframe, from one shared 5y frame.
+    Never raises."""
     try:
-        hist = fetch_history(symbol, exchange, period=fetch_period)
+        if resample_rule is not None:
+            hist = _resample_ohlcv(hist_full, resample_rule)
+            if timeframe == "weekly":
+                hist = hist.tail(280)  # sma_200 weekly needs ~4.5y of weeks
+        else:
+            hist = hist_full.tail(320)  # daily: sma_200 needs 200 bars
         if hist.empty:
             return {"timeframe": timeframe, "error": "no price data"}
-        if resample_rule is not None:
-            hist = _resample_ohlcv(hist, resample_rule)
-            if hist.empty:
-                return {"timeframe": timeframe, "error": "resampling produced no rows"}
 
         close, high, low = hist["Close"], hist["High"], hist["Low"]
         volume = hist.get("Volume")
@@ -675,6 +675,10 @@ async def build_technical_report(
     tfs: Dict[str, Any] = {}
 
     def run_collection():
+        # One 5y fetch serves every timeframe (sliced/resampled inside
+        # _collect_timeframe): 3x fewer Yahoo calls means 3x less exposure
+        # to the datacenter-IP rate limiting that blanks cold instances.
+        hist_5y = fetch_history(symbol, exchange, period="5y")
         for tf in requested:
             if tf == "intraday":
                 tfs["intraday"] = _intraday_snapshot(symbol, exchange)
@@ -682,8 +686,8 @@ async def build_technical_report(
             if tf not in _TIMEFRAMES:
                 tfs[tf] = {"error": f"unknown timeframe '{tf}'"}
                 continue
-            rule, period = _TIMEFRAMES[tf]
-            tfs[tf] = _collect_timeframe(symbol, exchange, tf, rule, period)
+            rule, _period = _TIMEFRAMES[tf]
+            tfs[tf] = _collect_timeframe(tf, hist_5y, rule)
         return tfs
 
     tfs = await asyncio.to_thread(run_collection)

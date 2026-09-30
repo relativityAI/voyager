@@ -278,6 +278,52 @@ class TestFetchHistoryPartialCandle:
         assert cleaned["Close"].notna().all()
         assert len(cleaned) == 30
 
+    def test_empty_response_negative_cached_not_full_ttl(self):
+        """Regression (GLAND on Render): one rate-limited empty response used
+        to be cached for the full TTL, blanking the symbol's report for 5
+        minutes. It must be retried once, negative-cached only briefly, and
+        self-heal on the next call after the negative TTL."""
+        import time
+
+        import src.tools.nse.technicals as T
+
+        T._cache.clear()
+        T._RAW_CACHE.clear()
+        good = _flat_hist(5)
+        try:
+            mock_ticker = MagicMock()
+            mock_ticker.history.return_value = pd.DataFrame()  # rate-limited
+            # patch the retry sleep so the test doesn't actually wait
+            with patch("src.tools.nse.technicals.time.sleep"):
+                with patch(
+                    "src.tools.nse.technicals.yf.Ticker", return_value=mock_ticker
+                ):
+                    first = fetch_history("TESTNEG", "NSE", period="1y")
+            assert first.empty
+            assert mock_ticker.history.call_count == 2  # retried once
+
+            # within the negative TTL the empty frame is still served...
+            mock_ticker.history.return_value = good
+            with patch("src.tools.nse.technicals.time.sleep"):
+                with patch(
+                    "src.tools.nse.technicals.yf.Ticker", return_value=mock_ticker
+                ):
+                    still = fetch_history("TESTNEG", "NSE", period="1y")
+            assert still.empty
+
+            # ...but after the *negative* TTL (not the full RAW TTL) it heals
+            entry = T._RAW_CACHE["TESTNEG:NSE:hist:1y:1d"]
+            entry["ts"] = time.time() - T.NEG_CACHE_TTL - 1
+            with patch("src.tools.nse.technicals.time.sleep"):
+                with patch(
+                    "src.tools.nse.technicals.yf.Ticker", return_value=mock_ticker
+                ):
+                    healed = fetch_history("TESTNEG", "NSE", period="1y")
+            assert len(healed) == 5
+        finally:
+            T._RAW_CACHE.pop("TESTNEG:NSE:hist:1y:1d", None)
+            T._cache.clear()
+
 
 # --------------------------------------------------------------------------
 # Patterns
