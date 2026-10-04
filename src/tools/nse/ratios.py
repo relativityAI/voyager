@@ -478,6 +478,12 @@ FINANCIAL_FIELDS: List[FinancialField] = [
         "category": "balance_sheet",
     },
     {
+        "id": "BorrowingsNoncurrent",
+        "name": "Non-current Borrowings",
+        "type": "currency",
+        "category": "balance_sheet",
+    },
+    {
         "id": "NoncurrentInvestments",
         "name": "Non-current Investments",
         "type": "currency",
@@ -626,6 +632,9 @@ FINANCIAL_FIELDS: List[FinancialField] = [
         "name": "Dividends Paid",
         "type": "currency",
         "category": "cash_flow",
+        # Tag snake-cases to dividend_paid, which is not the DB column name;
+        # without this override _doc_to_row silently drops the fact.
+        "field": "dividends_paid",
     },
     {
         "id": "PaymentsForPurchaseOfNoncurrentAssets",

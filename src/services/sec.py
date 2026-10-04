@@ -30,8 +30,8 @@ from loguru import logger
 from sqlalchemy import select
 
 from src.db.engine import get_session_factory
-from src.utils.helpers import utcnow
 from src.db.models import NSEStockMetadata
+from src.utils.helpers import utcnow
 
 from ._common import NotFoundError, UpstreamError
 from .nse import STATEMENT_MODELS, _upsert_rows
@@ -123,7 +123,7 @@ _INCOME_MAP = {
         "us-gaap_IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments",
     ],
     "tax_expense": ["us-gaap_IncomeTaxExpenseBenefit"],
-    "profit_loss_for_period": ["us-gaap_NetIncomeLoss"],
+    "profit_loss_for_period": ["us-gaap_ProfitLoss", "us-gaap_NetIncomeLoss"],
     "profit_or_loss_attributable_to_owners_of_parent": ["us-gaap_NetIncomeLoss"],
     "comprehensive_income_for_the_period": [
         "us-gaap_ComprehensiveIncomeNetOfTax",
@@ -139,6 +139,13 @@ _INCOME_MAP = {
         "us-gaap_DepreciationDepletionAndAmortizationExcludingFinancingCosts",
     ],
     "expenses": ["us-gaap_CostsAndExpenses", "us-gaap_OperatingExpenses"],
+    "operating_income": ["us-gaap_OperatingIncomeLoss"],
+    "weighted_average_shares_basic": [
+        "us-gaap_WeightedAverageNumberOfSharesOutstandingBasic",
+    ],
+    "weighted_average_shares_diluted": [
+        "us-gaap_WeightedAverageNumberOfDilutedSharesOutstanding",
+    ],
     "cost_of_revenue": [
         "us-gaap_CostOfRevenue",
         "us-gaap_CostOfGoodsAndServicesSold",
@@ -194,6 +201,9 @@ _BALANCE_MAP = {
         "us-gaap_CommonStocksIncludingAdditionalPaidInCapital",
     ],
     "stockholders_equity": ["us-gaap_StockholdersEquity"],
+    "total_equity_including_nci": [
+        "us-gaap_StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+    ],
     "reserve_excluding_revaluation_reserves": [
         "us-gaap_RetainedEarningsAccumulatedDeficit",
     ],
@@ -375,6 +385,26 @@ def _income_rows(
             )
         row["expenses"] = _lookup_value(df, _INCOME_MAP, "expenses", period)
         row["cost_of_revenue"] = _lookup_value(df, _INCOME_MAP, "cost_of_revenue", period)
+        row["operating_income"] = _lookup_value(df, _INCOME_MAP, "operating_income", period)
+        # Weighted-average shares are a per-period average, not a cumulative
+        # flow, so _diff_cumulative's YTD-minus-annual subtraction is
+        # meaningless for them (it yields negatives for every quarter except
+        # fiscal Q1, where YTD == the quarter). Take the reported tag for
+        # annual statements only; quarterly rows leave these null and
+        # _derive_fields falls back to profit / EPS, which is correct but
+        # carries EPS-rounding error.
+        if is_annual:
+            row["weighted_average_shares_basic"] = _lookup_value(
+                df, _INCOME_MAP, "weighted_average_shares_basic", period
+            )
+            row["weighted_average_shares_diluted"] = _lookup_value(
+                df, _INCOME_MAP, "weighted_average_shares_diluted", period
+            )
+        else:
+            # Written explicitly as NULL so a re-pull clears any value an
+            # older mapping left behind, rather than leaving it stranded.
+            row["weighted_average_shares_basic"] = None
+            row["weighted_average_shares_diluted"] = None
         eps_b = _lookup_value(
             df, _INCOME_MAP, "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations", period
         )
@@ -418,6 +448,20 @@ def _balance_rows(
         )
         equity_sc = _lookup_value(df, _BALANCE_MAP, "equity_share_capital", period)
         stockholder_eq = _lookup_value(df, _BALANCE_MAP, "stockholders_equity", period)
+        row["stockholders_equity"] = stockholder_eq
+        # Most filers do not tag StockholdersEquityIncludingPortion... on the
+        # balance sheet; the total lives on the equity statement. Derive it
+        # from two balance-sheet tags that are present: total liabilities and
+        # equity (which includes NCI) minus total liabilities.
+        total_incl_nci = _lookup_value(df, _BALANCE_MAP, "total_equity_including_nci", period)
+        if total_incl_nci is None:
+            liab_and_equity = _tag_value(
+                df, "us-gaap_LiabilitiesAndStockholdersEquity", period
+            )
+            liabilities = _tag_value(df, "us-gaap_Liabilities", period)
+            if liab_and_equity is not None and liabilities is not None:
+                total_incl_nci = liab_and_equity - liabilities
+        row["total_equity_including_nci"] = total_incl_nci
         row["equity_share_capital"] = equity_sc
         if equity_sc is not None and stockholder_eq is not None:
             row["equity_share_capital"] = equity_sc

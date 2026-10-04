@@ -71,6 +71,11 @@ async def init_db():
             "ALTER TABLE balance_sheets ADD COLUMN IF NOT EXISTS inventories NUMERIC",
             "ALTER TABLE balance_sheets ADD COLUMN IF NOT EXISTS trade_receivables_current NUMERIC",
             "ALTER TABLE balance_sheets ADD COLUMN IF NOT EXISTS trade_payables NUMERIC",
+            "ALTER TABLE income_statements ADD COLUMN IF NOT EXISTS operating_income NUMERIC",
+            "ALTER TABLE income_statements ADD COLUMN IF NOT EXISTS weighted_average_shares_basic NUMERIC",
+            "ALTER TABLE income_statements ADD COLUMN IF NOT EXISTS weighted_average_shares_diluted NUMERIC",
+            "ALTER TABLE balance_sheets ADD COLUMN IF NOT EXISTS stockholders_equity NUMERIC",
+            "ALTER TABLE balance_sheets ADD COLUMN IF NOT EXISTS total_equity_including_nci NUMERIC",
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_nse_announcements_raw ON nse_announcements (symbol, raw_data)",
         ]:
             await conn.execute(text(ddl))

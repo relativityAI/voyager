@@ -45,25 +45,19 @@ Data endpoints are protected by service API keys (`X-API-Key` header). Health en
 
 A `/financial-metrics` response looks like this (values are examples; `null` means the data isn't in the filings):
 
-> `price_data` is `"live"` when the live quote provider (Yahoo Finance) was reachable and `"unavailable"` when it wasn't (e.g. rate-limited). When `"unavailable"`, the price-derived fields (`current_price`, market cap, valuation ratios, technicals) are omitted rather than crashing the request.
+> `price_data` is `"live"` when the live quote provider (Yahoo Finance) was reachable and `"unavailable"` when it wasn't (e.g. rate-limited). When `"unavailable"`, the price-derived fields (`current_price`, market cap, valuation ratios) are omitted rather than crashing the request.
+>
+> This endpoint returns financial metrics only. Technical indicators live at [`/technicals`](#technicals--multi-timeframe-technical-report). `null` values are omitted throughout: an absent key means "not computable for this issuer".
 
 ```json
 {
   "symbol": "VBL",
-  "period_end_date": "2026-06-30",
+  "last_quarter_end_date": "2026-06-30",
   "consolidated": true,
   "filing_type": "ttm",
   "price_data": "live",
 
   "current_price": 442.3,
-  "rsi_14": 55.5,
-  "sma_20": 430.0,
-  "sma_200": 400.0,
-  "bb_upper": 450.0,
-  "atr_14": 8.5,
-  "volume": 1200000,
-  "high_52w": 500.0,
-  "low_52w": 300.0,
 
   "market_capitalization": 1496000000000.0,
   "enterprise_value": 1499000000000.0,
@@ -71,17 +65,18 @@ A `/financial-metrics` response looks like this (values are examples; `null` mea
   "price_to_book_ratio": 6.87,
   "price_to_sales_ratio": 6.04,
   "enterprise_value_to_ebitda_ratio": 32.47,
-  "free_cash_flow_yield": 1.695,
   "peg_ratio": 2.51,
 
+  "ebitda_margin": 22.0,
   "operating_margin": 16.0,
   "net_margin": 12.0,
   "return_on_equity": 15.66,
   "return_on_assets": 11.29,
   "return_on_invested_capital": 17.14,
   "asset_turnover": 0.9,
-  "operating_cash_flow_ratio": 1.869,
 
+  "current_ratio": 3.1,
+  "quick_ratio": 2.4,
   "debt_to_equity": 0.16,
   "interest_coverage": 23.56,
 
@@ -92,6 +87,7 @@ A `/financial-metrics` response looks like this (values are examples; `null` mea
   "earnings_per_share": 10.01,
   "book_value_per_share": 64.36,
   "free_cash_flow_per_share": 7.5,
+  "payout_ratio": 18.2,
 
   "total_debt": 5000000000.0,
   "total_equity": 217000000000.0,

@@ -57,32 +57,76 @@ def _load_priority_metrics() -> Dict[str, Set[str]]:
 # Fields always kept in filtered (default) responses. Scraper internals with
 # raw XBRL noise (source_endpoint, context_ref_type dimension lists) are
 # excluded by default — pass all_fields=true to see them (audit P1-6).
+# entity_identifier is excluded too: it duplicated symbol for NSE and was
+# hardcoded None for SEC. broadcast_date, measure and pulled_at are ingestion
+# provenance, not statement data.
 _PRIORITY_FIELD_KEEP = {
     "symbol",
     "period_end_date",
     "period_start_date",
     "xbrl_url",
-    "broadcast_date",
     "consolidated",
-    "measure",
-    "entity_identifier",
     "fiscal_period",
     "filing_type",
-    "pulled_at",
     "data_quality",
 }
+
+
+def _derive_fields(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Fill in fields that are exact functions of values already on the row.
+
+    Runs for both filtered and ``all_fields`` responses so the derived set does
+    not depend on the projection. Each derivation is skipped when any input is
+    missing or unusable, leaving the key absent rather than emitting a guess.
+    """
+    # Weighted-average shares: where the source tags them (SEC) the stored
+    # column wins and this is a no-op. NSE filings carry no such tag, so divide
+    # profit by EPS. EPS is struck on income attributable to the parent, so
+    # prefer that numerator over the post-minority total.
+    #
+    # ponytail: EPS is stored at 2 decimal places, so derived share counts carry
+    # up to ~0.5% error (AAPL diluted: 14,675M derived vs 14,746M reported).
+    # Ceiling = EPS rounding. Upgrade: map
+    # us-gaap_WeightedAverageNumberOfSharesOutstandingBasic/Diluted for every
+    # source, which already exists in the SEC pulls.
+    numerator = doc.get("profit_or_loss_attributable_to_owners_of_parent")
+    if numerator is None:
+        numerator = doc.get("profit_loss_for_period")
+    if numerator is not None:
+        for shares_col, eps_col in (
+            ("weighted_average_shares_basic", "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations"),
+            ("weighted_average_shares_diluted", "diluted_earnings_loss_per_share_from_continuing_and_discontinued_operations"),
+        ):
+            if doc.get(shares_col) is not None:
+                continue
+            eps = doc.get(eps_col)
+            if eps:
+                doc[shares_col] = numerator / eps
+
+    # Total equity including non-controlling interests is the reported anchor;
+    # parent-only equity is a separate reported tag. XBRL US guidance confirms
+    # the difference is minority interest when both are present.
+    total = doc.get("total_equity_including_nci")
+    if total is not None:
+        doc.setdefault("total_equity", total)
+        parent = doc.get("stockholders_equity")
+        if parent is not None:
+            doc["minority_interest"] = total - parent
+
+    return doc
 
 
 def _filter_priority_fields(
     doc: Dict[str, Any], priority_set: Set[str], all_fields: bool
 ) -> Dict[str, Any]:
+    doc = _derive_fields(doc)
     if all_fields:
         return doc
-    filtered = {}
-    for k, v in doc.items():
-        if k in priority_set or k in _PRIORITY_FIELD_KEEP:
-            filtered[k] = v
-    return filtered
+    return {
+        k: v
+        for k, v in doc.items()
+        if (k in priority_set or k in _PRIORITY_FIELD_KEEP) and v is not None
+    }
 
 
 # A data source implies the country it serves; callers no longer pass both.

@@ -1,9 +1,11 @@
 import asyncio
 import unittest
 from datetime import datetime, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pandas as pd
 import pytest
 
 from src.scrapers.session import BlockedResponse, CookieError, SessionExhausted
@@ -608,3 +610,117 @@ def test_process_xbrl_period_start_is_majority_duration(nse_india):
         result = nse_india.process_xbrl(mock_record, "TEST", "integrated-filing")
     assert result is not None
     assert result["income_statement"]["period_start_date"] == "2025-07-01"
+
+
+def test_priority_fields_are_real_db_columns():
+    """A priority entry with no column is silently dead — the response ships a
+    key that is always absent (the dividends_paid bug). Guard the whole config.
+
+    Fields computed at response time in _common._derive_fields are the one
+    legitimate exception: they have no column by design.
+    """
+    from src.db.models import BalanceSheet, CashFlow, IncomeStatement
+    from src.services._common import _load_priority_metrics
+
+    derived = {"total_equity", "minority_interest"}
+    cols = {
+        "income_statements": {c.key for c in IncomeStatement.__table__.columns},
+        "balance_sheets": {c.key for c in BalanceSheet.__table__.columns},
+        "cash_flows": {c.key for c in CashFlow.__table__.columns},
+    }
+    for stmt, fields in _load_priority_metrics().items():
+        if stmt not in cols:
+            continue
+        missing = fields - cols[stmt] - derived
+        assert not missing, (
+            f"{stmt} priority fields are not DB columns: {sorted(missing)}"
+        )
+
+
+def test_sec_operating_income_is_never_revenue_minus_expenses():
+    """SEC files report `expenses` as opex only, so revenue - expenses is gross
+    profit, not operating income. For AAPL (Q3 FY26) that is 90,342,000,000
+    against a reported 35,695,000,000 — 2.53x wrong. SEC must read the
+    us-gaap:OperatingIncomeLoss tag instead.
+    """
+    from src.services.sec import _INCOME_MAP, _income_rows
+
+    assert _INCOME_MAP["operating_income"] == ["us-gaap_OperatingIncomeLoss"]
+    assert "expenses" not in _INCOME_MAP["operating_income"]
+
+    df = pd.DataFrame(
+        [
+            {"concept": "us-gaap_Revenues", "2026-06-27": 109417000000.0},
+            {"concept": "us-gaap_OperatingExpenses", "2026-06-27": 19075000000.0},
+            {"concept": "us-gaap_OperatingIncomeLoss", "2026-06-27": 35695000000.0},
+        ]
+    )
+    rows = _income_rows("AAPL", df, ["2026-06-27"], "10-Q", False, None)
+    assert rows[0]["operating_income"] == 35695000000.0
+    assert rows[0]["operating_income"] != 109417000000.0 - 19075000000.0
+
+
+def test_nse_operating_income_is_revenue_minus_expenses():
+    """NSE `expenses` is total cost including COGS, so revenue - expenses is
+    operating profit before other income. Holds for every NSE row stored.
+    """
+    from src.db.models import IncomeStatement
+    from src.services.nse import _doc_to_row
+
+    row = _doc_to_row(
+        {
+            "revenue_from_operations": "31853420000",
+            "expenses": "28357510000",
+            "other_income": "195730000",
+        },
+        IncomeStatement,
+    )
+    assert row["operating_income"] == 3495910000
+    assert row["operating_income"] + row["other_income"] == 3691640000
+
+
+def test_derive_fields_skips_guesses_and_respects_stored_shares():
+    """Derived fields appear only when every input is usable, and a stored
+    reported value always wins over the EPS-derived fallback.
+    """
+    from src.services._common import _derive_fields
+
+    # EPS present -> share counts derived
+    d = _derive_fields(
+        {
+            "profit_or_loss_attributable_to_owners_of_parent": Decimal("1000"),
+            "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": Decimal("2"),
+            "diluted_earnings_loss_per_share_from_continuing_and_discontinued_operations": Decimal("4"),
+        }
+    )
+    assert d["weighted_average_shares_basic"] == Decimal("500")
+    assert d["weighted_average_shares_diluted"] == Decimal("250")
+
+    # zero EPS must not raise and must not invent a number
+    d = _derive_fields(
+        {
+            "profit_loss_for_period": Decimal("1000"),
+            "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": Decimal("0"),
+        }
+    )
+    assert "weighted_average_shares_basic" not in d
+
+    # reported tag beats the fallback
+    d = _derive_fields(
+        {
+            "weighted_average_shares_basic": Decimal("14746039406"),
+            "profit_or_loss_attributable_to_owners_of_parent": Decimal("29789000000"),
+            "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": Decimal("2.03"),
+        }
+    )
+    assert d["weighted_average_shares_basic"] == Decimal("14746039406")
+
+    # minority interest is the difference of the two reported equity totals
+    d = _derive_fields(
+        {
+            "total_equity_including_nci": Decimal("137000000000"),
+            "stockholders_equity": Decimal("135000000000"),
+        }
+    )
+    assert d["total_equity"] == Decimal("137000000000")
+    assert d["minority_interest"] == Decimal("2000000000")

@@ -163,6 +163,9 @@ class IncomeStatement(Base):
     other_expenses = Column(Numeric, nullable=True)
     expenses = Column(Numeric, nullable=True)
     cost_of_revenue = Column(Numeric, nullable=True)
+    operating_income = Column(Numeric, nullable=True)
+    weighted_average_shares_basic = Column(Numeric, nullable=True)
+    weighted_average_shares_diluted = Column(Numeric, nullable=True)
     profit_before_exceptional_items_and_tax = Column(Numeric, nullable=True)
     exceptional_items_before_tax = Column(Numeric, nullable=True)
     profit_before_tax = Column(Numeric, nullable=True)
@@ -249,6 +252,8 @@ class BalanceSheet(Base):
     bank_balance_other_than_cash_and_cash_equivalents = Column(Numeric, nullable=True)
     reserve_excluding_revaluation_reserves = Column(Numeric, nullable=True)
     current_liabilities = Column(Numeric, nullable=True)
+    stockholders_equity = Column(Numeric, nullable=True)
+    total_equity_including_nci = Column(Numeric, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("symbol", "period_end_date", "consolidated", "source_endpoint",

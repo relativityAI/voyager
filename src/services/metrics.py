@@ -213,7 +213,7 @@ async def financial_metrics(
     # only as an optional override for callers that need a specific basis.
     is_ttm = filing_type == "ttm"
 
-    from src.tools.nse.technicals import fetch_price_info, fetch_technicals
+    from src.tools.nse.technicals import fetch_price_info
 
     is_cons = consolidated
 
@@ -308,8 +308,6 @@ async def financial_metrics(
 
         shares_outstanding = compute_shares_outstanding(latest)
 
-    technicals = await _safe_market_fetch(fetch_technicals, symbol, yf_exchange)
-
     assets_t = _to_float(latest.get("assets"))
     equity_sc = _to_float(latest.get("equity_share_capital"))
     other_eq = _to_float(latest.get("other_equity"))
@@ -392,7 +390,6 @@ async def financial_metrics(
         "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations"
     )
     ttm_cor = ttm_values.get("cost_of_revenue")
-    ttm_exp = ttm_values.get("expenses")
     ttm_tax = ttm_values.get("tax_expense")
     ttm_div = ttm_values.get("dividends_paid")
     ttm_ebit = (
@@ -599,47 +596,6 @@ async def financial_metrics(
         except (ValueError, TypeError):
             result["last_annual_end_date"] = None
             result["last_annual_end_date_source"] = "unknown"
-    for k in (
-        "current_price",
-        "rsi_14",
-        "sma_20",
-        "sma_50",
-        "sma_200",
-        "ema_12",
-        "ema_26",
-        "ema_20",
-        "macd",
-        "macd_signal",
-        "macd_hist",
-        "bb_upper",
-        "bb_middle",
-        "bb_lower",
-        "atr_14",
-        "stoch_k",
-        "stoch_d",
-        "adx_14",
-        "plus_di_14",
-        "minus_di_14",
-        "cci_20",
-        "williams_r_14",
-        "obv",
-        "acc_dist",
-        "ichimoku_tenkan",
-        "ichimoku_kijun",
-        "ichimoku_senkou_a",
-        "ichimoku_senkou_b",
-        "volume",
-        "avg_volume_10d",
-        "avg_volume_3m",
-        "high_52w",
-        "low_52w",
-        "change_pct",
-        "volume_ratio",
-        "delivery_percentage",
-        "relative_strength",
-    ):
-        if k in technicals:
-            result[k] = technicals[k]
     if current_price is not None:
         result["current_price"] = current_price
 
@@ -700,18 +656,15 @@ async def financial_metrics(
         else None
     )
 
-    # Gross margin = (revenue - cost of revenue) / revenue. NSE integrated
-    # filings don't always tag COGS; fall back to (revenue - expenses) with
-    # other income excluded — but only for NSE-style statements, where
-    # `expenses` aggregates operating costs. SEC filings report COGS via
-    # cost_of_revenue; when absent, gross_margin stays null rather than
-    # relabelling (revenue - expenses) which excludes COGS and overstates
-    # the margin ~1.8x for a US filer like Apple.
+    # Gross margin = (revenue - cost of revenue) / revenue. No fallback: on both
+    # NSE and SEC statements `expenses` is not COGS, so (revenue - expenses)
+    # is not gross profit. For NSE it is operating profit (expenses is total
+    # costs, so it silently duplicated operating_margin); for SEC it is gross
+    # profit (opex excludes COGS, overstating the margin ~2.5x for Apple).
+    # Sources without cost_of_revenue get null rather than a wrong number.
     gross_profit = None
     if ttm_cor is not None and ttm_rev is not None:
         gross_profit = ttm_rev - ttm_cor
-    elif ttm_exp is not None and ttm_rev is not None and source == "NSE":
-        gross_profit = ttm_rev - ttm_exp
     result["gross_margin"] = (
         _pct(_safe_div(gross_profit, ttm_rev))
         if gross_profit is not None and ttm_rev
@@ -732,6 +685,11 @@ async def financial_metrics(
         if ttm_pat is not None and val_rev
         else None
     )
+    result["pretax_profit_margin"] = (
+        _pct(_safe_div(ttm_pbt, val_rev))
+        if ttm_pbt is not None and val_rev
+        else None
+    )
     # Return ratios compare TTM flows against point-in-time stocks; a single
     # quarter's PAT over equity understates ROE ~4x.
     ret_pat = ttm_pat if ttm_pat is not None else pat
@@ -746,13 +704,21 @@ async def financial_metrics(
     # (total debt + equity). Screener-style convention; the old assets-minus-
     # non-current-liabilities proxy understated it for cash-rich firms.
     invested_capital = total_debt + total_equity
+    # One effective-rate definition reused by NOPAT and effective_tax_rate so
+    # the two can't disagree. Clamped to 0..1: a loss year or a tax benefit
+    # would otherwise yield a nonsensical rate and a negative NOPAT.
+    tax_rate = (
+        max(0.0, min(ttm_tax / ttm_pbt, 1.0))
+        if ttm_pbt is not None and ttm_tax is not None and ttm_pbt != 0
+        else None
+    )
     nopat = None
     if ret_ebit is not None:
-        if ttm_pbt is not None and ttm_tax is not None and ttm_pbt != 0:
-            tax_rate = max(0.0, min(ttm_tax / ttm_pbt, 1.0))
+        if tax_rate is not None:
             nopat = ret_ebit * (1 - tax_rate)
         elif ttm_pat is not None:
             nopat = ttm_pat + ttm_fc if ttm_fc is not None else None
+    result["effective_tax_rate"] = _pct(tax_rate)
     result["return_on_invested_capital"] = (
         _pct(_safe_div(nopat, invested_capital))
         if nopat is not None and invested_capital
@@ -806,6 +772,28 @@ async def financial_metrics(
         else None
     )
     result["days_payable_outstanding"] = round(dpo * 365, 2) if dpo is not None else None
+    # Turnover as the exact inverse of the ratio behind the days figure above,
+    # so the two can't drift apart. dso/dpo are fractions (x365 gives days),
+    # so the inverse is 1/dso, not 365/dso.
+    result["receivables_turnover"] = round(1.0 / dso, 4) if dso else None
+    result["payables_turnover"] = round(1.0 / dpo, 4) if dpo else None
+
+    # Cash-burn coverage: how many years of capex / dividends the operating
+    # cash flow funds. Magnitude-only — filings store both as negative outflows.
+    result["capital_expenditure_coverage_ratio"] = _safe_div(val_ocf, val_capex)
+    div_and_capex = None
+    if val_capex is not None or ttm_div is not None:
+        div_and_capex = (val_capex or 0) + abs(ttm_div or 0)
+    result["dividend_and_capex_coverage_ratio"] = (
+        _safe_div(val_ocf, div_and_capex) if div_and_capex else None
+    )
+    result["operating_cash_flow_ratio"] = _safe_div(val_ocf, current_liab)
+    result["operating_cash_flow_sales_ratio"] = _pct(_safe_div(val_ocf, val_rev))
+    result["cash_ratio"] = _safe_div(cash_eq, current_liab)
+
+    # Leverage: assets per unit of equity, and debt as a share of assets.
+    result["financial_leverage_ratio"] = _safe_div(assets_t, total_equity)
+    result["debt_to_assets_ratio"] = _safe_div(total_debt, assets_t)
 
     # Always compute from balance-sheet components; the XBRL DebtEquityRatio
     # tag is unreliable (Skygold tagged 0.007 vs a real ~0.7).
@@ -815,6 +803,9 @@ async def financial_metrics(
         else None
     )
     result["interest_coverage"] = _safe_div(val_ebit, ttm_fc) if ttm_fc else None
+    result["enterprise_value_to_ebit_ratio"] = _safe_div(enterprise_value, val_ebit)
+    result["price_to_operating_cash_flow_ratio"] = _safe_div(market_cap, val_ocf)
+    result["price_to_free_cash_flow_ratio"] = _safe_div(market_cap, fcf)
 
     result["revenue_growth"] = revenue_growth
     result["revenue_growth_qoq"] = _qoq("revenue_from_operations")
@@ -851,6 +842,17 @@ async def financial_metrics(
         if fcf is not None and shares_outstanding
         else None
     )
+    # ponytail: quarterly share counts are EPS-derived (filers only tag them
+    # annually), so per-share figures carry ~0.05% EPS-rounding error. Add a
+    # real weighted-average-shares column per period when exactness matters.
+    for _ps_name, _ps_num in (
+        ("revenue_per_share", val_rev),
+        ("net_income_per_share", ttm_pat),
+        ("operating_cash_flow_per_share", val_ocf),
+        ("capex_per_share", val_capex),
+        ("cash_per_share", cash_eq),
+    ):
+        result[_ps_name] = _safe_div(_ps_num, shares_outstanding)
 
     # Payout ratio: TTM dividends paid / TTM PAT. Filings store dividends as a
     # negative outflow, so take the absolute value or every payer reads negative.
@@ -866,4 +868,6 @@ async def financial_metrics(
 
     # Max 2 decimal places on every numeric metric in the response; small
     # ratios keep 4 decimals so a true 0.019 never reads as an exact 0.
-    return {k: _round2(v) for k, v in result.items()}
+    # Nulls are dropped: a key that is present carries a value.
+    rounded = {k: _round2(v) for k, v in result.items()}
+    return {k: v for k, v in rounded.items() if v is not None}

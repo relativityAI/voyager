@@ -151,6 +151,17 @@ def _doc_to_row(doc: Dict[str, Any], model_class) -> Dict[str, Any]:
                 row[key] = val or []
             else:
                 row[key] = _parse_numeric(val) if col.type.__class__.__name__ == "Numeric" else val
+
+    # NSE reports `expenses` as total expenses including cost of goods, so
+    # revenue - expenses is operating profit before other income. Verified
+    # against the identity revenue - expenses + other_income == PBE, which
+    # holds for every NSE row we store. SEC files report opex only, so they
+    # take us-gaap_OperatingIncomeLoss instead (see _INCOME_MAP in sec.py).
+    if model_class.__tablename__ == "income_statements":
+        rev, exp = row.get("revenue_from_operations"), row.get("expenses")
+        if rev is not None and exp is not None and row.get("operating_income") is None:
+            row["operating_income"] = rev - exp
+
     return row
 
 

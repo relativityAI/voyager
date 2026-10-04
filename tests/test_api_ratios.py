@@ -22,17 +22,14 @@ class TestFinancialMetrics:
         from unittest.mock import patch
 
         price_patcher = patch("src.tools.nse.technicals.fetch_price_info")
-        tech_patcher = patch("src.tools.nse.technicals.fetch_technicals")
         factory_patcher = patch("src.services.metrics.get_session_factory")
 
         self.mock_fetch_price = price_patcher.start()
-        self.mock_fetch_tech = tech_patcher.start()
         self.mock_factory = factory_patcher.start()
 
         yield
 
         price_patcher.stop()
-        tech_patcher.stop()
         factory_patcher.stop()
 
     def _make_records(self, records_list):
@@ -172,11 +169,6 @@ class TestFinancialMetrics:
             "current_price": 2500.0,
             "shares_outstanding": 50000000,
         }
-        self.mock_fetch_tech.return_value = {
-            "current_price": 2500.0,
-            "rsi_14": 55.5,
-            "sma_20": 2450.0,
-        }
 
         response = client.get("/financial-metrics?symbol=TEST&country=in&source=nse")
         assert response.status_code == 200
@@ -186,7 +178,9 @@ class TestFinancialMetrics:
         assert data["last_quarter_end_date"] == "2024-12-31"
         assert data["price_to_earnings_ratio"] == pytest.approx(250.0)
         assert data["net_margin"] == pytest.approx(15.0)
-        assert data["rsi_14"] == 55.5
+        # Technicals belong to /technicals, not the financial-metrics response.
+        assert "rsi_14" not in data
+        assert "atr_14" not in data
 
     def test_price_fetch_error_still_returns_metrics(self):
         """A yfinance rate-limit must degrade to nulls, not raise a 500."""
@@ -208,7 +202,6 @@ class TestFinancialMetrics:
             ]
         )
         self.mock_fetch_price.side_effect = YFRateLimitError()
-        self.mock_fetch_tech.side_effect = YFRateLimitError()
 
         response = client.get("/financial-metrics?symbol=TEST&country=in&source=nse")
         assert response.status_code == 200
@@ -248,10 +241,6 @@ class TestFinancialMetrics:
         self.mock_fetch_price.return_value = {
             "current_price": 2500.0,
             "shares_outstanding": 50000000,
-        }
-        self.mock_fetch_tech.return_value = {
-            "current_price": 2500.0,
-            "rsi_14": 55.5,
         }
 
         response = client.get("/financial-metrics?symbol=TEST&country=in&source=nse")
@@ -299,7 +288,6 @@ class TestFinancialMetrics:
             "current_price": 2500.0,
             "shares_outstanding": 50000000,
         }
-        self.mock_fetch_tech.return_value = {"current_price": 2500.0}
 
         response = client.get(
             "/financial-metrics?symbol=TEST&country=in&source=nse&filing_type=ttm"
@@ -367,7 +355,6 @@ class TestFinancialMetrics:
             "current_price": 2500.0,
             "shares_outstanding": 50000000,
         }
-        self.mock_fetch_tech.return_value = {"current_price": 2500.0}
 
         response = client.get(
             "/financial-metrics?symbol=TEST&country=in&source=nse&filing_type=annual"
@@ -439,7 +426,6 @@ class TestFinancialMetrics:
             "current_price": 2500.0,
             "shares_outstanding": 50000000,
         }
-        self.mock_fetch_tech.return_value = {}
 
         response = client.get("/financial-metrics?symbol=TEST&country=in&source=nse")
         assert response.status_code == 200
@@ -502,7 +488,6 @@ class TestFinancialMetrics:
             "current_price": 2500.0,
             "shares_outstanding": 100000,
         }
-        self.mock_fetch_tech.return_value = {}
 
         response = client.get("/financial-metrics?symbol=TEST&country=in&source=nse")
         data = response.json()
@@ -522,11 +507,10 @@ class TestFinancialMetrics:
             ]
         )
         self.mock_fetch_price.return_value = {"current_price": 2500.0}
-        self.mock_fetch_tech.return_value = {}
 
         response = client.get("/financial-metrics?symbol=TEST&country=in&source=nse")
         data = response.json()
-        assert data["free_cash_flow_per_share"] is None
+        assert "free_cash_flow_per_share" not in data  # absent == null, never 0
 
     def test_fcf_is_ocf_minus_capex_when_present(self):
         """With CapEx in the filing, FCF must subtract it and label the source."""
@@ -546,7 +530,6 @@ class TestFinancialMetrics:
             "current_price": 2500.0,
             "shares_outstanding": 100000,
         }
-        self.mock_fetch_tech.return_value = {}
 
         response = client.get("/financial-metrics?symbol=TEST&country=in&source=nse")
         data = response.json()
@@ -570,7 +553,6 @@ class TestFinancialMetrics:
             "current_price": 2500.0,
             "shares_outstanding": 100000,
         }
-        self.mock_fetch_tech.return_value = {}
 
         response = client.get("/financial-metrics?symbol=TEST&country=in&source=nse")
         data = response.json()
@@ -594,7 +576,6 @@ class TestFinancialMetrics:
         )
         # yfinance rate-limited on shares but price is known
         self.mock_fetch_price.return_value = {"current_price": 2500.0}
-        self.mock_fetch_tech.return_value = {}
 
         response = client.get("/financial-metrics?symbol=TEST&country=in&source=nse")
         data = response.json()
@@ -606,7 +587,6 @@ class TestFinancialMetrics:
         records = self._make_ttm_quarterly_records()
         self._setup_db_mock(records)
         self.mock_fetch_price.return_value = {"current_price": 2500.0}
-        self.mock_fetch_tech.return_value = {}
 
         response = client.get("/financial-metrics?symbol=TEST&country=in&source=nse")
         data = response.json()
@@ -622,7 +602,6 @@ class TestFinancialMetrics:
     def test_ttm_window_complete_flag_true_with_4_quarters(self):
         self._setup_db_mock(self._make_ttm_quarterly_records())
         self.mock_fetch_price.return_value = {"current_price": 2500.0}
-        self.mock_fetch_tech.return_value = {}
 
         response = client.get(
             "/financial-metrics?symbol=TEST&country=in&source=nse&filing_type=ttm"
@@ -647,7 +626,6 @@ class TestFinancialMetrics:
             ]
         )
         self.mock_fetch_price.return_value = {"current_price": 2500.0}
-        self.mock_fetch_tech.return_value = {}
 
         response = client.get(
             "/financial-metrics?symbol=TEST&country=in&source=nse&filing_type=ttm"
@@ -679,7 +657,6 @@ class TestFinancialMetrics:
             ]
         )
         self.mock_fetch_price.return_value = {"current_price": 2500.0}
-        self.mock_fetch_tech.return_value = {}
 
         response = client.get(
             "/financial-metrics?symbol=TEST&country=in&source=nse&filing_type=ttm"
@@ -696,13 +673,12 @@ class TestFinancialMetrics:
             ]
         )
         self.mock_fetch_price.return_value = {"current_price": 2500.0}
-        self.mock_fetch_tech.return_value = {}
 
         response = client.get(
             "/financial-metrics?symbol=TEST&country=in&source=nse&filing_type=ttm"
         )
         data = response.json()
-        assert data["last_annual_end_date"] is None
+        assert "last_annual_end_date" not in data
         assert data["last_annual_end_date_source"] == "unknown"
 
     def test_statement_periods_expose_mixed_statement_ages(self):
@@ -743,7 +719,6 @@ class TestFinancialMetrics:
 
         mock_session.execute = AsyncMock(side_effect=execute_side_effect)
         self.mock_fetch_price.return_value = {"current_price": 2500.0}
-        self.mock_fetch_tech.return_value = {}
 
         response = client.get("/financial-metrics?symbol=TEST&country=in&source=nse")
         data = response.json()
@@ -768,7 +743,6 @@ class TestFinancialMetrics:
             ]
         )
         self.mock_fetch_price.return_value = {"current_price": 2500.0}
-        self.mock_fetch_tech.return_value = {}
 
         response = client.get("/financial-metrics?symbol=TEST&country=in&source=nse")
         data = response.json()
@@ -801,7 +775,6 @@ class TestFinancialMetrics:
             "current_price": 2500.0,
             "shares_outstanding": 50000000,
         }
-        self.mock_fetch_tech.return_value = {}
 
         response = client.get(
             "/financial-metrics?symbol=TEST&country=in&source=nse&filing_type=annual"
@@ -812,4 +785,147 @@ class TestFinancialMetrics:
         # TTM-style 4-quarter sum: rev 340, PAT 68; no EPS tag in these rows
         # so EPS stays null but the margins prove the 4-quarter summation
         assert data["net_margin"] == pytest.approx(20.0)
-        assert data["revenue_growth"] is not None or data["price_to_sales_ratio"] is not None
+        assert "revenue_growth" in data or "price_to_sales_ratio" in data
+
+
+class TestNewRatioCoverage:
+    """Regression cover for the metrics added from the FMP ratios set.
+
+    Reuses the session-mock shape of TestFinancialMetrics: three ordered
+    queries (income, balance, cash flow) returning models with to_dict().
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup_mocks(self):
+        from unittest.mock import patch
+
+        p = patch("src.tools.nse.technicals.fetch_price_info")
+        f = patch("src.services.metrics.get_session_factory")
+        self.mock_fetch_price = p.start()
+        self.mock_factory = f.start()
+        yield
+        p.stop()
+        f.stop()
+
+    def _setup(self, n=4):
+        from datetime import date, timedelta
+
+        income, balance, cashflow = [], [], []
+        for i in range(n):
+            d = date(2026, 1, 31) + timedelta(days=91 * i)
+            income.append(
+                {
+                    "period_end_date": d,
+                    "consolidated": True,
+                    "revenue_from_operations": "1000",
+                    "profit_before_tax": "300",
+                    "tax_expense": "60",
+                    "profit_loss_for_period": "240",
+                    "profit_or_loss_attributable_to_owners_of_parent": "240",
+                    "operating_income": "250",
+                    "cost_of_revenue": "600",
+                    "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations": "2.4",
+                }
+            )
+            balance.append(
+                {
+                    "period_end_date": d,
+                    "consolidated": True,
+                    "assets": "5000",
+                    "assets_current": "2000",
+                    "current_liabilities": "1000",
+                    "inventories": "500",
+                    "trade_receivables_current": "200",
+                    "trade_payables": "300",
+                    "cash_and_cash_equivalents": "400",
+                    "borrowings_current": "100",
+                    "borrowings_noncurrent": "500",
+                    "equity_share_capital": "100",
+                    "other_equity": "2300",
+                }
+            )
+            cashflow.append(
+                {
+                    "period_end_date": d,
+                    "consolidated": True,
+                    "cash_flows_from_used_in_operating_activities": "800",
+                    "payments_for_purchase_of_noncurrent_assets": "-400",
+                    "dividends_paid": "-100",
+                }
+            )
+
+        def _model(d):
+            m = MagicMock()
+            m.to_dict.return_value = d
+            return m
+
+        def _result(items):
+            r = MagicMock()
+            r.scalars.return_value = MagicMock(
+                all=lambda: [_model(d) for d in items]
+            )
+            return r
+
+        calls = {"n": 0}
+        seq = [income, balance, cashflow]
+
+        def execute_side_effect(*a, **k):
+            # metrics queries in order: IncomeStatement, BalanceSheet, CashFlow
+            idx = calls["n"]
+            calls["n"] += 1
+            return _result(seq[idx] if idx < len(seq) else [])
+
+        session = AsyncMock()
+        session.execute = AsyncMock(side_effect=execute_side_effect)
+        cm = AsyncMock()
+        cm.__aenter__ = AsyncMock(return_value=session)
+        cm.__exit__ = AsyncMock(return_value=False)
+        self.mock_factory.return_value = MagicMock(return_value=cm)
+        self.mock_fetch_price.return_value = {
+            "current_price": 100.0,
+            "shares_outstanding": 100.0,
+        }
+
+    def test_new_ratios_are_present_and_correct(self):
+        self._setup()
+        d = client.get(
+            "/financial-metrics?symbol=TEST&country=in&source=nse&filing_type=annual"
+        ).json()
+
+        # tax rate = 60/300; NOPAT/ROIC must reuse this exact rate
+        assert d["effective_tax_rate"] == pytest.approx(20.0)
+        assert d["pretax_profit_margin"] == pytest.approx(30.0)
+
+        # leverage and debt intensity off the reported totals
+        assert d["financial_leverage_ratio"] == pytest.approx(5000 / 2400, abs=0.01)
+        assert d["debt_to_assets_ratio"] == pytest.approx(600 / 5000, abs=0.01)
+        assert d["cash_ratio"] == pytest.approx(0.4)
+
+        # OCF covers capex 800/400 = 2.0x; dividends+capex = 500 -> 1.6x
+        assert d["capital_expenditure_coverage_ratio"] == pytest.approx(2.0)
+        assert d["dividend_and_capex_coverage_ratio"] == pytest.approx(1.6)
+        # OCF/current-liabilities and OCF/revenue, on the TTM flow window
+        assert d["operating_cash_flow_ratio"] == pytest.approx(3.2)
+        assert d["operating_cash_flow_sales_ratio"] == pytest.approx(80.0)
+
+        # Turnover is the exact inverse of the days figure. This regressed once
+        # as 365/dso, which reported Apple at 5426 instead of 14.9.
+        assert d["receivables_turnover"] == pytest.approx(4000 / 200, rel=1e-2)
+        assert 365.0 / d["receivables_turnover"] == pytest.approx(
+            d["days_receivable_outstanding"], rel=1e-2
+        )
+        assert 365.0 / d["payables_turnover"] == pytest.approx(
+            d["days_payable_outstanding"], rel=1e-2
+        )
+
+        # per-share, off the 100 shares outstanding. Flows use the TTM window
+        # (4 x 1000 revenue); cash is a point-in-time stock (400).
+        assert d["revenue_per_share"] == pytest.approx(40.0, rel=1e-2)
+        assert d["net_income_per_share"] == pytest.approx(9.6, rel=1e-2)
+        assert d["operating_cash_flow_per_share"] == pytest.approx(32.0, rel=1e-2)
+        assert d["capex_per_share"] == pytest.approx(16.0, rel=1e-2)
+        assert d["cash_per_share"] == pytest.approx(4.0, rel=1e-2)
+
+        # EV = 100*100 + 600 - 400 = 10200, over house EBIT = PBT + finance
+        # costs (300*4 here, since no finance_costs in the fixture).
+        assert d["enterprise_value_to_ebit_ratio"] == pytest.approx(8.5)
