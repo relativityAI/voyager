@@ -1,15 +1,14 @@
 """
 Rate limiter utility for controlling API call frequency.
 
-This module provides decorators and context managers for rate limiting
-HTTP requests to prevent overwhelming external APIs.
+Thread-safe fixed-interval limiter plus a requests.Session wrapper that
+waits before each call. For the token-bucket variant the scraper transport
+uses, see src/scrapers/throttle.py.
 """
 
 import threading
 import time
-from collections import deque
-from functools import wraps
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Dict
 
 from loguru import logger
 
@@ -68,71 +67,6 @@ class RateLimiter:
             self.last_call_time = None
 
 
-class SlidingWindowRateLimiter:
-    """
-    A more sophisticated rate limiter using a sliding window approach.
-
-    Tracks the exact time of each call and maintains a window of recent calls.
-    """
-
-    def __init__(self, calls_per_second: float = 10.0, window_size: int = 100):
-        """
-        Initialize the sliding window rate limiter.
-
-        Args:
-            calls_per_second: Maximum number of calls allowed per second (default: 10)
-            window_size: Maximum number of calls to track in the window
-        """
-        if calls_per_second <= 0:
-            raise ValueError("calls_per_second must be positive")
-
-        self.calls_per_second = calls_per_second
-        self.window_size = window_size
-        self.call_times = deque(maxlen=window_size)
-        self._lock = threading.Lock()
-
-    def wait(self) -> None:
-        """
-        Wait if necessary to maintain the rate limit.
-
-        This method checks if we've exceeded the call frequency and sleeps if needed.
-        """
-        with self._lock:
-            now = time.time()
-
-            # Remove calls older than 1 second
-            while self.call_times and self.call_times[0] < now - 1.0:
-                self.call_times.popleft()
-
-            # If we've hit the limit, wait
-            if len(self.call_times) >= self.calls_per_second:
-                oldest_call = self.call_times[0]
-                sleep_time = 1.0 - (now - oldest_call)
-
-                if sleep_time > 0:
-                    logger.debug(
-                        f"Rate limit: {len(self.call_times)} calls in last second, "
-                        f"sleeping for {sleep_time:.3f}s"
-                    )
-                    time.sleep(sleep_time)
-                    now = time.time()
-
-            self.call_times.append(now)
-
-    def reset(self) -> None:
-        """Reset the rate limiter state."""
-        with self._lock:
-            self.call_times.clear()
-
-    def get_current_load(self) -> float:
-        """Get the current load as a percentage of the limit."""
-        with self._lock:
-            now = time.time()
-            # Count calls in the last second
-            recent_calls = sum(1 for t in self.call_times if t > now - 1.0)
-            return (recent_calls / self.calls_per_second) * 100
-
-
 # Global rate limiters for different services
 _rate_limiters: Dict[str, RateLimiter] = {}
 _rate_limiters_lock = threading.Lock()
@@ -165,33 +99,6 @@ def reset_rate_limiters() -> None:
             limiter.reset()
         _rate_limiters.clear()
 
-
-def rate_limit(calls_per_second: float = 10.0, service_name: Optional[str] = None):
-    """
-    Decorator to apply rate limiting to a function.
-
-    Args:
-        calls_per_second: Maximum calls per second (default: 10)
-        service_name: Name of the service (uses function name if not provided)
-
-    Example:
-        @rate_limit(calls_per_second=5, service_name="screener_api")
-        def fetch_data(symbol):
-            return requests.get(f"https://api.screener.in/{symbol}").json()
-    """
-
-    def decorator(func: Callable) -> Callable:
-        svc_name = service_name or func.__module__ + "." + func.__name__
-
-        @wraps(func)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            limiter = get_rate_limiter(svc_name, calls_per_second)
-            limiter.wait()
-            return func(*args, **kwargs)
-
-        return wrapper
-
-    return decorator
 
 
 class RateLimitedSession:
@@ -266,9 +173,7 @@ class RateLimitedSession:
 
 __all__ = [
     "RateLimiter",
-    "SlidingWindowRateLimiter",
     "RateLimitedSession",
     "get_rate_limiter",
     "reset_rate_limiters",
-    "rate_limit",
 ]

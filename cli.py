@@ -21,7 +21,6 @@ from src.cli.render import (
     render_json,
     render_list,
     render_metrics,
-    render_not_implemented,
     render_panel_text,
     render_ping,
     render_pull,
@@ -39,7 +38,7 @@ from src.core import (
     fetch_nse_financials,
     fetch_nse_shareholdings,
 )
-from src.db.connection import init_db
+from src.db.engine import init_db
 from src.db.engine import get_session_factory
 from src.db.models import NSEAnnouncement, NSEAnnualReport
 from src.models import SOURCE_MODELS
@@ -330,17 +329,6 @@ async def shareholdings(
     """Shareholding pattern for a stock (GET /shareholdings)."""
     data = await get_shareholdings(symbol, country, source)
     render_shareholdings(data)
-
-
-# ---------------------------------------------------------------------------
-# Not-yet-implemented placeholders
-# ---------------------------------------------------------------------------
-
-
-@app.command()
-def news():
-    """News data (GET /news — not yet implemented)."""
-    render_not_implemented("news")
 
 
 # ---------------------------------------------------------------------------

@@ -512,13 +512,6 @@ def render_shareholdings(data: Dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def render_not_implemented(name: str) -> None:
-    line = Text()
-    line.append(name.upper(), style=HEADER)
-    line.append("   not yet implemented", style=LABEL)
-    console.print(Panel(line, title=f"[bold white]{name}[/]", border_style=MUTED))
-
-
 def render_error(title: str, message: str) -> None:
     panel = Panel(
         Text(str(message), style=VALUE),

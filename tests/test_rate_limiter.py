@@ -11,9 +11,7 @@ import pytest
 from src.utils.rate_limiter import (
     RateLimitedSession,
     RateLimiter,
-    SlidingWindowRateLimiter,
     get_rate_limiter,
-    rate_limit,
     reset_rate_limiters,
 )
 
@@ -129,132 +127,6 @@ class TestRateLimiter:
         elapsed = time.time() - start
         # With 5 threads and 10 calls/sec, should take roughly 0.4 seconds
         assert elapsed >= 0.3 and elapsed <= 0.6
-
-
-class TestSlidingWindowRateLimiter:
-    """Tests for the SlidingWindowRateLimiter class."""
-
-    def test_initialization(self):
-        """Test initialization."""
-        limiter = SlidingWindowRateLimiter(calls_per_second=5)
-        assert limiter.calls_per_second == 5
-        assert len(limiter.call_times) == 0
-
-    def test_initialization_invalid(self):
-        """Test initialization with invalid parameters."""
-        with pytest.raises(ValueError):
-            SlidingWindowRateLimiter(calls_per_second=0)
-
-    def test_sliding_window_enforcement(self):
-        """Test that sliding window enforces rate limit."""
-        calls_per_second = 5
-        limiter = SlidingWindowRateLimiter(calls_per_second=calls_per_second)
-
-        start = time.time()
-
-        # Make calls beyond the limit
-        for i in range(8):
-            limiter.wait()
-
-        elapsed = time.time() - start
-        # 8 calls at 5/sec should take at least 1+ second
-        assert elapsed >= 1.0
-
-    def test_get_current_load(self):
-        """Test getting current load."""
-        limiter = SlidingWindowRateLimiter(calls_per_second=10)
-
-        for i in range(5):
-            limiter.wait()
-
-        load = limiter.get_current_load()
-        # Should be around 50%
-        assert 40 < load < 60
-
-    def test_reset(self):
-        """Test reset functionality."""
-        limiter = SlidingWindowRateLimiter(calls_per_second=10)
-
-        for i in range(5):
-            limiter.wait()
-
-        assert len(limiter.call_times) > 0
-        limiter.reset()
-        assert len(limiter.call_times) == 0
-
-
-class TestRateLimitDecorator:
-    """Tests for the rate_limit decorator."""
-
-    def test_decorator_basic(self):
-        """Test basic decorator functionality."""
-
-        @rate_limit(calls_per_second=10)
-        def dummy_function():
-            return "result"
-
-        result = dummy_function()
-        assert result == "result"
-
-    def test_decorator_with_service_name(self):
-        """Test decorator with custom service name."""
-
-        @rate_limit(calls_per_second=10, service_name="test_service")
-        def dummy_function():
-            return "result"
-
-        result = dummy_function()
-        assert result == "result"
-
-    def test_decorator_enforces_rate_limit(self):
-        """Test that decorator enforces rate limiting."""
-
-        @rate_limit(calls_per_second=10, service_name="test_decorator_limit")
-        def dummy_function():
-            return time.time()
-
-        reset_rate_limiters()
-
-        start = time.time()
-        times = [dummy_function() for _ in range(3)]
-        elapsed = time.time() - start
-
-        expected_interval = 1.0 / 10.0
-        expected_time = expected_interval * 2  # 2 intervals for 3 calls
-
-        assert elapsed >= expected_time * 0.8
-        assert elapsed <= expected_time * 1.2
-
-    def test_decorator_preserves_function_metadata(self):
-        """Test that decorator preserves function metadata."""
-
-        @rate_limit(calls_per_second=10)
-        def dummy_function():
-            """Test docstring."""
-            return "result"
-
-        assert dummy_function.__name__ == "dummy_function"
-        assert dummy_function.__doc__ == "Test docstring."
-
-    def test_decorator_with_arguments(self):
-        """Test decorator with function that has arguments."""
-
-        @rate_limit(calls_per_second=10)
-        def add(a, b):
-            return a + b
-
-        result = add(2, 3)
-        assert result == 5
-
-    def test_decorator_with_kwargs(self):
-        """Test decorator with function that has keyword arguments."""
-
-        @rate_limit(calls_per_second=10)
-        def greet(name, greeting="Hello"):
-            return f"{greeting}, {name}!"
-
-        result = greet("Alice", greeting="Hi")
-        assert result == "Hi, Alice!"
 
 
 class TestRateLimitedSession:
@@ -394,22 +266,6 @@ class TestIntegration:
         # Service B should take longer
         assert time_b > time_a
 
-    def test_decorator_and_session_compatibility(self):
-        """Test that decorator and session work together."""
-        reset_rate_limiters()
-
-        @rate_limit(calls_per_second=10, service_name="test_compat")
-        def fetch_data():
-            return "data"
-
-        session = RateLimitedSession(calls_per_second=10, service_name="test_compat")
-
-        # Both should use the same rate limiter
-        result1 = fetch_data()
-        result2 = session.session  # Just access to verify it exists
-
-        assert result1 == "data"
-        session.close()
 
 
 if __name__ == "__main__":

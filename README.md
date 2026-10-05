@@ -80,9 +80,9 @@ A `/financial-metrics` response looks like this (values are examples; `null` mea
   "debt_to_equity": 0.16,
   "interest_coverage": 23.56,
 
-  "revenue_growth": 14.64,
-  "earnings_growth": 18.32,
-  "earnings_per_share_growth": 17.6,
+  "revenue_growth_annual": 14.64,
+  "earnings_growth_annual": 18.32,
+  "earnings_per_share_growth_annual": 17.6,
 
   "earnings_per_share": 10.01,
   "book_value_per_share": 64.36,

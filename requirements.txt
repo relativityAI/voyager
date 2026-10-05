@@ -20,7 +20,6 @@ edgartools==5.56.0
 sqlalchemy[asyncio]>=2.0.35
 asyncpg>=0.30.0
 psycopg2-binary>=2.9.9
-alembic>=1.14.0
 
 # HTTP / web scraping
 requests==2.34.2

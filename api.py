@@ -13,7 +13,7 @@ from loguru import logger
 from __version__ import __version__
 from src.auth import APIKey, require_api_key, require_scope
 from src.auth.routes import router as admin_router
-from src.db.connection import init_db, ping_database
+from src.db.engine import init_db, ping_database
 from src.jobs import (
     JobNotCancellable,
     PullAlreadyActive,
@@ -30,7 +30,7 @@ from src.logging_config import setup_logging
 from src.observability import (
     HttpCacheMiddleware,
     PrometheusMiddleware,
-    init_observability,
+    init_sentry,
     metrics_enabled,
     metrics_response,
 )
@@ -59,7 +59,7 @@ load_dotenv()
 
 setup_logging()
 
-init_observability()
+init_sentry()
 
 
 @asynccontextmanager

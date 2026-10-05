@@ -542,7 +542,12 @@ async def financial_metrics(
         )
         yoy_dep = _to_float(yoy_rec.get("depreciation_depletion_and_amortisation_expense")) if yoy_rec else None
         ebitda_growth = (
-            _growth_rate(ebit + dep, (yoy_rec.get("profit_before_tax") or 0) + (yoy_rec.get("finance_costs") or 0) + yoy_dep)
+            _growth_rate(
+                ebit + dep,
+                (_to_float(yoy_rec.get("profit_before_tax")) or 0)
+                + (_to_float(yoy_rec.get("finance_costs")) or 0)
+                + yoy_dep,
+            )
             if yoy_rec is not None and dep is not None and yoy_dep is not None
             else op_income_growth
         )
@@ -807,14 +812,19 @@ async def financial_metrics(
     result["price_to_operating_cash_flow_ratio"] = _safe_div(market_cap, val_ocf)
     result["price_to_free_cash_flow_ratio"] = _safe_div(market_cap, fcf)
 
-    result["revenue_growth"] = revenue_growth
-    result["revenue_growth_qoq"] = _qoq("revenue_from_operations")
-    result["revenue_growth_yoy"] = _yoy("revenue_from_operations")
-    result["earnings_growth"] = earnings_growth
-    result["earnings_growth_qoq"] = _qoq("profit_loss_for_period")
-    result["earnings_growth_yoy"] = _yoy("profit_loss_for_period")
-    result["book_value_growth"] = book_value_growth
-    result["book_value_growth_qoq"] = _growth_rate(
+    # Every growth key names its period so the numbers can't be misread:
+    # _annual = against the year-ago window (TTM vs prior TTM),
+    # _quarterly_qoq = against the preceding quarter,
+    # _quarterly_yoy = against the same quarter a year earlier. In quarterly
+    # mode _annual is the same year-ago comparison as _quarterly_yoy.
+    result["revenue_growth_annual"] = revenue_growth
+    result["revenue_growth_quarterly_qoq"] = _qoq("revenue_from_operations")
+    result["revenue_growth_quarterly_yoy"] = _yoy("revenue_from_operations")
+    result["earnings_growth_annual"] = earnings_growth
+    result["earnings_growth_quarterly_qoq"] = _qoq("profit_loss_for_period")
+    result["earnings_growth_quarterly_yoy"] = _yoy("profit_loss_for_period")
+    result["book_value_growth_annual"] = book_value_growth
+    result["book_value_growth_quarterly_qoq"] = _growth_rate(
         total_equity if total_equity else None,
         (
             (_to_float(prev_q_rec.get("equity_share_capital")) or 0)
@@ -823,17 +833,17 @@ async def financial_metrics(
         if prev_q_rec
         else None,
     )
-    result["book_value_growth_yoy"] = book_value_growth
-    result["earnings_per_share_growth"] = eps_growth
-    result["earnings_per_share_growth_qoq"] = _qoq(
+    result["book_value_growth_quarterly_yoy"] = book_value_growth
+    result["earnings_per_share_growth_annual"] = eps_growth
+    result["earnings_per_share_growth_quarterly_qoq"] = _qoq(
         "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations"
     )
-    result["earnings_per_share_growth_yoy"] = _yoy(
+    result["earnings_per_share_growth_quarterly_yoy"] = _yoy(
         "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations"
     )
-    result["free_cash_flow_growth"] = fcf_growth
-    result["operating_income_growth"] = op_income_growth
-    result["ebitda_growth"] = ebitda_growth
+    result["free_cash_flow_growth_annual"] = fcf_growth
+    result["operating_income_growth_annual"] = op_income_growth
+    result["ebitda_growth_annual"] = ebitda_growth
 
     result["earnings_per_share"] = val_eps
     result["book_value_per_share"] = bvps

@@ -24,12 +24,6 @@ def get_session_factory():
     return async_session
 
 
-async def get_db_session() -> AsyncSession:
-    factory = get_session_factory()
-    async with factory() as session:
-        yield session
-
-
 async def init_db():
     global engine, async_session
 
@@ -93,10 +87,3 @@ async def ping_database() -> bool:
     except Exception:
         return False
 
-
-async def close_db():
-    global engine, async_session
-    if engine:
-        await engine.dispose()
-        engine = None
-        async_session = None

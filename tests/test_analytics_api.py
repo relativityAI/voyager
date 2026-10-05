@@ -204,7 +204,7 @@ class TestFieldFilterAndBatch:
             "price_data": "live",
             "price_to_earnings_ratio": 20.0,
             "return_on_equity": 12.0,
-            "revenue_growth": 5.0,
+            "revenue_growth_annual": 5.0,
             "enterprise_value": 1.0,
         }
         with patch(

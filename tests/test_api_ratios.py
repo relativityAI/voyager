@@ -297,8 +297,8 @@ class TestFinancialMetrics:
         assert data["filing_type"] == "ttm"
         assert data["last_quarter_end_date"] == "2025-03-31"
         assert data["earnings_per_share"] == pytest.approx(34.0)
-        assert data["revenue_growth"] == pytest.approx(88.89, abs=0.01)
-        assert data["earnings_growth"] == pytest.approx(118.18, abs=0.01)
+        assert data["revenue_growth_annual"] == pytest.approx(88.89, abs=0.01)
+        assert data["earnings_growth_annual"] == pytest.approx(118.18, abs=0.01)
         assert data["price_to_earnings_ratio"] == pytest.approx(73.53, abs=0.01)
         assert data["net_margin"] == pytest.approx(14.12, abs=0.01)
         assert data["operating_margin"] == pytest.approx(22.94, abs=0.01)
@@ -785,7 +785,7 @@ class TestFinancialMetrics:
         # TTM-style 4-quarter sum: rev 340, PAT 68; no EPS tag in these rows
         # so EPS stays null but the margins prove the 4-quarter summation
         assert data["net_margin"] == pytest.approx(20.0)
-        assert "revenue_growth" in data or "price_to_sales_ratio" in data
+        assert "revenue_growth_annual" in data or "price_to_sales_ratio" in data
 
 
 class TestNewRatioCoverage:

@@ -396,6 +396,10 @@ def _resample_ohlcv(hist: pd.DataFrame, rule: str) -> pd.DataFrame:
     }
     if "Volume" in hist.columns:
         agg["Volume"] = "sum"
+    # ponytail: yfinance returning nothing leaves a RangeIndex frame, which
+    # resample() rejects; returning it keeps the caller's "no data" path.
+    if not isinstance(hist.index, pd.DatetimeIndex):
+        return hist
     return hist.resample(rule).agg(agg).dropna(subset=["Open", "Close"], how="any")
 
 

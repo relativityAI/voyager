@@ -7,6 +7,7 @@ import pandas as pd
 
 from src.tools.nse.technicals import (
     _generate_yf_symbol,
+    _resample_ohlcv,
     _to_valid_float,
     fetch_price_info,
     fetch_technicals,
@@ -270,3 +271,19 @@ class TestGetTechnicalsCatalog:
         assert "current_price" in ids
         assert "rsi_14" in ids
         assert "macd" in ids
+
+
+class TestResampleOhlcv:
+    def test_empty_frame_is_returned_not_raised(self):
+        # yfinance returning nothing leaves a RangeIndex frame; resample()
+        # raises TypeError on one, which used to surface as a 500.
+        assert _resample_ohlcv(pd.DataFrame(), "W").empty
+
+    def test_daily_frame_resamples(self):
+        idx = pd.date_range("2026-01-01", periods=10, freq="D")
+        df = pd.DataFrame(
+            {"Open": 1.0, "High": 2.0, "Low": 0.5, "Close": 1.5}, index=idx
+        )
+        out = _resample_ohlcv(df, "W")
+        assert not out.empty
+        assert out["High"].iloc[0] == 2.0

@@ -505,16 +505,6 @@ ADVANCED: List[Endpoint] = [
     },
 ]
 
-DUMMY: List[Endpoint] = [
-    {
-        "name": "News (not implemented)",
-        "group": "Placeholders",
-        "method": "GET",
-        "path": "/news",
-        "auth": "key",
-    },
-]
-
 ADMIN: List[Endpoint] = [
     {
         "name": "Create API key",
@@ -538,6 +528,23 @@ ADMIN: List[Endpoint] = [
         "path": "/admin/keys",
         "auth": "admin",
         "description": "List keys (prefixes only — hashes never returned).",
+    },
+    {
+        "name": "Get API key",
+        "group": "API keys",
+        "method": "GET",
+        "path": "/admin/keys/{key_id}",
+        "auth": "admin",
+        "description": "One key by prefix (hash never returned).",
+        "params": [
+            {
+                "name": "key_id",
+                "type": "text",
+                "required": True,
+                "in_path": True,
+                "help": "The vgr_… prefix shown in the keys table.",
+            }
+        ],
     },
     {
         "name": "Revoke API key",
@@ -567,7 +574,7 @@ ADMIN: List[Endpoint] = [
     },
 ]
 
-ALL_ENDPOINTS: List[Endpoint] = PUBLIC + LIST + DATA + PULLS + ADVANCED + DUMMY + ADMIN
+ALL_ENDPOINTS: List[Endpoint] = PUBLIC + LIST + DATA + PULLS + ADVANCED + ADMIN
 
 AUTH_LABELS = {
     "public": "public",

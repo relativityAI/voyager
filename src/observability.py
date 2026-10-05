@@ -20,7 +20,6 @@ from prometheus_client import (
     generate_latest,
 )
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.types import ASGIApp
 
 # GET paths whose responses are server-cached/semi-static — they get an ETag
 # (conditional-request support) and short Cache-Control (audit P2-10).
@@ -81,9 +80,6 @@ DURATION = Histogram(
 
 
 class PrometheusMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app: ASGIApp) -> None:
-        super().__init__(app)
-
     async def dispatch(self, request: Request, call_next):
         start = time.perf_counter()
         status = 500
@@ -128,10 +124,6 @@ def init_sentry() -> None:
         logger.info("Sentry enabled")
     except Exception as exc:  # noqa: BLE001 - never let observability break the app
         logger.warning(f"Failed to initialize Sentry: {exc}")
-
-
-def init_observability() -> None:
-    init_sentry()
 
 
 def metrics_enabled() -> bool:

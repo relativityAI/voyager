@@ -146,10 +146,10 @@ Flag every identity that is *unverifiable* because an input is null, and say so 
 
 ### D3 — Growth metric correctness · weight 10
 
-- Recompute from `/financials` statement rows: `revenue_growth_yoy` = latest quarter vs the same quarter one year earlier; `revenue_growth_qoq` = vs the immediately preceding quarter. Both must match the payload.
+- Recompute from `/financials` statement rows: `revenue_growth_quarterly_yoy` = latest quarter vs the same quarter one year earlier; `revenue_growth_quarterly_qoq` = vs the immediately preceding quarter. Both must match the payload.
 - **TTM-window audit (the important one).** Confirm `filing_type=ttm` flows really are the sum of 4 distinct consecutive quarters, not 3, not 5, not the same quarter twice. Report the actual quarter list per symbol.
 - Detect the silent fallback: when `filing_type=ttm` is requested but fewer than 4 quarters are stored, flows degrade to the latest single quarter **while the response still says `filing_type: ttm`**. Every such symbol is a `basis-mismatch` finding with the quarter count stated. This is a consumer-visible lie about the basis.
-- `revenue_growth` (TTM vs prior TTM) and `revenue_growth_yoy` (quarter vs quarter) are different quantities. Report both; if the payload ever makes them numerically identical, that is a finding.
+- `revenue_growth_annual` (TTM vs prior TTM) and `revenue_growth_quarterly_yoy` (quarter vs quarter) are different quantities. Report both; if the payload ever makes them numerically identical, that is a finding.
 - Growth values are in **percent** (e.g. `12.4` = 12.4%). A value in `0.124` form is a unit bug.
 
 ### D4 — Basis & semantics correctness · weight 10
@@ -439,9 +439,9 @@ Unit conventions: `_pct` fields are **percent** (e.g. `17.2` = 17.2%). Ratio fie
 | `book_value_per_share` | ₹ / $ | screener BV | equity / shares |
 | `free_cash_flow_per_share` | ₹ / $ | screener | FCF = OCF − capex; **falls back to OCF** when capex is absent — `free_cash_flow_source` discloses which |
 | `free_cash_flow_source` | enum | — | degradation flag: `operating_cash_flow_minus_capex` vs `operating_cash_flow_capex_absent` |
-| `revenue_growth`, `earnings_growth`, `earnings_per_share_growth`, `book_value_growth`, `free_cash_flow_growth`, `operating_income_growth`, `ebitda_growth` | % | screener growth | TTM vs prior TTM |
-| `*_qoq` | % | — | latest quarter vs immediately preceding quarter |
-| `*_yoy` | % | — | latest quarter vs same quarter last year |
+| `revenue_growth_annual`, `earnings_growth_annual`, `earnings_per_share_growth_annual`, `book_value_growth_annual`, `free_cash_flow_growth_annual`, `operating_income_growth_annual`, `ebitda_growth_annual` | % | screener growth | TTM vs prior TTM |
+| `*_quarterly_qoq` | % | — | latest quarter vs immediately preceding quarter |
+| `*_quarterly_yoy` | % | — | latest quarter vs same quarter last year |
 | `rsi_14`, `sma_20/50/200`, `ema_20`, `bb_upper/middle/lower`, `atr_14`, `volume`, `avg_volume_10d`, `avg_volume_3m`, `high_52w`, `low_52w`, `change_pct`, `volume_ratio` | mixed | market data | Technical, not financial. Presence + scale sanity only |
 | `delivery_percentage`, `relative_strength` | % / mixed | NSE only | Expected **absent** for `source=sec` |
 

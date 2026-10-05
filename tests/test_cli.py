@@ -51,7 +51,7 @@ def test_list_sources(buf_console):
 
 
 def test_metrics(buf_console):
-    sample = {"symbol": "VBL", "current_price": 442.3, "revenue_growth": 14.64}
+    sample = {"symbol": "VBL", "current_price": 442.3, "revenue_growth_annual": 14.64}
     with patch("cli.financial_metrics", AsyncMock(return_value=sample)):
         result = runner.invoke(cli.app, ["metrics", "VBL", "--filing-type", "ttm"])
     assert result.exit_code == 0
