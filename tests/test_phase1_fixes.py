@@ -124,3 +124,52 @@ def test_get_financials_mixed_periods_flags_warning():
     assert resp["data_quality"]["source_periods"]["IncomeStatement"] == "2026-06-30"
     # period_end_date must anchor on the income statement, not the stale cash flow
     assert resp["period_end_date"] == "2026-06-30"
+
+
+def test_get_financials_standalone_fallback_when_no_consolidated():
+    """consolidated=True on an issuer with no consolidated filings must return
+    standalone — that is the whole-company picture at that date."""
+    from src.services.nse import get_financials
+
+    def _scalar(value):
+        m = MagicMock()
+        m.scalar_one_or_none = MagicMock(return_value=value)
+        return m
+
+    def _list_result(items):
+        m = MagicMock()
+        scalars = MagicMock()
+        scalars.all.return_value = items
+        m.scalars.return_value = scalars
+        return m
+
+    # Loop order is IncomeStatement, BalanceSheet, CashFlow; each executes the
+    # consolidated query, then (on empty) a standalone fallback query.
+    standalone_income = _doc(
+        SimpleNamespace, "2025-12-31", consolidated=False, revenue_from_operations=500
+    )
+    standalone_bs = _doc(
+        SimpleNamespace, "2025-12-31", consolidated=False, assets=1000
+    )
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=[
+        _scalar(None), _scalar(standalone_income),
+        _list_result([]), _list_result([standalone_bs]),
+        _scalar(None), _scalar(None),
+    ])
+
+    def run():
+        with patch(
+            "src.services.nse.get_session_factory",
+            return_value=_mock_factory(session),
+        ):
+            return asyncio.run(get_financials("T", source="nse", all_fields=True))
+
+    resp = run()
+    assert resp["revenue_from_operations"] == 500
+    assert resp["assets"] == 1000
+    assert resp["period_end_date"] == "2025-12-31"
+    assert resp["data_quality"]["standalone_fallback"] == [
+        "BalanceSheet",
+        "IncomeStatement",
+    ]

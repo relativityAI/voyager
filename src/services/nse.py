@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.db.engine import get_session_factory
@@ -551,6 +551,7 @@ async def get_financials(
     source_periods: Dict[str, str] = {}
 
     async with factory() as session:
+        fallback_models: list = []
         for model_class in (IncomeStatement, BalanceSheet, CashFlow):
             stmt = (
                 select(model_class)
@@ -569,6 +570,19 @@ async def get_financials(
                 )
             else:
                 doc = (await session.execute(stmt.limit(1))).scalar_one_or_none()
+            if consolidated and doc is None:
+                # Issuer never filed consolidated for this statement — the
+                # standalone filing is the whole-company picture at that time.
+                stmt = stmt.where(model_class.consolidated.is_(False))
+                if model_class is BalanceSheet:
+                    docs = (await session.execute(stmt.limit(12))).scalars().all()
+                    doc = _latest_populated_balance_sheet(
+                        docs, priority_config.get("balance_sheets", set())
+                    )
+                else:
+                    doc = (await session.execute(stmt.limit(1))).scalar_one_or_none()
+                if doc is not None:
+                    fallback_models.append(model_class.__name__)
             if doc:
                 d = doc.to_dict()
                 period = d.get("period_end_date")
@@ -589,7 +603,15 @@ async def get_financials(
         merged["period_end_date"] = is_period
 
     unique_periods = {p for p in source_periods.values() if p}
-    if len(unique_periods) > 1:
+    if fallback_models:
+        merged["data_quality"] = {
+            "warning": (
+                f"No consolidated data for {', '.join(sorted(fallback_models))}; "
+                "using standalone (the whole-company picture at that date)"
+            ),
+            "standalone_fallback": sorted(fallback_models),
+        }
+    elif len(unique_periods) > 1:
         merged["data_quality"] = {
             "warning": "Merged data mixes different reporting periods",
             "source_periods": source_periods,
@@ -635,7 +657,25 @@ async def get_statement_data(
             model_class.source == source,
         )
         if consolidated is not None:
-            base = base.where(model_class.consolidated == consolidated)
+            if consolidated:
+                # Consolidated where a consolidated period exists, otherwise that
+                # period's standalone is the whole-company picture at that time.
+                base = base.where(
+                    or_(
+                        model_class.consolidated.is_(True),
+                        model_class.period_end_date.not_in(
+                            select(model_class.period_end_date)
+                            .where(
+                                model_class.symbol == symbol,
+                                model_class.filing_type == filing_type,
+                                model_class.source == source,
+                                model_class.consolidated.is_(True)
+                            )
+                        ),
+                    )
+                )
+            else:
+                base = base.where(model_class.consolidated.is_(False))
 
         total = (
             await session.execute(select(func.count()).select_from(base.subquery()))

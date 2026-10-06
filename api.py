@@ -123,6 +123,8 @@ agent_guide = """\
 
 **Conventions:** dates `YYYY-MM-DD`; timestamps ISO-8601 with timezone (bar dates are exchange-local); money in INR (`source=sec` -> USD); ratios are percent where `17.0` means 17%; a key omitted from an object means "not reported" (endpoints offering `all_fields=true` return explicit nulls instead). List `limit` caps are noted per query (max 50; batches max 10 symbols). Rate limits are reported in `X-RateLimit-*` headers, with `429` beyond them.
 
+**Consolidation fallback:** `consolidated=true` returns consolidated statements, except for periods where the issuer only filed standalone — those fall back to the standalone filing, the whole-company picture at that time. Charts from this data are therefore continuous even when an issuer's reporting basis changes mid-history.
+
 **Async pulls:** `POST /pull` returns `202 {job_id, status_url}`; poll `status_url` until `status` is `done` or `failed`.\
 """
 
@@ -497,6 +499,7 @@ OpenAPI spec, then this page for conventions.
 - A key omitted from an object means "not reported"; `all_fields=true` returns explicit nulls instead.
 - Errors: RFC 9457 `application/problem+json` with `detail` (string) and `code` (stable token); `retry`/`retry_after_seconds` say whether to wait. 422 adds per-field `errors`.
 - Rate limits: `X-RateLimit-*` headers, `429` beyond them.
+- Consolidation fallback: `consolidated=true` returns consolidated statements, except periods where the issuer only filed standalone — those fall back to the standalone filing (the whole-company picture at that time), so charts stay continuous when reporting basis changes mid-history.
 
 ## Quick start
 
@@ -555,7 +558,14 @@ async def search_endpoint(
 async def financials(
     symbol: str = Query(..., description=_SYM),
     source: str = Query("nse", description=_SRC),
-    consolidated: bool = Query(True),
+    consolidated: bool = Query(
+        True,
+        description=(
+            "Consolidated (default). Falls back to standalone for statements/periods "
+            "where the issuer filed no consolidated data — that filing was the whole "
+            "company picture at that time. Use history=true for the full archive."
+        ),
+    ),
     filing_type: Literal["quarterly", "annual"] = Query(
         "quarterly", description=_QA
     ),
@@ -583,7 +593,11 @@ async def financials_income_statements(
     source: str = Query("nse", description=_SRC),
     consolidated: Optional[bool] = Query(
         None,
-        description="Filter by consolidated (true) or standalone (false). Default: both.",
+        description=(
+            "Both bases (default). true = consolidated only, except periods that "
+            "only exist standalone — those fall back to the standalone filing (the "
+            "whole company picture at that time). false = standalone only."
+        ),
     ),
     filing_type: Literal["quarterly", "annual"] = Query(
         "quarterly", description=_QA
@@ -617,7 +631,12 @@ async def financials_balance_sheets(
     symbol: str = Query(..., description=_SYM),
     source: str = Query("nse", description=_SRC),
     consolidated: Optional[bool] = Query(
-        None, description="Default: both bases."
+        None,
+        description=(
+            "Both bases (default). true = consolidated only, except periods that "
+            "only exist standalone — those fall back to the standalone filing (the "
+            "whole company picture at that time). false = standalone only."
+        ),
     ),
     filing_type: Literal["quarterly", "annual"] = Query(
         "quarterly", description=_QA
@@ -649,7 +668,12 @@ async def financials_cash_flows(
     symbol: str = Query(..., description=_SYM),
     source: str = Query("nse", description=_SRC),
     consolidated: Optional[bool] = Query(
-        None, description="Default: both bases."
+        None,
+        description=(
+            "Both bases (default). true = consolidated only, except periods that "
+            "only exist standalone — those fall back to the standalone filing (the "
+            "whole company picture at that time). false = standalone only."
+        ),
     ),
     filing_type: Literal["quarterly", "annual"] = Query(
         "quarterly", description=_QA

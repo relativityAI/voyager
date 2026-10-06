@@ -255,7 +255,7 @@ This repo ships a `render.yaml` blueprint for Render. The API runs on **Read Rep
 
 ### Key parameters
 
-- `consolidated` — `true` (default) for consolidated statements, `false` for standalone, `null` for both.
+- `consolidated` — `true` (default) for consolidated statements, `false` for standalone, `null` for both. Periods where the issuer only filed standalone still appear under `true` — they fall back to the standalone filing, which is the whole-company picture at that time.
 - `filing_type` — `quarterly`, `annual`, or `ttm`.
 - `refresh` — on `POST /pull`, re-downloads and re-parses XBRL already in the DB.
 - `limit` — on statement endpoints, number of rows to return (0 = all).
