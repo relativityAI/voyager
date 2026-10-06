@@ -211,10 +211,8 @@ def _render_submissions(client) -> None:
         st.rerun()
 
     for r in failed:
-        if r["status"] == 409:
-            st.warning(f"{r['symbol']}: {r['detail']}")
-        elif r["status"] == 503:
-            st.warning(f"{r['symbol']}: {r['detail']} — the API caps concurrent pulls.")
+        if r["status"] == 503:
+            st.warning(f"{r['symbol']}: {r['detail']} — the job queue is full; retry shortly.")
         elif r["status"] == 429:
             st.warning(f"{r['symbol']}: {r['detail']} — wait a minute and retry.")
         else:

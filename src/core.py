@@ -24,7 +24,7 @@ def fetch_nse_financials(symbol: str) -> List[Dict[str, Any]]:
 
     # 1. Integrated Filings
     try:
-        integrated_data = nseindia.integrated_filing_xbrls(symbol).get("data", [])
+        integrated_data = nseindia.api.integrated_filing_xbrls(symbol).get("data", [])
         for x in integrated_data:
             data = nseindia.process_xbrl(x, symbol, "integrated-filing")
             if data:
@@ -36,7 +36,7 @@ def fetch_nse_financials(symbol: str) -> List[Dict[str, Any]]:
 
     # 2. Quarterly Results
     try:
-        quarterly_data = nseindia.quarterly_results_xbrls(symbol)
+        quarterly_data = nseindia.api.quarterly_results_xbrls(symbol)
         for x in quarterly_data:
             data = nseindia.process_xbrl(x, symbol, "quarterly-results")
             if data:
@@ -54,7 +54,7 @@ def fetch_nse_announcements(symbol: str) -> List[Dict[str, Any]]:
     logger.info(f"NSE announcements fetch: {symbol}")
     nseindia = NSEIndia()
     try:
-        return nseindia.announcements_xbrls(symbol)
+        return nseindia.api.announcements_xbrls(symbol)
     except Exception as e:
         logger.error(f"Error fetching announcements: {e}")
         return []
@@ -67,7 +67,7 @@ def fetch_nse_shareholdings(symbol: str) -> List[Dict[str, Any]]:
     results = []
 
     try:
-        holdings = nseindia.shareholding_xbrls(symbol)
+        holdings = nseindia.api.shareholding_xbrls(symbol)
         for x in holdings:
             data = nseindia.process_xbrl(x, symbol, "shareholding-pattern")
             if data:
@@ -85,7 +85,7 @@ def fetch_nse_annual_reports(symbol: str) -> List[Dict[str, Any]]:
     logger.info(f"NSE annual reports list fetch: {symbol}")
     nseindia = NSEIndia()
     try:
-        reports = nseindia.annual_reports_xbrls(symbol).get("data", [])
+        reports = nseindia.api.annual_reports_xbrls(symbol).get("data", [])
         for r in reports:
             r["symbol"] = symbol
         return reports

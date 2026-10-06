@@ -462,7 +462,9 @@ def test_nse_financials_fetch():
 def _shareholding_factory(existing):
     session = AsyncMock()
     result = MagicMock()
+    rows = [existing] if existing is not None else []
     result.scalar_one_or_none.return_value = existing
+    result.scalars.return_value.all.return_value = rows
     session.execute = AsyncMock(return_value=result)
     cm = AsyncMock()
     cm.__aenter__ = AsyncMock(return_value=session)
@@ -489,7 +491,8 @@ def test_shareholdings_fresh_cache_skips_live_fetch():
     ):
         result = asyncio.run(get_shareholdings("TEST"))
 
-    assert result["shareholdings"]["period_end_date"] == "2026-06-30"
+    assert len(result["shareholdings"]) >= 1
+    assert result["shareholdings"][0]["period_end_date"] == "2026-06-30"
 
 
 @pytest.mark.skipif(get_shareholdings is None, reason="services.nse unavailable")
@@ -524,7 +527,8 @@ def test_shareholdings_stale_cache_triggers_live_fetch():
     ):
         result = asyncio.run(get_shareholdings("TEST"))
 
-    assert result["shareholdings"]["period_end_date"] == "2026-06-30"
+    assert len(result["shareholdings"]) >= 1
+    assert result["shareholdings"][0]["period_end_date"] == "2026-06-30"
 
 
 def test_get_context_ref_type_exact_match():

@@ -16,13 +16,14 @@ from src.auth.routes import router as admin_router
 from src.db.engine import init_db, ping_database
 from src.jobs import (
     JobNotCancellable,
-    PullAlreadyActive,
     PullLimitReached,
     cancel_job,
+    drain_forever,
     get_job,
     list_jobs,
     reap_forever,
     reap_stale_jobs,
+    requeue_orphaned_running,
     submit_pull,
     submit_task,
 )
@@ -66,15 +67,19 @@ init_sentry()
 async def lifespan(app: FastAPI):
     logger.info("Initializing database...")
     await init_db()
+    # Running rows from the previous process are orphans: requeue them so the
+    # drain loop resumes them, then reap anything genuinely hung. Startup alone
+    # is not enough: Render keeps serving the old instance when a deploy fails
+    # its health check, so the reaper also runs on a timer.
+    await requeue_orphaned_running()
     await reap_stale_jobs()
-    # Startup alone is not enough: a job orphaned by a killed worker stays
-    # queued/running until a *successful* restart, and Render keeps serving the
-    # old instance when a deploy fails its health check.
     reaper = asyncio.create_task(reap_forever())
+    drainer = asyncio.create_task(drain_forever())
     try:
         yield
     finally:
         reaper.cancel()
+        drainer.cancel()
 
 
 openapi_tags = [
@@ -213,9 +218,13 @@ async def financials(
     all_fields: bool = Query(
         False, description="Return all stored fields instead of only priority metrics"
     ),
+    history: bool = Query(
+        False,
+        description="Add all stored periods, merged per period on both reporting bases",
+    ),
 ):
     return await get_financials(
-        symbol, None, source, consolidated, filing_type, all_fields
+        symbol, None, source, consolidated, filing_type, all_fields, history
     )
 
 
@@ -229,8 +238,8 @@ async def financials_income_statements(
     symbol: str,
     source: str = Query("nse"),
     consolidated: Optional[bool] = Query(
-        True,
-        description="Filter by consolidated (default true) or standalone (false). Pass null for both.",
+        None,
+        description="Filter by consolidated (true) or standalone (false). Default: both.",
     ),
     filing_type: str = Query("quarterly", description="quarterly or annual"),
     limit: int = Query(0, ge=0),
@@ -261,7 +270,9 @@ async def financials_income_statements(
 async def financials_balance_sheets(
     symbol: str,
     source: str = Query("nse"),
-    consolidated: Optional[bool] = Query(True),
+    consolidated: Optional[bool] = Query(
+        None, description="Default: both bases."
+    ),
     filing_type: str = Query("quarterly", description="quarterly or annual"),
     limit: int = Query(0, ge=0),
     offset: int = Query(0, ge=0, description="Rows to skip (pagination)"),
@@ -289,7 +300,9 @@ async def financials_balance_sheets(
 async def financials_cash_flows(
     symbol: str,
     source: str = Query("nse"),
-    consolidated: Optional[bool] = Query(True),
+    consolidated: Optional[bool] = Query(
+        None, description="Default: both bases."
+    ),
     filing_type: str = Query("quarterly", description="quarterly or annual"),
     limit: int = Query(0, ge=0),
     offset: int = Query(0, ge=0, description="Rows to skip (pagination)"),
@@ -336,8 +349,6 @@ async def financials_pull(
         )
     except PullLimitReached as exc:
         raise HTTPException(status_code=503, detail=str(exc))
-    except PullAlreadyActive as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
     return {
         "job_id": job.job_id,
         "status": job.status,
@@ -614,8 +625,6 @@ async def documents_parse(
         )
     except PullLimitReached as exc:
         raise HTTPException(status_code=503, detail=str(exc))
-    except PullAlreadyActive as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
     return {
         "job_id": job.job_id,
         "status": job.status,

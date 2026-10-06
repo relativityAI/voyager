@@ -170,9 +170,9 @@ def banner_for_error(err: PanelHTTPError, admin_key_set: bool) -> None:
     elif status == 429:
         st.warning(f"Rate limited (HTTP 429): {detail} — turn off job auto-refresh or wait a minute.")
     elif status == 409:
-        st.warning(f"Conflict (HTTP 409): {detail} — this key already has a pull in flight.")
+        st.warning(f"Conflict (HTTP 409): {detail}")
     elif status == 503:
-        st.warning(f"HTTP 503: {detail} — the API caps concurrent pulls; retry the rejected ones.")
+        st.warning(f"HTTP 503: {detail} — the job queue is full; retry shortly.")
     else:
         st.error(f"HTTP {status}: {detail}")
 

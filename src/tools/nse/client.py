@@ -281,12 +281,6 @@ class NSEApiClient:
         )
         return self._safe_json(res)
 
-    def annual_results_xbrls(self, symbol):
-        res = self._call(
-            self.endpoints["integrated-filing"].format(symbol=symbol.upper())
-        )
-        return self._safe_json(res)
-
     def quarterly_results_xbrls(self, symbol):
         res = self._call(
             self.endpoints["quarterly-results"].format(symbol=symbol.upper())

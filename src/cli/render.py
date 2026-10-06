@@ -486,9 +486,13 @@ def render_shareholdings(data: Dict[str, Any]) -> None:
     header = Text()
     header.append("SHAREHOLDINGS  ", style=LABEL)
     header.append(str(data.get("symbol", "")), style=HEADER)
-    holdings = data.get("shareholdings") or {}
+    raw = data.get("shareholdings") or {}
+    holdings_list = raw if isinstance(raw, list) else [raw]
+    holdings = holdings_list[0] if holdings_list else {}
     if holdings.get("period_end_date"):
         header.append(f"   period: {holdings['period_end_date']}", style=LABEL)
+    if len(holdings_list) > 1:
+        header.append(f"   ({len(holdings_list)} periods)", style=LABEL)
     console.print(Panel(header, border_style=MUTED))
 
     rows = []

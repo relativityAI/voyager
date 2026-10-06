@@ -2,7 +2,7 @@ import asyncio
 import os
 import time
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
 from sqlalchemy import func, select
@@ -498,6 +498,37 @@ def _latest_populated_balance_sheet(docs, priority_fields):
     return docs[0] if docs else None
 
 
+async def _financial_history(
+    symbol: str, source: str, filing_type: str
+) -> List[Dict[str, Any]]:
+    """Merged doc per (period_end_date, consolidated), both bases, newest first."""
+    factory = get_session_factory()
+    groups: Dict[tuple, Dict[str, Any]] = {}
+    async with factory() as session:
+        for model_class in (IncomeStatement, BalanceSheet, CashFlow):
+            stmt = select(model_class).where(
+                model_class.symbol == symbol,
+                model_class.filing_type == filing_type,
+                model_class.source == source,
+            )
+            for doc in (await session.execute(stmt)).scalars().all():
+                d = doc.to_dict()
+                key = (str(d.get("period_end_date")), bool(d.get("consolidated")))
+                g = groups.setdefault(key, {"consolidated": d.get("consolidated")})
+                for k, v in d.items():
+                    if k in ("symbol", "consolidated", "pulled_at", "_content_hash", "id"):
+                        continue
+                    g[k] = v
+    # ponytail: history is loaded unpaginated in memory; ceiling is a few hundred
+    # rows per symbol (NSE XBRL history) — add limit/offset if a symbol ever
+    # exceeds that.
+    return sorted(
+        groups.values(),
+        key=lambda g: str(g.get("period_end_date") or ""),
+        reverse=True,
+    )
+
+
 async def get_financials(
     symbol: str,
     country: Optional[str] = None,
@@ -505,6 +536,7 @@ async def get_financials(
     consolidated: bool = True,
     filing_type: str = "quarterly",
     all_fields: bool = False,
+    history: bool = False,
 ) -> Dict[str, Any]:
     symbol = symbol.upper()
     country, source = _validate_nse(country, source)
@@ -563,7 +595,13 @@ async def get_financials(
             "source_periods": source_periods,
         }
 
-    return _filter_priority_fields(merged, all_priority, all_fields)
+    out = _filter_priority_fields(merged, all_priority, all_fields)
+    if history:
+        # history=true is the complete archive: both reporting bases, so the
+        # consolidated filter (which shapes the top-level snapshot) does not
+        # hide standalone-only periods like PATANJALI's pre-2024 filings.
+        out["history"] = await _financial_history(symbol, source, filing_type)
+    return out
 
 
 async def get_statement_data(
@@ -769,6 +807,29 @@ async def get_announcements(
 _SH_FRESHNESS = timedelta(days=7)
 
 
+def _sh_payload(symbol: str, source: str, rows: List[Shareholding]) -> Dict[str, Any]:
+    priority = _load_priority_metrics().get("shareholdings", set())
+    return {
+        "symbol": symbol,
+        "source": source,
+        "shareholdings": [
+            _filter_priority_fields(r.to_dict(), priority, False) for r in rows
+        ],
+    }
+
+
+async def _load_sh_rows(symbol: str) -> List[Shareholding]:
+    factory = get_session_factory()
+    async with factory() as session:
+        result = await session.execute(
+            select(Shareholding).where(
+                Shareholding.symbol == symbol,
+                Shareholding.filing_type == "shareholding",
+            ).order_by(Shareholding.period_end_date.desc())
+        )
+        return list(result.scalars().all())
+
+
 async def get_shareholdings(
     symbol: str, country: Optional[str] = None, source: str = "nse"
 ) -> Dict[str, Any]:
@@ -780,28 +841,16 @@ async def get_shareholdings(
 
         return await get_shareholdings_us(symbol, country, source)
 
-    factory = get_session_factory()
-    async with factory() as session:
-        result = await session.execute(
-            select(Shareholding).where(
-                Shareholding.symbol == symbol,
-                Shareholding.filing_type == "shareholding",
-            ).order_by(Shareholding.period_end_date.desc()).limit(1)
-        )
-        existing = result.scalar_one_or_none()
+    existing = await _load_sh_rows(symbol)
 
     if (
         existing
-        and existing.pulled_at
-        and utcnow() - existing.pulled_at < _SH_FRESHNESS
+        and existing[0].pulled_at
+        and utcnow() - existing[0].pulled_at < _SH_FRESHNESS
     ):
-        priority = _load_priority_metrics().get("shareholdings", set())
-        return {
-            "symbol": symbol,
-            "source": source,
-            "shareholdings": _filter_priority_fields(existing.to_dict(), priority, False),
-        }
+        return _sh_payload(symbol, source, existing)
 
+    factory = get_session_factory()
     try:
         records = await asyncio.to_thread(
             lambda: nse_scraper.api.shareholding_xbrls(symbol)
@@ -809,7 +858,8 @@ async def get_shareholdings(
         if not isinstance(records, list) or not records:
             raise NotFoundError(f"No shareholding data found for {symbol}")
 
-        for i, record in enumerate(records):
+        saved = 0
+        for record in records:
             parsed = await asyncio.to_thread(
                 nse_scraper.process_xbrl, record, symbol, "shareholding-pattern"
             )
@@ -817,12 +867,6 @@ async def get_shareholdings(
                 continue
             doc = parsed["shareholding"]
             doc["pulled_at"] = utcnow()
-            if i > 0:
-                logger.warning(
-                    f"Shareholding for {symbol}: serving older period "
-                    f"{doc['period_end_date']} (newest filing "
-                    f"{records[0].get('date')} unparseable)"
-                )
 
             row = _doc_to_row(doc, Shareholding)
             async with factory() as session:
@@ -836,16 +880,12 @@ async def get_shareholdings(
                 )
                 await session.execute(stmt)
                 await session.commit()
+            saved += 1
 
-            logger.info(f"Saved shareholding for {symbol} - {doc['period_end_date']}")
-            priority = _load_priority_metrics().get("shareholdings", set())
-            return {
-                "symbol": symbol,
-                "source": source,
-                "shareholdings": _filter_priority_fields(doc, priority, False),
-            }
-
-        raise NotFoundError(f"No parseable shareholding XBRL found for {symbol}")
+        if not saved:
+            raise NotFoundError(f"No parseable shareholding XBRL found for {symbol}")
+        logger.info(f"Saved {saved} shareholding periods for {symbol}")
+        return _sh_payload(symbol, source, await _load_sh_rows(symbol))
     except CookieError as e:
         logger.error(f"Cookie failure fetching shareholdings for {symbol}: {e}")
         raise ServiceUnavailableError("NSE session unavailable (cookie failure)")

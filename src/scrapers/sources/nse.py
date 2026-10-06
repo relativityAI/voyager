@@ -42,7 +42,10 @@ NSE_ENDPOINTS = {
     "event-calendar": "https://www.nseindia.com/api/event-calendar",
     "quarterly-results": "https://www.nseindia.com/api/corporates-financial-results?index=equities&symbol={symbol}&period=Quarterly",
     "annual-results": "https://www.nseindia.com/api/corporates-financial-results?index=equities&symbol={symbol}&period=Annual",
-    "integrated-filing": "https://www.nseindia.com/api/integrated-filing-results?&symbol={symbol}",
+    # ponytail: size=100 returns the full recent set in one call (verified: 21/21
+    # for PATANJALI vs 20 with the default page); ceiling is NSE's max page size —
+    # add a page loop if totalCount ever exceeds it.
+    "integrated-filing": "https://www.nseindia.com/api/integrated-filing-results?&symbol={symbol}&size=100",
 }
 
 

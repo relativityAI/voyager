@@ -70,7 +70,7 @@ def _statement_params() -> List[Dict[str, Any]]:
         {
             "name": "consolidated",
             "type": "bool3",
-            "default": "true",
+            "default": "null",
             "options": [
                 {"label": "Consolidated (true)", "value": "true"},
                 {"label": "Standalone (false)", "value": "false"},
@@ -159,6 +159,12 @@ DATA: List[Endpoint] = [
                 "type": "bool",
                 "default": False,
                 "help": "Return all stored fields instead of only priority metrics.",
+            },
+            {
+                "name": "history",
+                "type": "bool",
+                "default": False,
+                "help": "Add all stored periods, merged per period on both reporting bases.",
             },
         ],
     },
@@ -272,7 +278,7 @@ DATA: List[Endpoint] = [
         "method": "GET",
         "path": "/shareholdings",
         "auth": "key",
-        "description": "Latest promoter / FII / DII / public holding (NSE), or a US-specific insider-ownership schema (SEC).",
+        "description": "All shareholding periods, newest first (promoter / FII / DII / public, NSE); US insider-ownership schema (SEC).",
         "params": _symbol_params(),
     },
 ]

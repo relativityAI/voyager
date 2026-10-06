@@ -2,7 +2,7 @@
 must be swept without needing a restart."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -120,16 +120,12 @@ async def test_cancel_rejects_other_keys_job(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_task_slots_are_per_task_type(monkeypatch):
-    """Audit P0-1: a stuck documents.parse job must not block a different task type."""
-    stuck_docs = [_job(status="running", task="documents.parse", created_by="vgr_test0000")]
+async def test_queue_full_blocks_same_task_only(monkeypatch):
+    """A full queue must reject only that task kind, not every other one."""
 
-    class _ResultWithWhere:
+    class _CountResult:
         def __init__(self, rows):
             self._rows = rows
-
-        def scalars(self):
-            return self
 
         def all(self):
             return self._rows
@@ -137,23 +133,79 @@ async def test_task_slots_are_per_task_type(monkeypatch):
     s = _session()
 
     async def _execute(stmt):
-        # Return the documents rows only when the statement filters by that task
-        # (the literal is a bound param, so match its compiled value).
         params = getattr(stmt.compile(), "params", {})
         if "documents.parse" in str(params.values()):
-            return _ResultWithWhere(stuck_docs)
-        return _ResultWithWhere([])
+            return _CountResult([("queued", 20)])  # queue full
+        return _CountResult([("queued", 0)])  # plenty of room
 
     s.execute = _execute
     monkeypatch.setattr(jobs, "get_session_factory", lambda: _SessionCM(s))
+    monkeypatch.setattr(jobs, "MAX_QUEUED_JOBS", 20)
 
-    # documents.parse slots are full (1 active >= MAX 1 for the test).
-    monkeypatch.setattr(jobs, "MAX_CONCURRENT_PULLS", 1)
     with pytest.raises(jobs.PullLimitReached):
-        await jobs._check_concurrency("vgr_test0000", task="documents.parse")
+        await jobs._check_queue_capacity(task="documents.parse")
 
-    # ...but an unknown/other task still has free slots — different task type.
-    await jobs._check_concurrency("vgr_test0000", task="other.task")
+    await jobs._check_queue_capacity(task="other.task")
+
+
+@pytest.mark.asyncio
+async def test_try_start_enforces_slots_and_single_start(monkeypatch):
+    """A queued job starts once, and never past the concurrency cap."""
+    started = []
+
+    async def _fake_run(job):
+        started.append(job.job_id)
+        jobs._inflight.discard(job.job_id)
+        jobs._inflight_kinds.pop(job.job_id, None)
+
+    monkeypatch.setattr(jobs, "_run_job", _fake_run)
+    monkeypatch.setattr(jobs, "MAX_CONCURRENT_PULLS", 1)
+
+    a = PullJob(id=1, job_id="ja", symbol="A", source="NSE", status="queued")
+    b = PullJob(id=2, job_id="jb", symbol="B", source="NSE", status="queued")
+    try:
+        assert jobs._try_start(a) is True
+        assert jobs._try_start(a) is False  # already in flight — no double start
+        assert jobs._try_start(b) is False  # slot full
+        await asyncio.sleep(0)  # a's task runs and finishes
+        assert jobs._try_start(b) is True  # slot free again
+        await asyncio.sleep(0)
+        assert started == ["ja", "jb"]
+    finally:
+        jobs._inflight.clear()
+        jobs._inflight_kinds.clear()
+
+
+@pytest.mark.asyncio
+async def test_drain_promotes_queued_jobs(monkeypatch):
+    """The drain loop starts queued jobs so nothing waits forever."""
+    q1 = PullJob(id=1, job_id="jd1", symbol="A", source="NSE", status="queued")
+    q2 = PullJob(id=2, job_id="jd2", symbol="B", source="NSE", status="queued")
+    monkeypatch.setattr(
+        jobs, "get_session_factory", lambda: _SessionCM(_session(all_of=[q1, q2]))
+    )
+    started = []
+    monkeypatch.setattr(
+        jobs, "_try_start", lambda job: started.append(job.job_id) or True
+    )
+
+    await jobs._drain_once()
+
+    assert started == ["jd1", "jd2"]
+
+
+@pytest.mark.asyncio
+async def test_requeue_orphans_at_boot(monkeypatch):
+    """A 'running' row from a dead process must return to the queue."""
+    orphan = _job(status="running", started_at=utcnow())
+    monkeypatch.setattr(
+        jobs, "get_session_factory", lambda: _SessionCM(_session(all_of=[orphan]))
+    )
+
+    await jobs.requeue_orphaned_running()
+
+    assert orphan.status == "queued"
+    assert orphan.started_at is None
 
 
 def test_post_callback_sends_json():

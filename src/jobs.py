@@ -21,7 +21,7 @@ from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from src.db.engine import get_session_factory
 from src.db.models import PullJob as PullJobModel
@@ -35,19 +35,22 @@ STALE_JOB_MINUTES = int(os.getenv("STALE_JOB_MINUTES", "30"))
 # later pull for the same key.
 JOB_TIMEOUT_SECONDS = int(os.getenv("JOB_TIMEOUT_SECONDS", str(STALE_JOB_MINUTES * 60 - 300)))
 REAP_INTERVAL_SECONDS = int(os.getenv("REAP_INTERVAL_SECONDS", "300"))
+# ponytail: queue depth is the only abuse bound (no per-key quotas — rpm already
+# caps submit rate); add per-key limits if a key ever floods the queue. The drain
+# tick is a poll: upgrade to an asyncio.Event wake-up if 2s queue latency ever
+# matters.
+MAX_QUEUED_JOBS = int(os.getenv("MAX_QUEUED_JOBS", "20"))
+DRAIN_INTERVAL_SECONDS = float(os.getenv("DRAIN_INTERVAL_SECONDS", "2"))
 
 JOB_STATUSES = {"queued", "running", "done", "failed"}
 ACTIVE_STATUSES = {"queued", "running"}
 
 _inflight: set[str] = set()
+_inflight_kinds: Dict[str, Optional[str]] = {}
 
 
 class PullLimitReached(Exception):
-    """Global concurrency cap reached."""
-
-
-class PullAlreadyActive(Exception):
-    """This key already has a job of this type in progress."""
+    """Job queue full."""
 
 
 class JobNotCancellable(Exception):
@@ -71,10 +74,14 @@ async def reap_stale_jobs() -> None:
     cutoff = utcnow() - timedelta(minutes=STALE_JOB_MINUTES)
     factory = get_session_factory()
     async with factory() as session:
+        # Only running rows are reaped, aged from started_at so time spent
+        # queued does not eat the job's window. Queued rows hold no slot and
+        # belong to the drain loop (cancel is the escape hatch), so an old
+        # queued row is never failed here.
         result = await session.execute(
             select(PullJobModel).where(
-                PullJobModel.status.in_(list(ACTIVE_STATUSES)),
-                PullJobModel.created_at < cutoff,
+                PullJobModel.status == "running",
+                PullJobModel.started_at < cutoff,
             )
         )
         stale = list(result.scalars().all())
@@ -87,12 +94,7 @@ async def reap_stale_jobs() -> None:
 
 
 async def reap_forever() -> None:
-    """Sweep orphaned jobs on a timer, not just at startup.
-
-    A job whose worker was killed leaves a queued/running row that only a
-    successful restart would clear, and until it is cleared every later pull
-    for that key fails with 409.
-    """
+    """Sweep hung running rows on a timer, not just at startup."""
     while True:
         await asyncio.sleep(REAP_INTERVAL_SECONDS)
         try:
@@ -101,30 +103,100 @@ async def reap_forever() -> None:
             logger.exception("Stale job sweep failed")
 
 
-async def _check_concurrency(created_by: Optional[str] = None, task: Optional[str] = None) -> None:
-    """Enforce per-task-type slot limits.
-
-    Slots are counted per task kind (symbol pull vs documents.parse), so one
-    stuck documents job can no longer block a pull — the audit's P0 finding.
-    """
+async def _active_counts(task: Optional[str] = None) -> Dict[str, int]:
+    """Running/queued counts for one task kind (task=None → symbol pulls)."""
     factory = get_session_factory()
     async with factory() as session:
-        stmt = select(PullJobModel).where(PullJobModel.status.in_(list(ACTIVE_STATUSES)))
+        stmt = (
+            select(PullJobModel.status, func.count())
+            .where(PullJobModel.status.in_(list(ACTIVE_STATUSES)))
+            .group_by(PullJobModel.status)
+        )
         if task:
             stmt = stmt.where(PullJobModel.task == task)
         else:
             stmt = stmt.where(PullJobModel.task.is_(None))
-        result = await session.execute(stmt)
-        active = list(result.scalars().all())
+        return {status: n for status, n in (await session.execute(stmt)).all()}
 
-    if len(active) >= MAX_CONCURRENT_PULLS:
+
+async def _check_queue_capacity(task: Optional[str] = None) -> None:
+    """Reject only when the queue for this task kind is full.
+
+    Free slots are taken immediately; otherwise the job waits for the drain
+    loop instead of erroring, so simultaneous submissions all complete.
+    """
+    counts = await _active_counts(task)
+    if counts.get("queued", 0) >= MAX_QUEUED_JOBS:
         kind = task or "pull"
         raise PullLimitReached(
-            f"Too many {kind} jobs in progress ({len(active)} >= {MAX_CONCURRENT_PULLS}). Try again shortly."
+            f"{kind} queue is full ({counts.get('queued', 0)} >= {MAX_QUEUED_JOBS}). Try again shortly."
         )
-    if created_by and any(j.created_by == created_by for j in active):
-        kind = task or "pull"
-        raise PullAlreadyActive(f"A {kind} job for this key is already in progress.")
+
+
+def _running_count(task: Optional[str]) -> int:
+    return sum(1 for kind in _inflight_kinds.values() if kind == task)
+
+
+def _try_start(job: PullJobModel) -> bool:
+    """Start a queued job iff it is not in flight and a slot is free.
+
+    The checks and the add have no await between them, so on asyncio they are
+    atomic — submit and the drain loop can race without double-starting a job
+    or overshooting MAX_CONCURRENT_PULLS. ponytail: in-process only; a second
+    replica would need a DB lease for both the inflight set and the cap.
+    """
+    if job.job_id in _inflight:
+        return False
+    if _running_count(job.task) >= MAX_CONCURRENT_PULLS:
+        return False
+    _inflight.add(job.job_id)
+    _inflight_kinds[job.job_id] = job.task
+    asyncio.create_task(_run_job(job))
+    return True
+
+
+async def requeue_orphaned_running() -> None:
+    """At boot every 'running' row belongs to a dead process (single worker);
+    requeue it so a Render deploy resumes interrupted pulls instead of leaving
+    them to the reaper.
+    ponytail: single-worker assumption — with multiple replicas this needs a
+    real lease/heartbeat instead.
+    """
+    factory = get_session_factory()
+    async with factory() as session:
+        result = await session.execute(
+            select(PullJobModel).where(PullJobModel.status == "running")
+        )
+        orphans = list(result.scalars().all())
+        for job in orphans:
+            job.status = "queued"
+            job.started_at = None
+        if orphans:
+            await session.commit()
+            logger.info(f"Re-queued {len(orphans)} orphaned running jobs at startup")
+
+
+async def drain_forever() -> None:
+    """Promote queued jobs into free slots every DRAIN_INTERVAL_SECONDS."""
+    while True:
+        await asyncio.sleep(DRAIN_INTERVAL_SECONDS)
+        try:
+            await _drain_once()
+        except Exception:
+            logger.exception("Queue drain failed")
+
+
+async def _drain_once() -> None:
+    factory = get_session_factory()
+    async with factory() as session:
+        result = await session.execute(
+            select(PullJobModel)
+            .where(PullJobModel.status == "queued")
+            .order_by(PullJobModel.created_at)
+        )
+        queued = list(result.scalars().all())
+    for job in queued:  # oldest first, per-kind FIFO; _try_start enforces slots
+        _try_start(job)
 
 
 async def submit_pull(
@@ -135,7 +207,7 @@ async def submit_pull(
     country: str = "in",
     source: str = "nse",
 ) -> PullJobModel:
-    await _check_concurrency(created_by)
+    await _check_queue_capacity()
 
     job = PullJobModel(
         job_id=str(uuid.uuid4()),
@@ -153,8 +225,11 @@ async def submit_pull(
         await session.commit()
         await session.refresh(job)
 
-    asyncio.create_task(_run_job(job))
-    logger.info(f"Pull job queued: {job.job_id} for {job.symbol}")
+    if _try_start(job):
+        logger.info(f"Pull job started: {job.job_id} for {job.symbol}")
+    else:
+        # same key twice (or all slots busy) → queued; both jobs run sequentially
+        logger.info(f"Pull job queued: {job.job_id} for {job.symbol}")
     return job
 
 
@@ -164,7 +239,7 @@ async def submit_task(
     created_by: Optional[str] = None,
 ) -> PullJobModel:
     """Submit a generic async analytics job (e.g. parse PDF)."""
-    await _check_concurrency(created_by, task=task)
+    await _check_queue_capacity(task)
 
     symbol = task_args.get("symbol") or "*"
     job = PullJobModel(
@@ -181,20 +256,26 @@ async def submit_task(
         await session.commit()
         await session.refresh(job)
 
-    asyncio.create_task(_run_job(job))
-    logger.info(f"Task job queued: {job.job_id} ({task})")
+    if _try_start(job):
+        logger.info(f"Task job started: {job.job_id} ({task})")
+    else:
+        logger.info(f"Task job queued: {job.job_id} ({task})")
     return job
 
 
 async def _run_job(job: PullJobModel) -> None:
-    _inflight.add(job.job_id)
-
     factory = get_session_factory()
     async with factory() as session:
         result = await session.execute(
             select(PullJobModel).where(PullJobModel.id == job.id)
         )
         db_job = result.scalar_one()
+        if db_job.status != "queued":
+            # cancelled (or reaped) while waiting for a slot — _try_start has
+            # already registered us as in flight, so release it and bail.
+            _inflight.discard(job.job_id)
+            _inflight_kinds.pop(job.job_id, None)
+            return
         db_job.status = "running"
         db_job.started_at = utcnow()
         await session.commit()
@@ -232,6 +313,7 @@ async def _run_job(job: PullJobModel) -> None:
             db_job.finished_at = utcnow()
             await session.commit()
             _inflight.discard(db_job.job_id)
+            _inflight_kinds.pop(db_job.job_id, None)
 
     # Optional webhook (audit P3-13): notify the submitter instead of polling.
     callback_url = (db_job.task_args or {}).get("callback_url") or (

@@ -160,3 +160,17 @@ def test_pull_refresh_reprocesses_existing_xbrl():
     result, processed = _pull_with_existing_urls(["http://x/one.xml"], refresh=True)
     assert processed >= 1
     assert result["timing"]["counts"].get("skipped_existing", 0) == 0
+
+
+def test_repull_of_synced_symbol_is_done_not_failed():
+    """Regression: a second pull of a fully-synced symbol skips everything
+    (xbrl_parsed=0) but must finish 'done', not 'failed'."""
+    from src.jobs import _pull_outcome
+
+    result, processed = _pull_with_existing_urls(["http://x/one.xml"])
+
+    assert processed == 0
+    assert result["xbrl_parsed"] == 0
+    assert result["timing"]["counts"].get("skipped_existing", 0) >= 1
+    assert result["status"] in ("completed", "no data")
+    assert _pull_outcome(result) == "done"
