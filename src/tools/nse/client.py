@@ -669,8 +669,11 @@ class NSEIndia:
                                 if tag not in SH_PERCENTAGE_TAGS:
                                     continue
                                 field = SH_CONTEXT_TO_FIELD.get(cr, camel_to_snake(cr))
+                                val = float(f["value"])
+                                if val < 1:
+                                    val = round(val * 100, 4)
                                 stmts["shareholding"].append(
-                                    (field, f["value"], None, tag)
+                                    (field, val, None, tag)
                                 )
                                 continue
 

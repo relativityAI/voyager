@@ -401,11 +401,11 @@ def test_process_xbrl_shareholding_new_context_format(nse_india):
     assert result is not None
     doc = result["shareholding"]
     assert doc["period_end_date"] == "2026-06-30"
-    assert doc["promoters_and_promoter_group"] == "0.7177"
-    assert doc["public_shareholding"] == "0.2823"
-    assert doc["foreign_institutional_investors"] == "0.0906"
-    assert doc["domestic_institutional_investors"] == "0.1347"
-    assert doc["non_institutions"] == "0.0569"
+    assert doc["promoters_and_promoter_group"] == 71.77
+    assert doc["public_shareholding"] == 28.23
+    assert doc["foreign_institutional_investors"] == 9.06
+    assert doc["domestic_institutional_investors"] == 13.47
+    assert doc["non_institutions"] == 5.69
 
 
 def test_nse_financials_fetch():
