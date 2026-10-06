@@ -49,6 +49,13 @@ async def init_db():
     from src.db import models  # noqa: F401 — ensure all models are registered with Base
 
     async with engine.begin() as conn:
+        # Render's managed Postgres/PgBouncer sets a statement_timeout. On deploy
+        # an in-flight pull may still hold a row lock on a table, so a metadata
+        # migration waits for it and the timeout turns that benign wait into
+        # "canceling statement due to statement timeout" and a boot crash-loop.
+        # Disable it for startup DDL only; runtime queries keep the server default.
+        await conn.execute(text("SET LOCAL statement_timeout = 0"))
+
         await conn.run_sync(Base.metadata.create_all)
 
         # Idempotent schema evolution for new columns on existing tables.
