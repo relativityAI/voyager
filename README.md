@@ -124,7 +124,7 @@ Configure via `.env` (copy from `.env.example`):
 
 ### Endpoints
 
-Data endpoints require an API key via the `X-API-Key` (or `Authorization: Bearer`) header. Auth: 🔓 public · 🔑 any valid key · ✍️ `data:write` scope · 🛡️ `VOYAGER_ADMIN_KEY`.
+Data endpoints require an API key via the `X-API-Key` (or `Authorization: Bearer`) header. Auth: 🔓 public · 🔑 any valid key · ✍️ `data:write` scope · 🛡️ `VOYAGER_ADMIN_KEY`. For AI agents: `/llms.txt` is the short guide, `/openapi.json` the full contract (auth schemes, enums, response schemas); errors are RFC 9457 `application/problem+json` with a stable `code`.
 
 | Endpoint | Auth | Description |
 |---|---|---|
@@ -151,7 +151,14 @@ Data endpoints require an API key via the `X-API-Key` (or `Authorization: Bearer
 | `POST /admin/keys` | 🛡️ | Create a key; body `{name, owner?, scopes?, rpm?, expires_in_days?}` |
 | `DELETE /admin/keys/{prefix}` | 🛡️ | Revoke a key |
 | `POST /admin/keys/{prefix}/enable` | 🛡️ | Re-enable a revoked key |
-| `GET /news` | 🔑 | Not yet implemented |
+| `GET /news/stories?country=in` | 🔑 | Latest news stories for a market (`us`/`in`, RSS, cached) |
+| `GET /news/ticker?symbol=VBL` | 🔑 | News stories mentioning a symbol |
+| `GET /social/reddit?query=` | 🔑 | Reddit mentions for a ticker/company |
+| `GET /social/youtube/search?query=` | 🔑 | YouTube search (e.g. earnings calls) |
+| `GET /social/youtube/transcript?video_id=` | 🔑 | Captions/transcript for a video |
+| `POST /documents/parse?url=` | ✍️ | Async PDF → PageIndex tree (`202`, polled via `/pull/jobs/{id}`) |
+| `GET /documents/{id}/index` | 🔑 | Cached document index tree |
+| `GET /llms.txt` | 🔓 | llms.txt guide for AI agents (auth, conventions, quick start) |
 
 > The advanced suite also serves `GET /technicals` (60-section technical analysis report) and `GET /history` (raw OHLCV) — see the [Advanced Data Suite](#advanced-data-suite-1) tag in `/docs`.
 

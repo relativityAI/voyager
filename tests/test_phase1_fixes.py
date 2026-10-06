@@ -40,7 +40,9 @@ def test_list_countries_endpoint(client):
 
 def test_list_unsupported_category(client):
     resp = client.get("/list", params={"category": "bogus", "source": "nse"})
-    assert resp.status_code == 400
+    # category is a spec enum now: FastAPI validates it -> 422 problem+json
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "validation_error"
 
 
 def test_list_wrong_source_for_country(client):

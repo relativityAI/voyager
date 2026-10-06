@@ -374,7 +374,9 @@ class TestFinancialMetrics:
         response = client.get(
             "/financial-metrics?symbol=TEST&country=in&source=nse&filing_type=foo"
         )
-        assert response.status_code == 400
+        # filing_type is a spec enum now: FastAPI validates it -> 422 problem+json
+        assert response.status_code == 422
+        assert response.json()["code"] == "validation_error"
 
     def test_interim_quarter_carries_forward_balance_sheet(self):
         """Interim quarters publish P&L-only XBRLs; stock fields must come

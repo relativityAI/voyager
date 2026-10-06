@@ -50,6 +50,14 @@ PUBLIC: List[Endpoint] = [
         "auth": "public",
         "description": "Prometheus text exposition (requests, durations, process).",
     },
+    {
+        "name": "LLM guide (llms.txt)",
+        "group": "Health",
+        "method": "GET",
+        "path": "/llms.txt",
+        "auth": "public",
+        "description": "llms.txt markdown guide for AI agents: auth, conventions, quick start.",
+    },
 ]
 
 

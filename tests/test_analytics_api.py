@@ -65,7 +65,9 @@ class TestNews:
 
     def test_stories_rejects_bad_country(self):
         resp = client.get("/news/stories?country=xx")
-        assert resp.status_code == 400
+        # country is a spec enum now -> FastAPI 422 problem+json
+        assert resp.status_code == 422
+        assert resp.json()["code"] == "validation_error"
 
     def test_ticker(self):
         with patch(
