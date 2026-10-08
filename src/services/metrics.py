@@ -11,295 +11,20 @@ from src.db.models import BalanceSheet, CashFlow, IncomeStatement, NSEStockMetad
 from ._common import InvalidRequestError, _validate_source
 
 
-def _capex_magnitude(v) -> Optional[float]:
-    """Capex is stored as a signed outflow (SEC tags it negative); FCF
-    subtracts it, so compare on magnitude and ignore which way it points."""
-    return abs(v) if v is not None else None
-
-
-def _to_float(v) -> Optional[float]:
-    if v is None:
-        return None
-    try:
-        f = float(str(v).replace(",", ""))
-        return None if (f != f or abs(f) == float("inf")) else f
-    except (ValueError, TypeError):
-        return None
-
-
-def _safe_div(a: Optional[float], b: Optional[float]) -> Optional[float]:
-    if a is None or b is None or b == 0:
-        return None
-    r = a / b
-    return None if (r != r or abs(r) == float("inf")) else r
-
-
-def _pct(v: Optional[float]) -> Optional[float]:
-    return round(v * 100, 4) if v is not None else None
-
-
-def _round2(v: Any) -> Any:
-    """Round a numeric metric to max 2 decimals for the response.
-
-    Small-magnitude values (abs < 1) keep 4 decimals: collapsing a true
-    0.019 debt/equity to 0.0 erases the signal (eval finding D5.8/H8).
-    """
-    if isinstance(v, bool) or not isinstance(v, (int, float)):
-        return v
-    f = float(v)
-    if f != f or abs(f) == float("inf"):
-        return None
-    return round(f, 4) if (f != 0 and abs(f) < 1) else round(f, 2)
-
-
-def _ttm_window(
-    records: list, field: str, start: int = 0, require_all: bool = True
-) -> Optional[float]:
-    vals = [_to_float(r.get(field)) for r in records[start : start + 4]]
-    available = [v for v in vals if v is not None]
-    if not available:
-        return None
-    if require_all and len(available) != 4:
-        return None
-    return sum(available)
-
-
-_BS_META_FIELDS = frozenset({
-    "id", "symbol", "pulled_at", "_content_hash",
-    "period_end_date", "period_start_date", "xbrl_url", "broadcast_date",
-    "consolidated", "filing_type", "measure", "entity_identifier",
-    "fiscal_period", "source_endpoint", "context_ref_type",
-})
-
-
-def _carry_forward_balance_sheets(records: list, balance_docs: dict) -> None:
-    """Interim quarters publish P&L-only XBRLs; fill missing stock fields from
-    the nearest older balance sheet (NSE reports BS instants at year-end).
-    """
-    # ponytail: fixed 380-day lookback; widen only if NSE skips a year-end filing
-    if not balance_docs:
-        return
-    bs_dates = sorted(balance_docs.keys(), reverse=True)
-    fields = set()
-    for d in balance_docs.values():
-        fields |= set(d.keys())
-    fields -= _BS_META_FIELDS
-    # Newest quarterly filings can be stub rows (Q1 XBRLs only carry ratio
-    # fields), so the fill set must come from every stored balance sheet, not
-    # just the first row's keys.
-    for r in records:
-        d = r.get("period_end_date")
-        if not isinstance(d, str):
-            continue
-        try:
-            dt = datetime.strptime(d, "%Y-%m-%d")
-        except ValueError:
-            continue
-        for bd in bs_dates:
-            try:
-                bdt = datetime.strptime(bd, "%Y-%m-%d")
-            except ValueError:
-                continue
-            gap = (dt - bdt).days
-            if gap < 0:
-                continue
-            if gap > 380:
-                break
-            src = balance_docs[bd]
-            for k in fields:
-                if r.get(k) is None and src.get(k) is not None:
-                    r[k] = src[k]
-
-
-_FYE_MONTHS = {3: 31, 6: 30, 9: 30, 12: 31}
-
-
-def _fye_day(month: int) -> int:
-    """Calendar day of a fiscal-year-end month (Mar 31, Jun 30, Sep 30, Dec 31)."""
-    return _FYE_MONTHS.get(month, 28 if month == 2 else 30)
-
-
-def _infer_fye_month(records: list) -> Optional[int]:
-    """Infer the fiscal-year-end month from the filings' own fiscal_period
-    tags: SEC and NSE parsers both stamp the quarter ending the fiscal year
-    (Q4) with the FYE month, so the modal month of Q4 rows IS the FYE month.
-    Falls back to the least-common quarter-end month when the tag is absent;
-    returns None when there is not enough signal to decide."""
-    q4_months: list[int] = []
-    months: list[int] = []
-    for r in records:
-        d = r.get("period_end_date")
-        if not isinstance(d, str):
-            continue
-        try:
-            m = datetime.strptime(d, "%Y-%m-%d").month
-        except ValueError:
-            continue
-        months.append(m)
-        if (r.get("fiscal_period") or "").upper() == "Q4":
-            q4_months.append(m)
-    if q4_months:
-        counts: dict[int, int] = {}
-        for m in q4_months:
-            counts[m] = counts.get(m, 0) + 1
-        return max(counts, key=lambda k: counts[k])
-    if len(months) < 4:
-        return None
-    # The FYE month is the least common quarter-end month (appears once per
-    # year, while the three interim months appear three times).
-    counts = {}
-    for m in months:
-        counts[m] = counts.get(m, 0) + 1
-    min_count = min(counts.values())
-    candidates = sorted(m for m, c in counts.items() if c == min_count)
-    return candidates[0] if len(candidates) == 1 else None
-
-
-def _find_record(records: list, ref_date: str, offset_months: int) -> Optional[dict]:
-    try:
-        ref = datetime.strptime(ref_date, "%Y-%m-%d")
-        total = ref.month - offset_months
-        ty = ref.year
-        tm = total
-        if total <= 0:
-            tm = total + 12
-            ty -= 1
-        elif total > 12:
-            tm = total - 12
-            ty += 1
-        for r in records:
-            rd = r.get("period_end_date")
-            if not rd:
-                continue
-            try:
-                if isinstance(rd, str):
-                    od = datetime.strptime(rd, "%Y-%m-%d")
-                elif isinstance(rd, datetime):
-                    od = rd
-                else:
-                    continue
-                if od.year == ty and od.month == tm:
-                    return r
-            except ValueError:
-                pass
-    except ValueError:
-        pass
-    return None
-
-
-async def _safe_market_fetch(func, symbol: str, source: str) -> Dict[str, Any]:
-    try:
-        return await asyncio.to_thread(func, symbol, source)
-    except Exception as exc:
-        logger.warning(f"Market data fetch failed for {symbol}: {exc}")
-        return {}
-
-
-async def financial_metrics(
+async def _compute_metrics_async(
     symbol: str,
-    country: Optional[str] = None,
-    source: str = "nse",
-    consolidated: bool = True,
-    filing_type: str = "ttm",
+    source: str,
+    is_cons: bool,
+    filing_type: str,
+    records: list,
+    balance_docs: dict,
+    income_docs: dict,
+    cashflow_docs: dict,
+    yf_exchange: str,
+    anchor_idx: int = 0,
 ) -> Dict[str, Any]:
-    symbol = symbol.upper()
-    _, source = _validate_source(country, source)
-
-    if filing_type not in ("quarterly", "annual", "ttm"):
-        raise InvalidRequestError("filing_type must be 'quarterly', 'annual', or 'ttm'")
-
-    # One call serves all financial metrics: flows are computed on a TTM basis,
-    # stocks (balance-sheet items) on the latest quarter. filing_type is kept
-    # only as an optional override for callers that need a specific basis.
-    is_ttm = filing_type == "ttm"
-
+    latest = records[anchor_idx] if anchor_idx < len(records) else records[0]
     from src.tools.nse.technicals import fetch_price_info
-
-    is_cons = consolidated
-
-    income_docs: dict = {}
-    balance_docs: dict = {}
-    cashflow_docs: dict = {}
-
-    db_ft = "quarterly" if filing_type in ("ttm", "annual") else filing_type
-
-    yf_exchange = source
-    factory = get_session_factory()
-    async with factory() as session:
-        if source == "SEC":
-            result = await session.execute(
-                select(NSEStockMetadata).where(
-                    NSEStockMetadata.symbol == symbol,
-                    NSEStockMetadata.source == "SEC",
-                )
-            )
-            meta = result.scalar_one_or_none()
-            yf_exchange = (meta.exchange or "NASDAQ") if meta else "NASDAQ"
-
-        for model_class, dest in (
-            (IncomeStatement, income_docs),
-            (BalanceSheet, balance_docs),
-            (CashFlow, cashflow_docs),
-        ):
-            result = await session.execute(
-                select(model_class).where(
-                    model_class.symbol == symbol,
-                    model_class.consolidated == is_cons,
-                    model_class.filing_type == db_ft,
-                    model_class.source == source,
-                ).order_by(model_class.period_end_date.desc())
-            )
-            for doc in result.scalars().all():
-                d = doc.to_dict()
-                key = d.get("period_end_date")
-                if key and key not in dest:
-                    key_str = key.isoformat() if hasattr(key, "isoformat") else str(key)
-                    dest[key_str] = d
-
-    all_dates = sorted(
-        set(income_docs.keys()) | set(balance_docs.keys()) | set(cashflow_docs.keys()),
-        reverse=True,
-    )
-
-    merged_records: list[dict] = []
-    for d in all_dates:
-        merged = {"period_end_date": d, "consolidated": is_cons}
-        for src in (income_docs, balance_docs, cashflow_docs):
-            doc = src.get(d)
-            if doc:
-                for k, v in doc.items():
-                    if k not in (
-                        "period_end_date",
-                        "consolidated",
-                        "symbol",
-                        "pulled_at",
-                        "_content_hash",
-                        "id",
-                    ):
-                        merged[k] = v
-                # fiscal_period (Q1..Q4) drives FYE inference but is a
-                # statement-level tag: keep the first non-null seen for this
-                # date, never let a later statement clobber it with null.
-                fp = doc.get("fiscal_period")
-                if fp and "fiscal_period" not in merged:
-                    merged["fiscal_period"] = fp
-        merged_records.append(merged)
-
-    if not merged_records:
-        # An empty dict is indistinguishable from "all metrics null"; return an
-        # explicit no-data shape so consumers never misread absence as zeroes.
-        return {
-            "symbol": symbol,
-            "source": source.lower(),
-            "consolidated": is_cons,
-            "filing_type": filing_type,
-            "data_available": False,
-        }
-
-    records = merged_records
-    _carry_forward_balance_sheets(records, balance_docs)
-    latest = records[0]
-
     price_info = await _safe_market_fetch(fetch_price_info, symbol, yf_exchange)
     current_price = _to_float(price_info.get("current_price"))
     shares_outstanding = _to_float(price_info.get("shares_outstanding"))
@@ -880,4 +605,392 @@ async def financial_metrics(
     # ratios keep 4 decimals so a true 0.019 never reads as an exact 0.
     # Nulls are dropped: a key that is present carries a value.
     rounded = {k: _round2(v) for k, v in result.items()}
-    return {k: v for k, v in rounded.items() if v is not None}
+
+
+
+def _capex_magnitude(v) -> Optional[float]:
+    """Capex is stored as a signed outflow (SEC tags it negative); FCF
+    subtracts it, so compare on magnitude and ignore which way it points."""
+    return abs(v) if v is not None else None
+
+
+def _to_float(v) -> Optional[float]:
+    if v is None:
+        return None
+    try:
+        f = float(str(v).replace(",", ""))
+        return None if (f != f or abs(f) == float("inf")) else f
+    except (ValueError, TypeError):
+        return None
+
+
+def _safe_div(a: Optional[float], b: Optional[float]) -> Optional[float]:
+    if a is None or b is None or b == 0:
+        return None
+    r = a / b
+    return None if (r != r or abs(r) == float("inf")) else r
+
+
+def _pct(v: Optional[float]) -> Optional[float]:
+    return round(v * 100, 4) if v is not None else None
+
+
+def _round2(v: Any) -> Any:
+    """Round a numeric metric to max 2 decimals for the response.
+
+    Small-magnitude values (abs < 1) keep 4 decimals: collapsing a true
+    0.019 debt/equity to 0.0 erases the signal (eval finding D5.8/H8).
+    """
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return v
+    f = float(v)
+    if f != f or abs(f) == float("inf"):
+        return None
+    return round(f, 4) if (f != 0 and abs(f) < 1) else round(f, 2)
+
+
+def _ttm_window(
+    records: list, field: str, start: int = 0, require_all: bool = True
+) -> Optional[float]:
+    vals = [_to_float(r.get(field)) for r in records[start : start + 4]]
+    available = [v for v in vals if v is not None]
+    if not available:
+        return None
+    if require_all and len(available) != 4:
+        return None
+    return sum(available)
+
+
+_BS_META_FIELDS = frozenset({
+    "id", "symbol", "pulled_at", "_content_hash",
+    "period_end_date", "period_start_date", "xbrl_url", "broadcast_date",
+    "consolidated", "filing_type", "measure", "entity_identifier",
+    "fiscal_period", "source_endpoint", "context_ref_type",
+})
+
+
+def _carry_forward_balance_sheets(records: list, balance_docs: dict) -> None:
+    """Interim quarters publish P&L-only XBRLs; fill missing stock fields from
+    the nearest older balance sheet (NSE reports BS instants at year-end).
+    """
+    # ponytail: fixed 380-day lookback; widen only if NSE skips a year-end filing
+    if not balance_docs:
+        return
+    bs_dates = sorted(balance_docs.keys(), reverse=True)
+    fields = set()
+    for d in balance_docs.values():
+        fields |= set(d.keys())
+    fields -= _BS_META_FIELDS
+    # Newest quarterly filings can be stub rows (Q1 XBRLs only carry ratio
+    # fields), so the fill set must come from every stored balance sheet, not
+    # just the first row's keys.
+    for r in records:
+        d = r.get("period_end_date")
+        if not isinstance(d, str):
+            continue
+        try:
+            dt = datetime.strptime(d, "%Y-%m-%d")
+        except ValueError:
+            continue
+        for bd in bs_dates:
+            try:
+                bdt = datetime.strptime(bd, "%Y-%m-%d")
+            except ValueError:
+                continue
+            gap = (dt - bdt).days
+            if gap < 0:
+                continue
+            if gap > 380:
+                break
+            src = balance_docs[bd]
+            for k in fields:
+                if r.get(k) is None and src.get(k) is not None:
+                    r[k] = src[k]
+
+
+_FYE_MONTHS = {3: 31, 6: 30, 9: 30, 12: 31}
+
+
+def _fye_day(month: int) -> int:
+    """Calendar day of a fiscal-year-end month (Mar 31, Jun 30, Sep 30, Dec 31)."""
+    return _FYE_MONTHS.get(month, 28 if month == 2 else 30)
+
+
+def _infer_fye_month(records: list) -> Optional[int]:
+    """Infer the fiscal-year-end month from the filings' own fiscal_period
+    tags: SEC and NSE parsers both stamp the quarter ending the fiscal year
+    (Q4) with the FYE month, so the modal month of Q4 rows IS the FYE month.
+    Falls back to the least-common quarter-end month when the tag is absent;
+    returns None when there is not enough signal to decide."""
+    q4_months: list[int] = []
+    months: list[int] = []
+    for r in records:
+        d = r.get("period_end_date")
+        if not isinstance(d, str):
+            continue
+        try:
+            m = datetime.strptime(d, "%Y-%m-%d").month
+        except ValueError:
+            continue
+        months.append(m)
+        if (r.get("fiscal_period") or "").upper() == "Q4":
+            q4_months.append(m)
+    if q4_months:
+        counts: dict[int, int] = {}
+        for m in q4_months:
+            counts[m] = counts.get(m, 0) + 1
+        return max(counts, key=lambda k: counts[k])
+    if len(months) < 4:
+        return None
+    # The FYE month is the least common quarter-end month (appears once per
+    # year, while the three interim months appear three times).
+    counts = {}
+    for m in months:
+        counts[m] = counts.get(m, 0) + 1
+    min_count = min(counts.values())
+    candidates = sorted(m for m, c in counts.items() if c == min_count)
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _find_record(records: list, ref_date: str, offset_months: int) -> Optional[dict]:
+    try:
+        ref = datetime.strptime(ref_date, "%Y-%m-%d")
+        total = ref.month - offset_months
+        ty = ref.year
+        tm = total
+        if total <= 0:
+            tm = total + 12
+            ty -= 1
+        elif total > 12:
+            tm = total - 12
+            ty += 1
+        for r in records:
+            rd = r.get("period_end_date")
+            if not rd:
+                continue
+            try:
+                if isinstance(rd, str):
+                    od = datetime.strptime(rd, "%Y-%m-%d")
+                elif isinstance(rd, datetime):
+                    od = rd
+                else:
+                    continue
+                if od.year == ty and od.month == tm:
+                    return r
+            except ValueError:
+                pass
+    except ValueError:
+        pass
+    return None
+
+
+async def _safe_market_fetch(func, symbol: str, source: str) -> Dict[str, Any]:
+    try:
+        return await asyncio.to_thread(func, symbol, source)
+    except Exception as exc:
+        logger.warning(f"Market data fetch failed for {symbol}: {exc}")
+        return {}
+
+
+async def financial_metrics(
+    symbol: str,
+    country: Optional[str] = None,
+    source: str = "nse",
+    consolidated: bool = True,
+    filing_type: str = "ttm",
+    report_period_gte: Optional[str] = None,
+    report_period_lte: Optional[str] = None,
+    limit: Optional[int] = None,
+):
+    symbol = symbol.upper()
+    _, source = _validate_source(country, source)
+
+    if filing_type not in ("quarterly", "annual", "ttm"):
+        raise InvalidRequestError("filing_type must be 'quarterly', 'annual', or 'ttm'")
+
+    # One call serves all financial metrics: flows are computed on a TTM basis,
+    # stocks (balance-sheet items) on the latest quarter. filing_type is kept
+    # only as an optional override for callers that need a specific basis.
+    is_ttm = filing_type == "ttm"
+
+    from src.tools.nse.technicals import fetch_price_info
+
+    is_cons = consolidated
+
+    income_docs: dict = {}
+    balance_docs: dict = {}
+    cashflow_docs: dict = {}
+
+    db_ft = "quarterly" if filing_type in ("ttm", "annual") else filing_type
+
+    yf_exchange = source
+    factory = get_session_factory()
+    async with factory() as session:
+        if source == "SEC":
+            result = await session.execute(
+                select(NSEStockMetadata).where(
+                    NSEStockMetadata.symbol == symbol,
+                    NSEStockMetadata.source == "SEC",
+                )
+            )
+            meta = result.scalar_one_or_none()
+            yf_exchange = (meta.exchange or "NASDAQ") if meta else "NASDAQ"
+
+        for model_class, dest in (
+            (IncomeStatement, income_docs),
+            (BalanceSheet, balance_docs),
+            (CashFlow, cashflow_docs),
+        ):
+            result = await session.execute(
+                select(model_class).where(
+                    model_class.symbol == symbol,
+                    model_class.consolidated == is_cons,
+                    model_class.filing_type == db_ft,
+                    model_class.source == source,
+                ).order_by(model_class.period_end_date.desc())
+            )
+            for doc in result.scalars().all():
+                d = doc.to_dict()
+                key = d.get("period_end_date")
+                if key and key not in dest:
+                    key_str = key.isoformat() if hasattr(key, "isoformat") else str(key)
+                    dest[key_str] = d
+
+    all_dates = sorted(
+        set(income_docs.keys()) | set(balance_docs.keys()) | set(cashflow_docs.keys()),
+        reverse=True,
+    )
+
+    merged_records: list[dict] = []
+    for d in all_dates:
+        merged = {"period_end_date": d, "consolidated": is_cons}
+        for src in (income_docs, balance_docs, cashflow_docs):
+            doc = src.get(d)
+            if doc:
+                for k, v in doc.items():
+                    if k not in (
+                        "period_end_date",
+                        "consolidated",
+                        "symbol",
+                        "pulled_at",
+                        "_content_hash",
+                        "id",
+                    ):
+                        merged[k] = v
+                # fiscal_period (Q1..Q4) drives FYE inference but is a
+                # statement-level tag: keep the first non-null seen for this
+                # date, never let a later statement clobber it with null.
+                fp = doc.get("fiscal_period")
+                if fp and "fiscal_period" not in merged:
+                    merged["fiscal_period"] = fp
+        merged_records.append(merged)
+
+    if not merged_records:
+        # An empty dict is indistinguishable from "all metrics null"; return an
+        # explicit no-data shape so consumers never misread absence as zeroes.
+        return {
+            "symbol": symbol,
+            "source": source.lower(),
+            "consolidated": is_cons,
+            "filing_type": filing_type,
+            "data_available": False,
+        }
+
+    records = merged_records
+    _carry_forward_balance_sheets(records, balance_docs)
+
+    # Filter by report period range if provided (inclusive)
+    # ponytail: inclusive YYYY-MM-DD bounds only; extend to tz/exclusive if needed.
+    def _parse_date(s: Optional[str]):
+        if not s:
+            return None
+        try:
+            return datetime.strptime(s, "%Y-%m-%d")
+        except ValueError:
+            return None
+
+    gte_d = _parse_date(report_period_gte)
+    lte_d = _parse_date(report_period_lte)
+    if gte_d or lte_d:
+        filtered = []
+        for r in records:
+            pd = r.get("period_end_date")
+            try:
+                if isinstance(pd, str):
+                    pdd = datetime.strptime(pd, "%Y-%m-%d")
+                elif hasattr(pd, "isoformat"):
+                    try:
+                        if isinstance(pd, datetime):
+                            pdd = pd
+                        else:
+                            pdd = datetime.strptime(str(pd)[:10], "%Y-%m-%d")
+                    except Exception:
+                        continue
+                else:
+                    continue
+            except Exception:
+                continue
+            if gte_d and pdd < gte_d:
+                continue
+            if lte_d and pdd > lte_d:
+                continue
+            filtered.append(r)
+        records_f = filtered
+    else:
+        records_f = records
+
+    if not records_f:
+        return {
+            "symbol": symbol,
+            "source": source.lower(),
+            "consolidated": is_cons,
+            "filing_type": filing_type,
+            "data_available": False,
+        }
+
+    # ponytail: per-period metrics reuse global trailing history (TTM/growth computed against full records); extend to recompute from exact window only if precision required.
+    wants_list = bool(report_period_gte or report_period_lte or (limit is not None and limit != 1))
+    single = await _compute_metrics_async(
+        symbol=symbol,
+        source=source,
+        is_cons=is_cons,
+        filing_type=filing_type,
+        records=records,
+        balance_docs=balance_docs,
+        income_docs=income_docs,
+        cashflow_docs=cashflow_docs,
+        yf_exchange=yf_exchange,
+        anchor_idx=0,
+    )
+    if not wants_list:
+        return single
+    results = []
+    anchors = list(records_f)
+    if limit is not None and limit > 0:
+        anchors = anchors[:limit]
+    for i, anchor in enumerate(anchors):
+        try:
+            akey = anchor.get("period_end_date")
+            aidx = 0
+            if akey is not None:
+                for j, rr in enumerate(records):
+                    rkey = rr.get("period_end_date")
+                    if rkey == akey:
+                        aidx = j
+                        break
+            res = await _compute_metrics_async(
+                symbol=symbol,
+                source=source,
+                is_cons=is_cons,
+                filing_type=filing_type,
+                records=records,
+                balance_docs=balance_docs,
+                income_docs=income_docs,
+                cashflow_docs=cashflow_docs,
+                yf_exchange=yf_exchange,
+                anchor_idx=aidx,
+            )
+            results.append(res)
+        except Exception:
+            continue
+    return results

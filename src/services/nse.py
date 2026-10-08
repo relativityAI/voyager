@@ -499,7 +499,9 @@ def _latest_populated_balance_sheet(docs, priority_fields):
 
 
 async def _financial_history(
-    symbol: str, source: str, filing_type: str
+    symbol: str, source: str, filing_type: str,
+    report_period_gte: Optional[str] = None,
+    report_period_lte: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Merged doc per (period_end_date, consolidated), both bases, newest first."""
     factory = get_session_factory()
@@ -522,11 +524,39 @@ async def _financial_history(
     # ponytail: history is loaded unpaginated in memory; ceiling is a few hundred
     # rows per symbol (NSE XBRL history) — add limit/offset if a symbol ever
     # exceeds that.
-    return sorted(
+    hist = sorted(
         groups.values(),
         key=lambda g: str(g.get("period_end_date") or ""),
         reverse=True,
     )
+    # ponytail: inclusive YYYY-MM-DD bounds only; extend to tz/exclusive if needed.
+    def _parse_date(s: Optional[str]):
+        if not s:
+            return None
+        try:
+            return datetime.strptime(s, "%Y-%m-%d")
+        except ValueError:
+            return None
+    gte_d = _parse_date(report_period_gte)
+    lte_d = _parse_date(report_period_lte)
+    if gte_d or lte_d:
+        out_h = []
+        for h in hist:
+            pd = h.get("period_end_date")
+            try:
+                if isinstance(pd, str):
+                    pdd = datetime.strptime(pd, "%Y-%m-%d")
+                else:
+                    continue
+            except Exception:
+                continue
+            if gte_d and pdd < gte_d:
+                continue
+            if lte_d and pdd > lte_d:
+                continue
+            out_h.append(h)
+        return out_h
+    return hist
 
 
 async def get_financials(
@@ -537,6 +567,8 @@ async def get_financials(
     filing_type: str = "quarterly",
     all_fields: bool = False,
     history: bool = False,
+    report_period_gte: Optional[str] = None,
+    report_period_lte: Optional[str] = None,
 ) -> Dict[str, Any]:
     symbol = symbol.upper()
     country, source = _validate_nse(country, source)
@@ -622,7 +654,7 @@ async def get_financials(
         # history=true is the complete archive: both reporting bases, so the
         # consolidated filter (which shapes the top-level snapshot) does not
         # hide standalone-only periods like PATANJALI's pre-2024 filings.
-        out["history"] = await _financial_history(symbol, source, filing_type)
+        out["history"] = await _financial_history(symbol, source, filing_type, report_period_gte=report_period_gte, report_period_lte=report_period_lte)
     return out
 
 
@@ -636,6 +668,8 @@ async def get_statement_data(
     limit: int = 0,
     offset: int = 0,
     all_fields: bool = False,
+    report_period_gte: Optional[str] = None,
+    report_period_lte: Optional[str] = None,
 ) -> Dict[str, Any]:
     symbol = symbol.upper()
     country, source = _validate_nse(country, source)
@@ -656,6 +690,20 @@ async def get_statement_data(
             model_class.filing_type == filing_type,
             model_class.source == source,
         )
+        # ponytail: inclusive YYYY-MM-DD bounds only; extend to tz/exclusive if needed.
+        def _parse_date(s: Optional[str]):
+            if not s:
+                return None
+            try:
+                return datetime.strptime(s, "%Y-%m-%d")
+            except ValueError:
+                return None
+        gte_d = _parse_date(report_period_gte)
+        lte_d = _parse_date(report_period_lte)
+        if gte_d:
+            base = base.where(model_class.period_end_date >= gte_d)
+        if lte_d:
+            base = base.where(model_class.period_end_date <= lte_d)
         if consolidated is not None:
             if consolidated:
                 # Consolidated where a consolidated period exists, otherwise that

@@ -581,9 +581,19 @@ async def financials(
         False,
         description="Add all stored periods, merged per period on both reporting bases",
     ),
+    report_period_gte: str = Query(None, description="Start period end date (YYYY-MM-DD)"),
+    report_period_lte: str = Query(None, description="End period end date (YYYY-MM-DD)"),
 ):
     return await get_financials(
-        symbol, None, source, consolidated, filing_type, all_fields, history
+        symbol,
+        None,
+        source,
+        consolidated,
+        filing_type,
+        all_fields,
+        history,
+        report_period_gte=report_period_gte,
+        report_period_lte=report_period_lte,
     )
 
 
@@ -612,6 +622,8 @@ async def financials_income_statements(
     all_fields: bool = Query(
         False, description="Return all stored fields instead of only priority metrics"
     ),
+    report_period_gte: str = Query(None, description="Start period end date (YYYY-MM-DD)"),
+    report_period_lte: str = Query(None, description="End period end date (YYYY-MM-DD)"),
 ):
     return await get_statement_data(
         "income-statements",
@@ -623,6 +635,8 @@ async def financials_income_statements(
         limit,
         offset,
         all_fields,
+        report_period_gte=report_period_gte,
+        report_period_lte=report_period_lte,
     )
 
 
@@ -649,6 +663,8 @@ async def financials_balance_sheets(
     limit: int = Query(0, ge=0),
     offset: int = Query(0, ge=0, description="Rows to skip (pagination)"),
     all_fields: bool = Query(False),
+    report_period_gte: str = Query(None, description="Start period end date (YYYY-MM-DD)"),
+    report_period_lte: str = Query(None, description="End period end date (YYYY-MM-DD)"),
 ):
     return await get_statement_data(
         "balance-sheets",
@@ -660,6 +676,8 @@ async def financials_balance_sheets(
         limit,
         offset,
         all_fields,
+        report_period_gte=report_period_gte,
+        report_period_lte=report_period_lte,
     )
 
 
@@ -686,6 +704,8 @@ async def financials_cash_flows(
     limit: int = Query(0, ge=0),
     offset: int = Query(0, ge=0, description="Rows to skip (pagination)"),
     all_fields: bool = Query(False),
+    report_period_gte: str = Query(None, description="Start period end date (YYYY-MM-DD)"),
+    report_period_lte: str = Query(None, description="End period end date (YYYY-MM-DD)"),
 ):
     return await get_statement_data(
         "cash-flows",
@@ -697,6 +717,8 @@ async def financials_cash_flows(
         limit,
         offset,
         all_fields,
+        report_period_gte=report_period_gte,
+        report_period_lte=report_period_lte,
     )
 
 
@@ -911,12 +933,26 @@ async def financial_metrics_endpoint(
     filing_type: Literal["quarterly", "annual", "ttm"] = Query(
         "ttm", description="Window: 'quarterly', 'annual' or 'ttm' (trailing twelve months)"
     ),
+    report_period_gte: str = Query(None, description="Start period end date (YYYY-MM-DD)"),
+    report_period_lte: str = Query(None, description="End period end date (YYYY-MM-DD)"),
+    limit: int = Query(None, ge=1, description="Max periods to return when range provided"),
     fields: str = Query(
         None,
         description="Comma-separated metric names to keep (e.g. 'price_to_earnings_ratio,return_on_equity'). Unknown names are ignored; price/identifier meta is always kept.",
     ),
 ):
-    data = await financial_metrics(symbol, None, source, consolidated, filing_type)
+    data = await financial_metrics(
+        symbol,
+        None,
+        source,
+        consolidated,
+        filing_type,
+        report_period_gte=report_period_gte,
+        report_period_lte=report_period_lte,
+        limit=limit,
+    )
+    if isinstance(data, list):
+        return [_filter_fields(d, fields) for d in data]
     return _filter_fields(data, fields)
 
 
