@@ -38,7 +38,6 @@ async def _compute_metrics_async(
     other_eq = _to_float(latest.get("other_equity"))
     borrowings_c = _to_float(latest.get("borrowings_current"))
     borrowings_nc = _to_float(latest.get("borrowings_noncurrent"))
-    ncl = _to_float(latest.get("noncurrent_liabilities"))
     cash_eq_raw = _to_float(latest.get("cash_and_cash_equivalents"))
     bank_balance = _to_float(
         latest.get("bank_balance_other_than_cash_and_cash_equivalents")
@@ -605,7 +604,7 @@ async def _compute_metrics_async(
     # ratios keep 4 decimals so a true 0.019 never reads as an exact 0.
     # Nulls are dropped: a key that is present carries a value.
     rounded = {k: _round2(v) for k, v in result.items()}
-
+    return {k: v for k, v in rounded.items() if v is not None}
 
 
 def _capex_magnitude(v) -> Optional[float]:
@@ -811,10 +810,6 @@ async def financial_metrics(
     # One call serves all financial metrics: flows are computed on a TTM basis,
     # stocks (balance-sheet items) on the latest quarter. filing_type is kept
     # only as an optional override for callers that need a specific basis.
-    is_ttm = filing_type == "ttm"
-
-    from src.tools.nse.technicals import fetch_price_info
-
     is_cons = consolidated
 
     income_docs: dict = {}

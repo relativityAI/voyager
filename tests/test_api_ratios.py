@@ -789,6 +789,93 @@ class TestFinancialMetrics:
         assert data["net_margin"] == pytest.approx(20.0)
         assert "revenue_growth_annual" in data or "price_to_sales_ratio" in data
 
+    def _two_periods(self):
+        eps = "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations"
+        self._setup_db_mock(
+            [
+                {
+                    "period_end_date": "2024-12-31",
+                    "consolidated": True,
+                    "revenue_from_operations": "100000",
+                    "profit_loss_for_period": "15000",
+                    "profit_before_tax": "20000",
+                    "finance_costs": "3000",
+                    eps: "10",
+                    "equity_share_capital": "50000",
+                    "other_equity": "150000",
+                    "assets": "500000",
+                },
+                {
+                    "period_end_date": "2024-09-30",
+                    "consolidated": True,
+                    "revenue_from_operations": "90000",
+                    "profit_loss_for_period": "12000",
+                    eps: "8",
+                    "equity_share_capital": "50000",
+                    "other_equity": "140000",
+                    "assets": "450000",
+                },
+            ]
+        )
+        self.mock_fetch_price.return_value = {
+            "current_price": 2500.0,
+            "shares_outstanding": 50000000,
+        }
+
+    def test_per_period_list_with_range_and_fields(self):
+        """Production crash: report_period_gte returns a list and ?fields=
+        then called .items() on a None element (missing return in
+        _compute_metrics_async)."""
+        self._two_periods()
+        response = client.get(
+            "/financial-metrics?symbol=TEST&country=in&source=nse"
+            "&report_period_gte=2024-01-01&limit=2"
+            "&fields=price_to_earnings_ratio"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data, list) and len(data) == 2
+        # newest first: PE = 2500 / EPS(10) then 2500 / EPS(8)
+        assert [r["price_to_earnings_ratio"] for r in data] == [
+            pytest.approx(250.0),
+            pytest.approx(312.5),
+        ]
+        for row in data:
+            assert isinstance(row, dict)
+            assert row["symbol"] == "TEST"
+            # unrequested metric stripped, meta always kept
+            assert "net_margin" not in row
+
+    def test_limit_alone_returns_list_of_dicts(self):
+        self._two_periods()
+        response = client.get(
+            "/financial-metrics?symbol=TEST&country=in&source=nse&limit=2"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data, list) and len(data) == 2
+        assert all(isinstance(r, dict) and r["symbol"] == "TEST" for r in data)
+
+    def test_fields_on_no_data_dict_does_not_crash(self):
+        self._setup_db_mock([])
+        response = client.get(
+            "/financial-metrics?symbol=UNKNOWN&source=nse"
+            "&fields=price_to_earnings_ratio"
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["data_available"] is False
+
+    def test_range_outside_stored_periods_returns_no_data_dict(self):
+        self._two_periods()
+        response = client.get(
+            "/financial-metrics?symbol=TEST&source=nse"
+            "&report_period_gte=2030-01-01"
+            "&fields=price_to_earnings_ratio"
+        )
+        assert response.status_code == 200
+        assert response.json()["data_available"] is False
+
 
 class TestNewRatioCoverage:
     """Regression cover for the metrics added from the FMP ratios set.

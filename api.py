@@ -441,7 +441,7 @@ _META_FIELDS = {
 
 def _filter_fields(data: dict, fields: Optional[str]) -> dict:
     """Keep only the requested metric fields (+ meta) when ?fields= is given."""
-    if not fields:
+    if not fields or not data:
         return data
     wanted = {f.strip() for f in fields.split(",") if f.strip()}
     if not wanted:
