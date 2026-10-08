@@ -324,6 +324,11 @@ _RESPONSE_MODELS = {
     },
     ("GET", "/history"): HistoryResponse,
     ("GET", "/technicals"): Snapshot,
+    ("GET", "/technicals/chart"): {
+        "type": "string",
+        "format": "binary",
+        "description": "PNG chart image (close + SMA20/50/200 + volume)",
+    },
     ("GET", "/financial-metrics"): Snapshot,
     ("GET", "/financial-metrics/batch"): MetricsBatch,
     ("GET", "/announcements"): Announcements,
@@ -833,8 +838,9 @@ async def price_history(
 @app.get(
     "/technicals",
     summary=(
-        "End-to-end technical analysis report: 60 sections covering "
-        "multi-timeframe indicators, structure, patterns, levels and scenarios"
+        "End-to-end technical analysis report: 61 sections covering "
+        "multi-timeframe indicators, raw OHLCV, structure, patterns, "
+        "levels and scenarios"
     ),
     tags=["Advanced Data Suite"],
     dependencies=[Depends(require_api_key)],
@@ -858,6 +864,36 @@ async def technicals_report(
     return await build_technical_report(
         symbol.upper(), source_u, timeframes, ann_items
     )
+
+
+@app.get(
+    "/technicals/chart",
+    summary="Weekly/daily price chart PNG (close + SMA20/50/200 + volume)",
+    tags=["Advanced Data Suite"],
+    dependencies=[Depends(require_api_key)],
+)
+async def technicals_chart(
+    symbol: str = Query(..., description=_SYM),
+    source: str = Query("nse", description=_SRC),
+    timeframe: Literal["daily", "weekly", "monthly"] = Query(
+        "weekly", description="Chart timeframe (weekly is the analysis default)"
+    ),
+    bars: int = Query(160, ge=20, le=400, description="Number of bars to render"),
+):
+    from fastapi.responses import Response
+
+    from src.services.technical_report import render_chart_png
+
+    _, source_u = _validate_source(None, source)
+    if source_u != "NSE":
+        raise InvalidRequestError("/technicals/chart currently supports source=nse")
+    try:
+        png = await asyncio.to_thread(
+            render_chart_png, symbol.upper(), "NSE", timeframe, bars
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return Response(content=png, media_type="image/png")
 
 
 @app.get(

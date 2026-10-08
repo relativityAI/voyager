@@ -94,13 +94,22 @@ def support_resistance(
     if not prices:
         return {"supports": [], "resistances": [], "pivots_found": 0}
     clustered = _cluster_levels(prices, tolerance_pct)
-    clustered.sort(key=lambda x: x["touches"], reverse=True)
-    clustered = clustered[:max_levels]
-    clustered.sort(key=lambda x: x["price"])
     close = float(hist["Close"].iloc[-1])
+    # cap each side separately: a global cap lets resistances (which
+    # outnumber pivots below close in a crash) starve the support side
+    supports = sorted(
+        (l for l in clustered if l["price"] < close),
+        key=lambda x: x["touches"], reverse=True,
+    )[:max_levels]
+    resistances = sorted(
+        (l for l in clustered if l["price"] >= close),
+        key=lambda x: x["touches"], reverse=True,
+    )[:max_levels]
+    supports.sort(key=lambda x: x["price"])
+    resistances.sort(key=lambda x: x["price"])
     return {
-        "supports": [l for l in clustered if l["price"] < close],
-        "resistances": [l for l in clustered if l["price"] >= close],
+        "supports": supports,
+        "resistances": resistances,
         "pivots_found": len(pivots["high"]) + len(pivots["low"]),
     }
 
@@ -143,14 +152,23 @@ def supply_demand_zones(
     rows.sort(key=lambda r: r["strength"], reverse=True)
     zones: List[Dict[str, Any]] = []
     for r in rows[: max_zones * 3]:
-        width = max(
-            r["high"] - r["low"], r["low"] * zone_width_pct
+        # cap width: a wick bar (e.g. a -15% crash day) otherwise anchors a
+        # zone spanning 20%+ of price that swallows the nearest resistance
+        width = min(
+            max(r["high"] - r["low"], r["low"] * zone_width_pct),
+            close * 0.06,
         )
         zl, zh = r["low"], r["low"] + width
-        # drop zones fully on the wrong side of a *distant* close
-        if r["kind"] == "demand" and zl > close * 1.001:
+        # zones must sit on their own side of price: demand below, supply above
+        if r["kind"] == "demand" and zh > close * 1.001:
             continue
-        if r["kind"] == "supply" and zh < close * 0.999:
+        if r["kind"] == "supply" and zl < close * 0.999:
+            continue
+        # overlapping same-kind zones are the same level — keep the stronger
+        if any(
+            z["kind"] == r["kind"] and zl < z["zone_high"] and zh > z["zone_low"]
+            for z in zones
+        ):
             continue
         vol = (
             float(hist["Volume"].iloc[-len(hist) + r["bar"] :].sum())
@@ -174,11 +192,22 @@ def supply_demand_zones(
 # --------------------------------------------------------------------------
 
 def market_structure(hist: pd.DataFrame) -> Dict[str, Any]:
-    """HH/HL vs LH/LL classification from the last four confirmed pivots."""
+    """HH/HL vs LH/LL classification from the last four confirmed pivots.
+
+    `confidence` is low when the label rests on the minimum two pivot pairs
+    or contradicts the SMA200 — two pivots alone overstate what they prove.
+    """
     pivots = find_pivots(hist["High"], hist["Low"], 3, 3)
     ph, pl = pivots["high"], pivots["low"]
+    counts = {"pivot_highs": len(ph), "pivot_lows": len(pl)}
     if len(ph) < 2 or len(pl) < 2:
-        return {"classification": "insufficient_data", "swings": None}
+        return {
+            "classification": "insufficient_data",
+            "swings": None,
+            "pivot_count": counts,
+            "confidence": "low",
+            "price_vs_sma200": None,
+        }
     last2_h = [float(hist["High"].iloc[i]) for i in ph[-2:]]
     last2_l = [float(hist["Low"].iloc[i]) for i in pl[-2:]]
     hh = last2_h[1] > last2_h[0]
@@ -189,8 +218,23 @@ def market_structure(hist: pd.DataFrame) -> Dict[str, Any]:
         cls = "downtrend (lower highs & lower lows)"
     else:
         cls = "range / transition (mixed pivots)"
+    close = float(hist["Close"].iloc[-1])
+    below_sma200 = None
+    if len(hist) >= 200:
+        sma200 = float(_sma(hist["Close"], 200).iloc[-1])
+        if not np.isnan(sma200):
+            below_sma200 = close < sma200
+    conflict = (
+        (cls.startswith("uptrend") and below_sma200 is True)
+        or (cls.startswith("downtrend") and below_sma200 is False)
+    )
     return {
         "classification": cls,
+        "confidence": "low" if conflict or len(ph) < 3 or len(pl) < 3 else "high",
+        "pivot_count": counts,
+        "price_vs_sma200": (
+            "below" if below_sma200 else "above"
+        ) if below_sma200 is not None else None,
         "swings": {
             "pivot_highs": [round(v, 4) for v in last2_h],
             "pivot_lows": [round(v, 4) for v in last2_l],
@@ -217,33 +261,33 @@ def trend_regime(hist: pd.DataFrame) -> Dict[str, Any]:
         regime = "trending " + ("up" if slope > 0 else "down")
     else:
         regime = "ranging"
+    if regime.startswith("trending"):
+        basis = f"ADX {adx:.1f} >= 20 (strength) + SMA20 slope {slope:+.2f}% (direction)"
+    else:
+        basis = (
+            f"ADX {adx:.1f} < 20 or flat SMA20 slope — no confirmed trend"
+            if adx is not None
+            else "insufficient bars for ADX"
+        )
     return {"regime": regime, "adx": round(adx, 2) if adx is not None else None,
-            "sma20_slope_pct": round(slope, 3) if slope is not None else None}
+            "sma20_slope_pct": round(slope, 3) if slope is not None else None,
+            "basis": basis}
 
 
 # --------------------------------------------------------------------------
 # Candlestick patterns
 # --------------------------------------------------------------------------
 
-_CANDLE_PATTERNS = (
-    "bullish_engulfing",
-    "bearish_engulfing",
-    "hammer",
-    "shooting_star",
-    "doji",
-    "morning_star",
-    "evening_star",
-    "three_white_soldiers",
-    "three_black_crows",
-)
-
 
 def candlestick_patterns(hist: pd.DataFrame, last_n: int = 10) -> Dict[str, Any]:
     """Rule-based detection over the last `last_n` completed candles.
 
-    Returns per-candle pattern hits plus a bullish/bearish tally.
+    Returns per-candle pattern hits (with dates) plus a bullish/bearish tally.
+    Multi-candle patterns detected on consecutive bars are the same event —
+    a sliding window re-fires on every bar of a streak — so only the first
+    occurrence is kept.
     """
-    h = hist.tail(last_n + 3).reset_index(drop=True)
+    h = hist.tail(last_n + 3)
     o, hi, lo, cl = h["Open"], h["High"], h["Low"], h["Close"]
     body = (cl - o).abs()
     rng = (hi - lo).replace(0, np.nan)
@@ -254,6 +298,8 @@ def candlestick_patterns(hist: pd.DataFrame, last_n: int = 10) -> Dict[str, Any]
 
     hits: List[Dict[str, Any]] = []
     n = len(h)
+    multi = {"morning_star", "evening_star", "three_white_soldiers", "three_black_crows"}
+    last_seen: Dict[str, int] = {}
     for i in range(2, n):
         day_patterns: List[str] = []
         if (
@@ -321,7 +367,20 @@ def candlestick_patterns(hist: pd.DataFrame, last_n: int = 10) -> Dict[str, Any]
         ):
             day_patterns.append("three_black_crows")
         if day_patterns:
-            hits.append({"bar_offset_from_end": n - 1 - i, "patterns": day_patterns})
+            kept = []
+            for p in day_patterns:
+                if p in multi:
+                    if last_seen.get(p) != i - 1:
+                        kept.append(p)
+                    last_seen[p] = i
+                else:
+                    kept.append(p)
+            if kept:
+                hits.append({
+                    "date": str(h.index[i])[:10],
+                    "bar_offset_from_end": n - 1 - i,
+                    "patterns": kept,
+                })
 
     bullish = sum(
         1 for x in hits for p in x["patterns"]
@@ -335,7 +394,6 @@ def candlestick_patterns(hist: pd.DataFrame, last_n: int = 10) -> Dict[str, Any]
         "hits": hits,
         "bullish_count": bullish,
         "bearish_count": bearish,
-        "recent_candle_types": _CANDLE_PATTERNS,
     }
 
 
@@ -400,6 +458,32 @@ def chart_patterns(hist: pd.DataFrame, lookback: int = 60) -> Dict[str, Any]:
             "level": round(range_low, 4),
             "volume_confirmed": vol_ok,
         }
+    # trading range: tight box with multiple touches on both sides
+    if range_low and (range_high - range_low) / range_low < 0.15:
+        near_high = int((window["High"].iloc[:-1] >= range_high * 0.99).sum())
+        near_low = int((window["Low"].iloc[:-1] <= range_low * 1.01).sum())
+        if near_high >= 2 and near_low >= 2:
+            found.append("trading_range")
+    # channel: linear-regression fit on closes (ponytail: R²>=0.7 straight-line
+    # channel only; add parallel-band channels if a real chart skill needs them)
+    if len(window) >= 30:
+        x = np.arange(len(window), dtype=float)
+        y = window["Close"].to_numpy(dtype=float)
+        slope_c = float(np.polyfit(x, y, 1)[0])
+        yhat = slope_c * x + float(np.polyfit(x, y, 1)[1])
+        ss_res = float(((y - yhat) ** 2).sum())
+        ss_tot = float(((y - y.mean()) ** 2).sum())
+        r2 = 1 - ss_res / ss_tot if ss_tot else 0.0
+        if r2 >= 0.7:
+            found.append("rising_channel" if slope_c > 0 else "falling_channel")
+        # triangle: pivot highs and lows converge
+        if len(ph) >= 3 and len(pl) >= 3:
+            hs = float(np.polyfit(np.arange(len(ph), dtype=float), np.array(ph), 1)[0])
+            ls = float(np.polyfit(np.arange(len(pl), dtype=float), np.array(pl), 1)[0])
+            if ls > 0 and hs < ls:
+                found.append("ascending_triangle")
+            elif hs < 0 and ls > hs:
+                found.append("descending_triangle")
     return {"patterns": found, "breakout": breakout}
 
 
@@ -444,20 +528,31 @@ def gap_analysis(hist: pd.DataFrame, max_gaps: int = 5) -> Dict[str, Any]:
 # --------------------------------------------------------------------------
 
 def volume_profile(hist: pd.DataFrame, bins: int = 24) -> Dict[str, Any]:
-    """Volume-at-price histogram with POC and value area (70%)."""
+    """Volume-at-price histogram with POC and value area (70%).
+
+    Each bar's volume is spread evenly across the bins its [low, high]
+    spans — dumping a whole bar into one bin makes the profile lumpy
+    (a single 23M day owns one bin) and the POC unreliable.
+    """
     if "Volume" not in hist.columns or len(hist) < 20:
         return {}
     window = hist.tail(120)
-    price = ((window["High"] + window["Low"] + window["Close"]) / 3.0)
-    lo, hi = float(price.min()), float(price.max())
+    lo, hi = float(window["Low"].min()), float(window["High"].max())
     if hi <= lo:
         return {}
     edges = np.linspace(lo, hi, bins + 1)
-    idx = np.clip(np.digitize(price.to_numpy(), edges) - 1, 0, bins - 1)
-    vol = window["Volume"].to_numpy(dtype=float)
     profile = np.zeros(bins)
-    for b, v in zip(idx, vol):
-        profile[b] += v
+    lows = window["Low"].to_numpy(dtype=float)
+    highs = window["High"].to_numpy(dtype=float)
+    vols = window["Volume"].to_numpy(dtype=float)
+    for bar_low, bar_high, v in zip(lows, highs, vols):
+        if not v or np.isnan(v):
+            continue
+        first = min(max(int(np.searchsorted(edges, bar_low, side="right")) - 1, 0), bins - 1)
+        last = min(max(int(np.searchsorted(edges, bar_high, side="left")) - 1, 0), bins - 1)
+        if last < first:
+            continue
+        profile[first : last + 1] += v / (last - first + 1)
     total = profile.sum()
     poc_bin = int(profile.argmax())
     # expand around POC until 70% of volume is covered

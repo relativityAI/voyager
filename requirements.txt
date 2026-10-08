@@ -15,6 +15,9 @@ pandas==2.3.3
 numpy==2.2.6
 yfinance==1.4.1
 edgartools==5.56.0
+# Chart PNG endpoint (/technicals/chart) — direct import, pin it (it was only
+# a transitive dep of plotting extras)
+matplotlib==3.10.6
 
 # PostgreSQL (async via asyncpg, ORM via SQLAlchemy)
 sqlalchemy[asyncio]>=2.0.35

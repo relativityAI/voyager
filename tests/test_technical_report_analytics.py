@@ -13,6 +13,18 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.tools.nse.patterns import (
+    candlestick_patterns,
+    chart_patterns,
+    divergence,
+    find_pivots,
+    gap_analysis,
+    market_structure,
+    supply_demand_zones,
+    support_resistance,
+    trend_regime,
+    volume_profile,
+)
 from src.tools.nse.technicals import (
     _acc_dist,
     _adx,
@@ -23,19 +35,6 @@ from src.tools.nse.technicals import (
     _resample_ohlcv,
     _williams_r,
     fetch_history,
-    fetch_technicals,
-)
-from src.tools.nse.patterns import (
-    candlestick_patterns,
-    chart_patterns,
-    divergence,
-    find_pivots,
-    gap_analysis,
-    market_structure,
-    support_resistance,
-    supply_demand_zones,
-    trend_regime,
-    volume_profile,
 )
 
 
@@ -559,13 +558,13 @@ class TestSupplyDemandZones:
 # --------------------------------------------------------------------------
 
 class TestReportSections:
-    def test_section_list_is_60(self):
+    def test_section_list_is_61(self):
         from src.services.technical_report import REPORT_SECTIONS
-        assert len(REPORT_SECTIONS) == 60
-        assert len(set(REPORT_SECTIONS)) == 60
+        assert len(REPORT_SECTIONS) == 61
+        assert len(set(REPORT_SECTIONS)) == 61
 
     def test_unsupported_marker_shape(self):
-        from src.services.technical_report import _unsupported, _ok
+        from src.services.technical_report import _ok, _unsupported
         u = _unsupported("why")
         assert u == {"status": "unsupported", "reason": "why"}
         o = _ok({"a": 1})
@@ -596,3 +595,411 @@ class TestReportSections:
         assert rows["daily"]["state"] == "bullish"
         assert rows["weekly"]["state"] == "unavailable"
         assert rows["monthly"]["state"] == "unavailable"
+
+
+# --------------------------------------------------------------------------
+# Phase 0/1/2 additions: change windows, candle dedupe, structure hygiene,
+# volume stats, raw OHLCV rows, scenarios, risk flags, full build (offline)
+# --------------------------------------------------------------------------
+
+class TestChangeWindows:
+    def test_daily_window_semantics(self):
+        from src.services.technical_report import _CHANGE_WINDOWS, _collect_timeframe
+        hist = _zigzag_hist(300)
+        out = _collect_timeframe("daily", hist, None)
+        assert out["changes_window_bars"] == dict(_CHANGE_WINDOWS["daily"])
+        expected_1w = (hist["Close"].iloc[-1] / hist["Close"].iloc[-6] - 1) * 100
+        assert out["change_pct_1w"] == pytest.approx(expected_1w, abs=0.02)
+
+    def test_weekly_has_no_daily_window(self):
+        from src.services.technical_report import _CHANGE_WINDOWS, _collect_timeframe
+        hist = _zigzag_hist(800)
+        out = _collect_timeframe("weekly", hist, "W")
+        assert out["changes_window_bars"] == dict(_CHANGE_WINDOWS["weekly"])
+        assert "change_pct_1d" not in out
+        assert "change_pct_1w" in out and "change_pct_1y" in out
+        weekly = _resample_ohlcv(hist, "W").tail(280)
+        expected_1w = (weekly["Close"].iloc[-1] / weekly["Close"].iloc[-2] - 1) * 100
+        assert out["change_pct_1w"] == pytest.approx(expected_1w, abs=0.02)
+
+
+class TestCandlestickDedupeAndDate:
+    def test_streak_yields_one_hit_with_date(self):
+        rows = [{"Open": 100, "High": 101, "Low": 99, "Close": 100.5, "Volume": 1000}] * 6
+        price = 100.0
+        for _ in range(5):  # five consecutive big red candles
+            rows.append({"Open": price, "High": price, "Low": price - 1,
+                         "Close": price - 1, "Volume": 1000})
+            price -= 1
+        hist = pd.DataFrame(rows, index=_dates(len(rows)))
+        res = candlestick_patterns(hist, last_n=len(rows))
+        crow_hits = [h for h in res["hits"] if "three_black_crows" in h["patterns"]]
+        assert len(crow_hits) == 1  # streak collapses to its first occurrence
+        assert crow_hits[0]["date"] == str(hist.index[8])[:10]
+        assert res["bearish_count"] >= 1
+
+    def test_hits_carry_date_key(self):
+        rows = [
+            {"Open": 100, "High": 101, "Low": 99, "Close": 100.5, "Volume": 1000},
+        ] * 5 + [
+            {"Open": 101, "High": 101.5, "Low": 100, "Close": 100.1, "Volume": 1000},
+            {"Open": 100.0, "High": 102.5, "Low": 99.9, "Close": 102.4, "Volume": 1000},
+        ]
+        hist = pd.DataFrame(rows, index=_dates(len(rows)))
+        res = candlestick_patterns(hist, last_n=len(rows))
+        n = len(hist)
+        assert res["hits"]
+        for h in res["hits"]:
+            i = n - 1 - h["bar_offset_from_end"]
+            assert h["date"] == str(hist.index[i])[:10]
+
+
+class TestMarketStructureHygiene:
+    def test_uptrend_carries_confidence_and_pivot_count(self):
+        n = 260
+        idx = _dates(n)
+        closes, i, level = [], 0, 100.0
+        while i < n:
+            for delta in (5, 4, 3, 2, 1, 0, -1, -2, -3, -4):
+                closes.append(level + delta)
+                i += 1
+                if i >= n:
+                    break
+            level += 6
+        hist = pd.DataFrame(
+            {"Open": closes[:n], "High": [c + 0.5 for c in closes[:n]],
+             "Low": [c - 0.5 for c in closes[:n]], "Close": closes[:n],
+             "Volume": [1000] * n},
+            index=idx,
+        )
+        ms = market_structure(hist)
+        assert ms["classification"].startswith("uptrend")
+        assert sum(ms["pivot_count"].values()) >= 4
+        assert ms["confidence"] in ("high", "low")
+        assert ms["price_vs_sma200"] in ("below", "above")
+
+    def test_insufficient_data_shape(self):
+        ms = market_structure(_flat_hist(10))
+        assert ms["confidence"] == "low"
+        assert ms["price_vs_sma200"] is None
+        assert ms["pivot_count"] == {"pivot_highs": 0, "pivot_lows": 0}
+
+
+class TestVolumeStatsAndRows:
+    def test_volume_stats_shape(self):
+        from src.services.technical_report import _volume_stats
+        hist = _flat_hist(60)
+        vs = _volume_stats(hist)
+        assert vs["trend"] == "stable"
+        assert vs["avg_volume_20bar"] == 1_000_000
+        assert vs["spikes_last_60bars"] == []
+        # spike the last bar above 2x avg20 -> dated spike + rising trend
+        hist.loc[hist.index[-1], "Volume"] = 5_000_000
+        vs = _volume_stats(hist)
+        assert vs["trend"] == "rising"
+        assert vs["spikes_last_60bars"][0]["date"] == str(hist.index[-1])[:10]
+        assert vs["spikes_last_60bars"][0]["multiple_of_avg20"] > 2
+
+    def test_volume_stats_without_column(self):
+        from src.services.technical_report import _volume_stats
+        assert _volume_stats(_flat_hist(60).drop(columns=["Volume"])) is None
+
+    def test_ohlcv_rows_recompute_sma(self):
+        from src.services.technical_report import _ohlcv_rows
+        hist = _zigzag_hist(300)
+        rows = _ohlcv_rows(hist.tail(320))
+        assert len(rows) == 300
+        assert set(rows[0]) == {"date", "open", "high", "low", "close", "volume"}
+        assert rows[-1]["volume"] == 1_000_000
+        closes = pd.Series([r["close"] for r in rows])
+        sma50 = float(closes.tail(50).mean())
+        from src.tools.nse.technicals import _sma as ta_sma
+        expected = float(ta_sma(hist["Close"], 50).iloc[-1])
+        assert sma50 == pytest.approx(expected, abs=0.2)
+
+
+class TestScenariosShape:
+    def test_trigger_targets_invalidation_and_bias(self):
+        from src.services.technical_report import _scenarios
+        tfs = {"daily": {"current_price": 100.0}}
+        levels = {
+            "status": "ok",
+            "exit_zones": [{"level": 110, "kind": "resistance"},
+                           {"level": 120, "kind": "resistance"}],
+            "entry_zones": [{"level": 90, "kind": "support"},
+                            {"level": 85, "kind": "support"}],
+            "targets": {"tp1": 115, "tp2": 125, "tp3": None},
+            "invalidation_level": 84.0,
+        }
+        confluence = {"overall": "bearish", "bullish": 1, "bearish": 4,
+                      "neutral": 5, "total_signals": 10, "bullish_share": 10.0}
+        signals = [
+            {"signal": "rsi_14", "bias": "bullish"},
+            {"signal": "macd", "bias": "bearish"},
+            {"signal": "stoch", "bias": "neutral"},
+        ]
+        res = _scenarios(tfs, levels, confluence, signals)
+        assert res["status"] == "ok"
+        assert res["bullish"]["targets"] == [115, 125]
+        # bearish targets are supports: below price, never the TP ladder
+        assert res["bearish"]["targets"] == [90, 85]
+        assert all(t < 100 for t in res["bearish"]["targets"])
+        assert res["bullish"]["trigger"].startswith("close above resistance")
+        assert res["bullish"]["invalidation"] == 84.0
+        assert "rsi_14" in res["bullish"]["supporting_factors"]
+        assert "macd" in res["bearish"]["supporting_factors"]
+        assert res["signal_shares_pct"] == {"bullish": 10.0, "bearish": 40.0}
+
+    def test_unsupported_without_daily(self):
+        from src.services.technical_report import _scenarios
+        res = _scenarios({}, {"status": "ok"}, {"overall": "neutral"}, [])
+        assert res["status"] == "unsupported"
+
+
+class TestRiskFactors:
+    def test_drawdown_death_cross_and_losses_flagged(self):
+        from src.services.technical_report import _risk_factors
+        daily = {"high_52w": 200.0, "sma_200": 150.0, "change_pct_1y": -35.0,
+                 "golden_death_cross_state": "death-cross regime"}
+        flags = _risk_factors(daily, {}, {"overall": "bearish"}, None, 100.0, False)
+        text = " ".join(flags)
+        assert "52-week high" in text
+        assert "death-cross" in text
+        assert "SMA200" in text
+        assert "1y change" in text
+        assert "benchmark feed unavailable" in text
+
+    def test_clean_state_returns_no_flags(self):
+        from src.services.technical_report import _risk_factors
+        assert _risk_factors({}, {}, {"overall": "bullish"}, None, None, True) == []
+
+
+class TestBuildReportOffline:
+    """Full offline assembly: all 61 sections present and counted."""
+
+    @staticmethod
+    def _hist() -> pd.DataFrame:
+        return _zigzag_hist(1300)
+
+    def test_full_report_61_sections(self, monkeypatch):
+        import asyncio
+
+        import src.services.technical_report as tr
+
+        hist = self._hist()
+        monkeypatch.setattr(tr, "fetch_history", lambda *a, **k: hist.copy())
+        monkeypatch.setattr(
+            tr, "fetch_earnings_dates",
+            lambda *a, **k: [{"date": "2099-11-01", "title": "Quarterly earnings"}],
+        )
+        monkeypatch.setattr(tr, "_benchmark_history", lambda *a, **k: pd.DataFrame())
+        report = asyncio.run(tr.build_technical_report(
+            "TESTCO", "NSE", "daily,weekly,monthly",
+            [{"heading": "Board meeting", "date": "2099-12-01"}],
+        ))
+        assert report["sections_count"] == 61
+        assert list(report["sections"]) == tr.REPORT_SECTIONS
+
+        ex = report["sections"]["executive_summary"]["data"]
+        assert ex["sections_supported"] + ex["sections_unsupported"] == 61
+
+        ph = report["sections"]["price_history"]
+        assert ph["status"] == "ok"
+        assert ph["data"]["adjustment"] == "split+dividend adjusted"
+        assert len(ph["data"]["daily"]) > 0 and len(ph["data"]["weekly"]) > 0
+
+        sr = report["sections"]["support_resistance"]
+        assert sr["status"] == "ok" and "weekly" in sr["data"]
+
+        med = report["sections"]["medium_term_setup"]
+        assert med["status"] == "ok"
+        assert "change_pct_1d" not in med["data"]["changes_pct"]
+        assert med["data"]["changes_window_bars"] == {"1w": 1, "1m": 4, "3m": 13, "1y": 52}
+
+        method = report["sections"]["data_sources_methodology"]["data"]
+        assert "adjusted" in method["price_adjustment"]
+        assert report["sections"]["upcoming_catalysts"]["status"] == "ok"
+        assert report["sections"]["technical_risk_factors"]["status"] == "ok"
+
+
+# --------------------------------------------------------------------------
+# Review pass 2: hygiene, semantics, levels, events
+# --------------------------------------------------------------------------
+
+class TestZeroVolumeBarsDropped:
+    def test_fetch_history_drops_zero_volume(self, monkeypatch):
+        import yfinance as yf
+        from src.tools.nse.technicals import fetch_history
+        idx = pd.date_range("2026-01-01", periods=10, freq="D")
+        hist = pd.DataFrame(
+            {"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.0,
+             "Volume": [1000] * 5 + [0, 0, 1000, 1000, 1000]},
+            index=idx,
+        )
+        monkeypatch.setattr(yf.Ticker, "history", lambda *a, **k: hist)
+        out = fetch_history("TEST", "NSE", period="1y")
+        assert len(out) == 8
+        assert (out["Volume"] > 0).all()
+
+
+class TestSignalSemantics:
+    def test_rsi_neutral_band(self):
+        from src.services.technical_report import _daily_signals
+        base = {"current_price": 100.0, "sma_20": 100.0, "sma_50": 100.0,
+                "sma_200": 100.0, "ema_12": 100.0, "ema_26": 100.0}
+        sig = {s["signal"]: s for s in _daily_signals({**base, "rsi_14": 47.0})}
+        assert sig["rsi_14"]["bias"] == "neutral"
+        sig = {s["signal"]: s for s in _daily_signals({**base, "rsi_14": 65.0})}
+        assert sig["rsi_14"]["bias"] == "bullish"
+
+    def test_cci_neutral_band(self):
+        from src.services.technical_report import _daily_signals
+        base = {"current_price": 100.0}
+        sig = {s["signal"]: s for s in _daily_signals({**base, "cci_20": -29.0})}
+        assert sig["cci_20"]["bias"] == "neutral"
+
+    def test_adx_value_carries_di(self):
+        from src.services.technical_report import _daily_signals
+        base = {"current_price": 100.0}
+        sig = {s["signal"]: s for s in _daily_signals(
+            {**base, "adx_14": 29.4, "plus_di_14": 22.9, "minus_di_14": 30.6}
+        )}
+        assert sig["adx_14"]["bias"] == "bearish"
+        assert sig["adx_14"]["value"]["adx"] == 29.4
+        assert "DI" in sig["adx_14"]["note"]
+
+    def test_vwap_signal_notes_anchor(self):
+        from src.services.technical_report import _daily_signals
+        sig = {s["signal"]: s for s in _daily_signals(
+            {"current_price": 100.0, "vwap_anchored": 90.0}
+        )}
+        assert "anchored" in sig["price_vs_vwap"]["note"]
+
+
+class TestTrendDimensions:
+    def test_conflict_is_named(self):
+        import asyncio
+        import src.services.technical_report as tr
+
+        hist = _zigzag_hist(1300)
+        monkey = pytest.MonkeyPatch()
+        monkey.setattr(tr, "fetch_history", lambda *a, **k: hist.copy())
+        monkey.setattr(tr, "fetch_earnings_dates", lambda *a, **k: [])
+        monkey.setattr(tr, "_benchmark_history", lambda *a, **k: pd.DataFrame())
+        report = asyncio.run(tr.build_technical_report("TESTCO", "NSE", "daily,weekly,monthly", []))
+        td = report["sections"]["trend_analysis"]["data"]["trend_dimensions"]
+        assert "structural" in td and "current" in td
+        assert "agreement" in td
+        ex = report["sections"]["executive_summary"]["data"]
+        assert "trend_headline" in ex and "weekly_structure" in ex
+        assert "conflicts with" in ex["trend_headline"] or "aligned" in ex["trend_headline"]
+        monkey.undo()
+
+
+class TestSupportResistancePerSide:
+    def test_per_side_cap_not_global(self):
+        # 5 supports + 5 resistances, all with equal touches: a global cap of 8
+        # would let one side starve the other; per-side cap keeps both.
+        levels = [{"price": 90.0 + i, "touches": 1} for i in range(5)]
+        levels += [{"price": 110.0 + i, "touches": 1} for i in range(5)]
+        close = 100.0
+        supports = sorted(
+            (l for l in levels if l["price"] < close),
+            key=lambda x: x["touches"], reverse=True,
+        )[:8]
+        resistances = sorted(
+            (l for l in levels if l["price"] >= close),
+            key=lambda x: x["touches"], reverse=True,
+        )[:8]
+        assert len(supports) == 5 and len(resistances) == 5
+
+    def test_both_sides_populated(self):
+        rows = []
+        price = 100.0
+        for i in range(200):
+            rows.append({"Open": price, "High": price + 2, "Low": price - 2,
+                         "Close": price, "Volume": 1000})
+            price += [3, -2, 4, -5, 2, -3, 5, -4][i % 8]
+        hist = pd.DataFrame(rows, index=_dates(200))
+        sr = support_resistance(hist)
+        close = float(hist["Close"].iloc[-1])
+        assert all(l["price"] < close for l in sr["supports"])
+        assert all(l["price"] >= close for l in sr["resistances"])
+        assert sr["pivots_found"] > 0
+
+
+class TestSupplyDemandZonesBounded:
+    def test_zone_width_capped_and_side_respected(self):
+        hist = _zigzag_hist(120, amp=10, cycle=24)
+        zones = supply_demand_zones(hist, lookback=90, max_zones=4)
+        close = float(hist["Close"].iloc[-1])
+        for z in zones:
+            width_pct = (z["zone_high"] - z["zone_low"]) / z["zone_low"]
+            assert width_pct <= 0.07
+            if z["kind"] == "demand":
+                assert z["zone_high"] <= close * 1.01
+            else:
+                assert z["zone_low"] >= close * 0.99
+
+
+class TestVolumeProfileSpread:
+    def test_no_bin_holds_whole_bar(self):
+        rows = [{"Open": 100, "High": 101, "Low": 99, "Close": 100, "Volume": 1000}] * 40
+        rows.append({"Open": 100, "High": 140, "Low": 95, "Close": 130, "Volume": 23_000_000})
+        hist = pd.DataFrame(rows, index=_dates(len(rows)))
+        vp = volume_profile(hist, bins=10)
+        biggest = max(b["volume"] for b in vp["bins"])
+        assert biggest < 23_000_000  # spread across bins, not dumped into one
+
+
+class TestUnusualDays:
+    def test_crash_day_flagged(self):
+        from src.services.technical_report import _volume_stats
+        rows = [{"Open": 100, "High": 101, "Low": 99, "Close": 100, "Volume": 1000}] * 40
+        rows.append({"Open": 100, "High": 105, "Low": 80, "Close": 85, "Volume": 8_000_000})
+        hist = pd.DataFrame(rows, index=_dates(len(rows)))
+        vs = _volume_stats(hist)
+        assert vs["unusual_days"]
+        assert vs["unusual_days"][0]["range_pct"] > 20
+        assert vs["unusual_days"][0]["close_change_pct"] == -15.0
+
+
+class TestChartPatternDetectors:
+    def test_rising_channel_detected(self):
+        rows = []
+        for i in range(60):
+            c = 100 + i * 0.5
+            rows.append({"Open": c, "High": c + 1, "Low": c - 1,
+                         "Close": c + 0.2, "Volume": 1000})
+        hist = pd.DataFrame(rows, index=_dates(60))
+        cp = chart_patterns(hist)
+        assert "rising_channel" in cp["patterns"]
+
+    def test_trading_range_detected(self):
+        rows = []
+        for i in range(60):
+            c = 100 + (i % 4) * 0.3
+            rows.append({"Open": c, "High": 102, "Low": 98,
+                         "Close": c, "Volume": 1000})
+        hist = pd.DataFrame(rows, index=_dates(60))
+        cp = chart_patterns(hist)
+        assert "trading_range" in cp["patterns"]
+
+
+class TestBollingerPopulationStd:
+    def test_bb_matches_population(self):
+        from src.tools.nse.technicals import _bbands
+        close = pd.Series([100 + (i % 7) * 0.5 for i in range(40)])
+        bu, bm, bl = _bbands(close, 20, 2.0)
+        mid = close.rolling(20).mean()
+        sd = close.rolling(20).std(ddof=0)
+        assert float(bu.iloc[-1]) == pytest.approx(float((mid + 2 * sd).iloc[-1]))
+
+
+class TestAnaloguesCount:
+    def test_six_analogues(self):
+        from src.services.technical_report import _historical_comparison
+        hist = _zigzag_hist(400)
+        res = _historical_comparison(hist)
+        assert res["status"] == "ok"
+        assert len(res["analogues"]) == 6

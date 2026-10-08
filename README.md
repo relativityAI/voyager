@@ -160,7 +160,7 @@ Data endpoints require an API key via the `X-API-Key` (or `Authorization: Bearer
 | `GET /documents/{id}/index` | 🔑 | Cached document index tree |
 | `GET /llms.txt` | 🔓 | llms.txt guide for AI agents (auth, conventions, quick start) |
 
-> The advanced suite also serves `GET /technicals` (60-section technical analysis report) and `GET /history` (raw OHLCV) — see the [Advanced Data Suite](#advanced-data-suite-1) tag in `/docs`.
+> The advanced suite also serves `GET /technicals` (61-section technical analysis report), `GET /technicals/chart` (price chart PNG) and `GET /history` (raw OHLCV) — see the [Advanced Data Suite](#advanced-data-suite-1) tag in `/docs`.
 
 Financial endpoints take a single `source` query param (`source=sec` for US/EDGAR, `source=nse` for India/NSE, the default); the country is derived from the source. An unknown source returns `501`.
 

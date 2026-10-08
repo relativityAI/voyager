@@ -18,7 +18,7 @@ Agent needs `VOYAGER_BASE_URL` (default `https://voyager-1hpq.onrender.com`) and
 | # | File | Endpoint | Question it answers |
 |---|---|---|---|
 | 01 | [`01-financial-metrics-accuracy.md`](01-financial-metrics-accuracy.md) | `GET /financial-metrics` | How accurate is every computed ratio, where does it drift, what is silently wrong vs merely missing |
-| 02 | [`02-technical-report-completeness.md`](02-technical-report-completeness.md) | `GET /technicals` | Does the 60-section technical report deliver every section, is each backed by real data, and does degradation say why |
+| 02 | [`02-technical-report-completeness.md`](02-technical-report-completeness.md) | `GET /technicals` | Does the 61-section technical report deliver every section, is each backed by real data, and does degradation say why |
 
 ## Rules every eval follows
 

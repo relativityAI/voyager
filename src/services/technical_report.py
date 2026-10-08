@@ -1,11 +1,12 @@
 """Professional end-to-end technical analysis report — data layer + assembler.
 
-Builds the 60-section report document. Deterministic rules only: every
+Builds the 61-section report document. Deterministic rules only: every
 number traces to a fetched series, and a section the data can't support
 returns an explicit ``unsupported`` marker instead of invented prose.
 """
 
 import asyncio
+import io
 import math
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -14,7 +15,9 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
+from src.tools.nse.patterns import analyze as analyze_patterns
 from src.tools.nse.technicals import (
+    _TIMEFRAMES,
     _acc_dist,
     _adx,
     _atr,
@@ -29,10 +32,9 @@ from src.tools.nse.technicals import (
     _sma,
     _stoch,
     _williams_r,
-    _TIMEFRAMES,
+    fetch_earnings_dates,
     fetch_history,
 )
-from src.tools.nse.patterns import analyze as analyze_patterns
 
 # Yahoo benchmark symbols per source. SEC defaults to S&P 500, NSE to Nifty 50.
 BENCHMARKS = {
@@ -40,7 +42,16 @@ BENCHMARKS = {
     "SEC": "^GSPC",
 }
 
-_MAX_SECTION = 60  # the report layout this module serves
+_MAX_SECTION = 61  # the report layout this module serves
+
+# Bar-count lookback per change window, per timeframe: the resampled frames
+# have different bar lengths, so "1m" is 21 daily bars but 4 weekly bars.
+# (Weekly/monthly have no meaningful "1d" window, so it is not offered.)
+_CHANGE_WINDOWS = {
+    "daily": (("1d", 1), ("1w", 5), ("1m", 21), ("3m", 63), ("1y", 252)),
+    "weekly": (("1w", 1), ("1m", 4), ("3m", 13), ("1y", 52)),
+    "monthly": (("1m", 1), ("3m", 3), ("1y", 12)),
+}
 
 
 def _round(v, nd: int = 4):
@@ -128,9 +139,10 @@ def _benchmark_history(benchmark_symbol: str) -> pd.DataFrame:
 # VWAP
 # --------------------------------------------------------------------------
 
-def _anchored_vwap(hist: pd.DataFrame, anchor: str = "year") -> Optional[float]:
-    """VWAP anchored to the period start (daily bars). For intraday sessions
-    the anchor resets each session — handled by the intraday fetch path."""
+def _anchored_vwap(hist: pd.DataFrame) -> Optional[float]:
+    """VWAP anchored to the first bar of the given window (daily bars). For
+    intraday sessions the anchor resets each session — handled by the
+    intraday fetch path. The caller attaches the anchor window as metadata."""
     if hist.empty or "Volume" not in hist.columns:
         return None
     tp = (hist["High"] + hist["Low"] + hist["Close"]) / 3.0
@@ -182,7 +194,13 @@ def _collect_timeframe(
 
         for p in (20, 50, 200):
             if len(close) >= p:
-                add(f"sma_{p}", _sma(close, p))
+                s = _sma(close, p)
+                add(f"sma_{p}", s)
+                # slope over the last 5 bars: position alone hides a flat/falling MA
+                if len(close) >= p + 5 and float(s.iloc[-6]) == s.iloc[-6]:
+                    prev = float(s.iloc[-6])
+                    if prev:
+                        out[f"sma_{p}_slope_pct"] = _pct(float(s.iloc[-1]) / prev - 1)
         # golden/death cross state at last bar (cheap, needs only SMA series)
         if len(close) >= 200:
             out["golden_death_cross_state"] = (
@@ -221,6 +239,15 @@ def _collect_timeframe(
         out["structure"] = analyze_patterns(hist)
         out["fibonacci"] = _fib_levels(high, low, lookback=min(120, len(close)))
         out["vwap_anchored"] = _anchored_vwap(hist)
+        if out["vwap_anchored"] is not None:
+            out["vwap_anchored_meta"] = {
+                "anchor": "first_bar_of_window",
+                "window_start": str(hist.index[0])[:10],
+                "window_end": str(hist.index[-1])[:10],
+            }
+        vstats = _volume_stats(hist)
+        if vstats:
+            out["volume_stats"] = vstats
         # Ichimoku needs 52 bars for Senkou B + 26 shift: guard the tail.
         if len(close) >= 78:
             tenkan, kijun, senkou_a, senkou_b, chikou = _ichimoku(high, low, close)
@@ -231,14 +258,16 @@ def _collect_timeframe(
             out["ichimoku_chikou"] = _round(float(chikou.iloc[-27])) if len(close) > 27 else None
         out["high_52w"] = _round(high.tail(min(252, len(high))).max())
         out["low_52w"] = _round(low.tail(min(252, len(low))).min())
-        out["change_pct_1d"] = _pct(float(close.iloc[-1] / close.iloc[-2] - 1)) if len(close) > 1 else None
-        out["change_pct_1w"] = _pct(float(close.iloc[-1] / close.iloc[-5] - 1)) if len(close) > 5 else None
-        out["change_pct_1m"] = _pct(float(close.iloc[-1] / close.iloc[-21] - 1)) if len(close) > 21 else None
-        out["change_pct_3m"] = _pct(float(close.iloc[-1] / close.iloc[-63] - 1)) if len(close) > 63 else None
-        out["change_pct_1y"] = _pct(float(close.iloc[-1] / close.iloc[-252] - 1)) if len(close) > 252 else None
+        windows = _CHANGE_WINDOWS.get(timeframe, _CHANGE_WINDOWS["daily"])
+        out["changes_window_bars"] = dict(windows)
+        for label, n_bars in windows:
+            if len(close) > n_bars:
+                out[f"change_pct_{label}"] = _pct(
+                    float(close.iloc[-1] / close.iloc[-1 - n_bars] - 1)
+                )
         return out
     except Exception as exc:  # noqa: BLE001 - per-timeframe isolation
-        logger.warning(f"timeframe {timeframe} failed for {symbol}.{exchange}: {exc!r}")
+        logger.warning(f"timeframe {timeframe} failed: {exc!r}")
         return {"timeframe": timeframe, "error": str(exc)}
 
 
@@ -248,6 +277,78 @@ def _obv_last(close: pd.Series, volume: pd.Series) -> Optional[float]:
         return float((direction * volume).cumsum().iloc[-1])
     except Exception:  # noqa: BLE001
         return None
+
+
+def _volume_stats(hist: pd.DataFrame) -> Optional[Dict[str, Any]]:
+    """Volume trend + dated spikes — the series, not just OBV totals."""
+    if "Volume" not in hist.columns:
+        return None
+    vol = hist["Volume"].astype(float)
+    if vol.empty or float(vol.sum()) <= 0:
+        return None
+    avg20 = float(vol.iloc[-20:].mean()) if len(vol) >= 20 else float(vol.mean())
+    if avg20 <= 0:
+        return None
+    recent5 = float(vol.iloc[-5:].mean())
+    ratio = recent5 / avg20
+    window = vol.iloc[-60:] if len(vol) >= 60 else vol
+    spikes = [
+        {"date": str(ts)[:10], "multiple_of_avg20": _round(float(v) / avg20)}
+        for ts, v in window.items()
+        if float(v) > 2 * avg20
+    ]
+    spikes.sort(key=lambda s: s["multiple_of_avg20"], reverse=True)
+    # event days: intraday range outliers — a -15% crash day with a 406->326
+    # wick sets the 52w low; flag it so the low is known to be an intraday
+    # extreme, not a closing level
+    ranges = (
+        (hist["High"] - hist["Low"]) / hist["Low"].replace(0, np.nan) * 100
+    ).dropna()
+    med_range = float(ranges.median()) if len(ranges) else 0.0
+    unusual: List[Dict[str, Any]] = []
+    if med_range > 0:
+        for ts, r in ranges.items():
+            if r <= 3 * med_range:
+                continue
+            bar = hist.loc[ts]
+            chg = (
+                _round(float(bar["Close"] / bar["Open"] - 1) * 100)
+                if bar["Open"] else None
+            )
+            v = float(hist["Volume"].loc[ts]) if "Volume" in hist.columns else None
+            unusual.append({
+                "date": str(ts)[:10],
+                "range_pct": _round(r),
+                "close_change_pct": chg,
+                "volume_multiple_of_avg20": _round(v / avg20) if v else None,
+            })
+        unusual.sort(key=lambda u: u["range_pct"], reverse=True)
+    return {
+        "avg_volume_20bar": _round(avg20),
+        "recent_5bar_avg": _round(recent5),
+        "recent_vs_avg20_ratio": _round(ratio),
+        "trend": "rising" if ratio > 1.2 else ("falling" if ratio < 0.8 else "stable"),
+        "spikes_last_60bars": spikes[:5],
+        "unusual_days": unusual[:5],
+    }
+
+
+def _ohlcv_rows(hist: pd.DataFrame) -> List[Dict[str, Any]]:
+    """Raw bars as JSON rows so the report is auditable (SMA/MA/structure
+    can all be recomputed from these)."""
+    has_vol = "Volume" in hist.columns
+    rows: List[Dict[str, Any]] = []
+    for ts, r in hist.iterrows():
+        v = r["Volume"] if has_vol else None
+        rows.append({
+            "date": str(ts)[:10],
+            "open": _round(float(r["Open"])),
+            "high": _round(float(r["High"])),
+            "low": _round(float(r["Low"])),
+            "close": _round(float(r["Close"])),
+            "volume": int(v) if v is not None and v == v else None,
+        })
+    return rows
 
 
 def _intraday_snapshot(symbol: str, exchange: str) -> Dict[str, Any]:
@@ -400,13 +501,16 @@ def _daily_signals(daily: Dict[str, Any]) -> List[Dict[str, Any]]:
         ))
     rsi = daily.get("rsi_14")
     if rsi is not None:
-        bias = "bullish" if rsi > 50 else "bearish"
         if rsi >= 70:
             bias, note = "bearish", "overbought"
         elif rsi <= 30:
             bias, note = "bullish", "oversold"
+        elif rsi > 60:
+            bias, note = "bullish", ""
+        elif rsi < 40:
+            bias, note = "bearish", ""
         else:
-            note = ""
+            bias, note = "neutral", "40-60 neutral band"
         out.append(_signal("rsi_14", rsi, bias, note))
     macd, sig, histg = daily.get("macd"), daily.get("macd_signal"), daily.get("macd_hist")
     if macd is not None and sig is not None:
@@ -425,15 +529,28 @@ def _daily_signals(daily: Dict[str, Any]) -> List[Dict[str, Any]]:
         out.append(_signal("stochastic", {"k": stoch_k, "d": stoch_d}, bias, note))
     adx = daily.get("adx_14")
     if adx is not None:
+        pdi, mdi = daily.get("plus_di_14"), daily.get("minus_di_14")
+        if adx <= 20:
+            bias, note = "neutral", "weak trend — direction unreliable"
+        else:
+            # ADX measures strength only; direction comes from +DI vs -DI
+            bias = "bullish" if (pdi or 0) > (mdi or 0) else "bearish"
+            note = "strength from ADX; direction from +DI vs -DI"
         out.append(_signal(
-            "adx_14", adx,
-            "bullish" if adx > 20 and (daily.get("plus_di_14") or 0) > (daily.get("minus_di_14") or 0)
-            else ("bearish" if adx > 20 else "neutral"),
-            note="trend strength: >20 meaningful" if adx <= 20 else "trending",
+            "adx_14", {"adx": adx, "plus_di": pdi, "minus_di": mdi}, bias, note,
         ))
     cci = daily.get("cci_20")
     if cci is not None:
-        out.append(_signal("cci_20", cci, "bullish" if cci > 0 else "bearish"))
+        if cci > 50:
+            bias = "bullish"
+        elif cci < -50:
+            bias = "bearish"
+        else:
+            bias = "neutral"
+        out.append(_signal(
+            "cci_20", cci, bias,
+            "±50 neutral band" if bias == "neutral" else "",
+        ))
     wpr = daily.get("williams_r_14")
     if wpr is not None:
         out.append(_signal(
@@ -446,6 +563,7 @@ def _daily_signals(daily: Dict[str, Any]) -> List[Dict[str, Any]]:
         out.append(_signal(
             "price_vs_vwap", {"price": price, "vwap": vwap},
             "bullish" if price > vwap else "bearish",
+            note="anchored to window start (see vwap_anchored_meta), not a session VWAP",
         ))
     return out
 
@@ -508,9 +626,9 @@ def _mtf_matrix(tfs: Dict[str, Any]) -> List[Dict[str, Any]]:
                     bear += 1
         rsi = d.get("rsi_14")
         if rsi is not None:
-            if rsi > 50:
+            if rsi > 60:
                 bull += 1
-            else:
+            elif rsi < 40:
                 bear += 1
         macd, sig = d.get("macd"), d.get("macd_signal")
         if macd is not None and sig is not None:
@@ -523,7 +641,12 @@ def _mtf_matrix(tfs: Dict[str, Any]) -> List[Dict[str, Any]]:
     return rows
 
 
-def _scenarios(tfs: Dict[str, Any], levels: Dict[str, Any], confluence: Dict[str, Any]) -> Dict[str, Any]:
+def _scenarios(
+    tfs: Dict[str, Any],
+    levels: Dict[str, Any],
+    confluence: Dict[str, Any],
+    signals: List[Dict[str, Any]],
+) -> Dict[str, Any]:
     daily = tfs.get("daily") or {}
     if (
         not daily
@@ -532,16 +655,15 @@ def _scenarios(tfs: Dict[str, Any], levels: Dict[str, Any], confluence: Dict[str
         or levels.get("status") != "ok"
     ):
         return _unsupported("daily data or levels unavailable")
-    price = daily["current_price"]
     resistances = [z["level"] for z in levels.get("exit_zones", []) if z["kind"] == "resistance"]
     supports = [z["level"] for z in levels.get("entry_zones", []) if z["kind"] == "support"]
     res1 = resistances[0] if resistances else None
     sup1 = supports[0] if supports else None
     overall = confluence.get("overall", "neutral")
-
-    def _prob(shares):
-        # deterministic mapping from confluence share; no invented precision
-        return shares
+    bull_factors = [s["signal"] for s in signals if s["bias"] == "bullish"]
+    bear_factors = [s["signal"] for s in signals if s["bias"] == "bearish"]
+    targets = levels.get("targets") or {}
+    invalidation = levels.get("invalidation_level")
 
     bull_share = confluence.get("bullish_share")
     bear_share = _round(
@@ -553,21 +675,33 @@ def _scenarios(tfs: Dict[str, Any], levels: Dict[str, Any], confluence: Dict[str
         "status": "ok",
         "bullish": {
             "trigger": f"close above resistance {res1}" if res1 else "sustained closes above current range high",
-            "first_target": levels.get("targets", {}).get("tp2"),
+            "targets": [t for t in (targets.get("tp1"), targets.get("tp2"), targets.get("tp3")) if t is not None],
+            "invalidation": invalidation,
+            "supporting_factors": bull_factors[:4],
             "weighting_hint": f"bullish signals {confluence.get('bullish')} of {confluence.get('total_signals')}",
         },
         "bearish": {
             "trigger": f"close below support {sup1}" if sup1 else "loss of the current range low",
-            "first_target": levels.get("targets", {}).get("tp1"),
+            "targets": supports[:3],
+            "invalidation": res1,
+            "supporting_factors": bear_factors[:4],
             "weighting_hint": f"bearish signals {confluence.get('bearish')} of {confluence.get('total_signals')}",
         },
         "neutral": {
             "trigger": "hold inside support/resistance band",
             "band": {"support": sup1, "resistance": res1},
+            "targets": [sup1, res1],
+            "invalidation": "break of either band edge",
+            "supporting_factors": [s["signal"] for s in signals if s["bias"] == "neutral"][:4],
             "weighting_hint": overall,
         },
         "bias_from_confluence": overall,
         "signal_shares_pct": {"bullish": bull_share, "bearish": bear_share},
+        "note": (
+            "deterministic triggers/targets only; the only weighting in this document "
+            "is signal_shares_pct (derived from indicator_confluence). Author scenario "
+            "probabilities downstream from price_history + levels."
+        ),
     }
 
 
@@ -595,8 +729,18 @@ def _historical_comparison(hist: pd.DataFrame) -> Dict[str, Any]:
         fwd = float(close.iloc[start + window + 20] / close.iloc[start + window] - 1)
         best.append({"start_idx": start, "distance": dist, "forward_20d_pct": fwd * 100})
     best.sort(key=lambda x: x["distance"])
-    top = best[:3]
+    # overlapping windows are the same episode — two adjacent starts count once
+    top: List[Dict[str, Any]] = []
+    for cand in best:
+        if any(abs(cand["start_idx"] - t["start_idx"]) < window for t in top):
+            continue
+        top.append(cand)
+        if len(top) == 6:
+            break
+    idx = hist.index
     for t in top:
+        t["start_date"] = str(idx[t["start_idx"]])[:10]
+        t["end_date"] = str(idx[min(t["start_idx"] + window - 1, len(idx) - 1)])[:10]
         t["forward_20d_pct"] = _round(t["forward_20d_pct"])
         t["distance"] = _round(t["distance"], 5)
     return {
@@ -610,26 +754,83 @@ def _historical_comparison(hist: pd.DataFrame) -> Dict[str, Any]:
 # Section 56: catalysts
 # --------------------------------------------------------------------------
 
-def _catalysts(announcements: Optional[List[Dict[str, Any]]]) -> Dict[str, Any]:
-    if not announcements:
-        return _unsupported("no announcements data available")
-    recent = announcements[:8]
-    items = [
-        {
-            "date": a.get("date") or a.get("broadcast_date"),
-            "title": a.get("heading") or a.get("subject") or a.get("title"),
-        }
-        for a in recent
-        if a.get("heading") or a.get("subject") or a.get("title")
+def _catalysts(
+    announcements: Optional[List[Dict[str, Any]]],
+    earnings: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    items: List[Dict[str, Any]] = [
+        {"date": e.get("date"), "title": e.get("title"), "kind": "earnings"}
+        for e in (earnings or [])
     ]
+    for a in (announcements or [])[:8]:
+        title = a.get("heading") or a.get("subject") or a.get("title")
+        if title:
+            items.append({
+                "date": a.get("date") or a.get("broadcast_date"),
+                "title": title,
+                "kind": "announcement",
+            })
     if not items:
-        return _unsupported("announcements present but none have usable titles")
+        return _unsupported("no announcements or earnings dates available")
     return {
         "status": "ok",
-        "note": "recent corporate announcements that may act as technical catalysts",
+        "note": "upcoming earnings (Yahoo calendar, best-effort) and recent corporate announcements that may act as technical catalysts",
         "items": items,
     }
 
+
+# --------------------------------------------------------------------------
+# Section 58: technical risk flags
+# --------------------------------------------------------------------------
+
+def _risk_factors(
+    daily: Dict[str, Any],
+    structure: Dict[str, Any],
+    confluence: Dict[str, Any],
+    hv: Optional[Dict[str, Any]],
+    price: Optional[float],
+    bench_ok: bool,
+) -> List[str]:
+    """Deterministic risk flags. A -39% year with a death cross must never
+    land on 'no quantitative risk flags triggered'."""
+    flags: List[str] = []
+    adx = daily.get("adx_14")
+    if adx is not None and adx < 20:
+        flags.append("ADX below 20: range regime — trend-following signals less reliable")
+    if hv and hv.get("hv_20d_annualized_pct") and hv["hv_20d_annualized_pct"] > 60:
+        flags.append(f"20d realized volatility {hv['hv_20d_annualized_pct']}%: elevated — size positions accordingly")
+    if price is not None and daily.get("high_52w"):
+        dd = (price / daily["high_52w"] - 1) * 100
+        if dd < -20:
+            flags.append(f"{_round(dd, 1)}% below the 52-week high: deep drawdown")
+    if daily.get("golden_death_cross_state") == "death-cross regime":
+        flags.append("SMA50 below SMA200: death-cross regime")
+    if price is not None and daily.get("sma_200") and price < daily["sma_200"]:
+        flags.append("price below SMA200: long-term trend filter is bearish")
+    chg_1y = daily.get("change_pct_1y")
+    if chg_1y is not None and chg_1y < -20:
+        flags.append(f"1y change {chg_1y}%: significant capital loss over the last year")
+    cls = (structure.get("market_structure") or {}).get("classification") or ""
+    if cls.startswith("uptrend") and confluence.get("overall") in ("bearish", "mixed"):
+        flags.append(
+            "pivot structure says uptrend while indicator confluence is "
+            f"{confluence.get('overall')} — treat the structure label as low confidence"
+        )
+    div = structure.get("divergence", {}).get("divergences") or []
+    for d in div:
+        flags.append(f"{d['type']} divergence against current trend at {d['anchor']}")
+    if not bench_ok:
+        flags.append("relative strength could not be computed — benchmark feed unavailable")
+    return flags
+
+
+_DASHBOARD_KEYS = (
+    "sma_20", "sma_50", "sma_200", "ema_12", "ema_26",
+    "rsi_14", "macd", "macd_signal", "macd_hist",
+    "stoch_k", "stoch_d", "adx_14", "plus_di_14", "minus_di_14",
+    "cci_20", "williams_r_14", "atr_14",
+    "bb_upper", "bb_middle", "bb_lower", "golden_death_cross_state",
+)
 
 # --------------------------------------------------------------------------
 # Main assembler
@@ -637,7 +838,8 @@ def _catalysts(announcements: Optional[List[Dict[str, Any]]]) -> Dict[str, Any]:
 
 REPORT_SECTIONS = [
     "executive_summary", "asset_overview", "current_price_market_data",
-    "multi_timeframe_price_analysis", "trend_analysis", "market_structure",
+    "multi_timeframe_price_analysis", "price_history", "trend_analysis",
+    "market_structure",
     "support_resistance", "supply_demand_zones", "price_action_analysis",
     "candlestick_analysis", "chart_pattern_analysis", "breakout_breakdown",
     "moving_averages", "momentum_analysis", "rsi_analysis", "macd_analysis",
@@ -665,7 +867,7 @@ async def build_technical_report(
     timeframes: str = "daily,weekly,monthly",
     announcements: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """Assemble the full 60-section report. Per-section failure degrades to
+    """Assemble the full 61-section report. Per-section failure degrades to
     an `unsupported` marker; the document itself always returns 200."""
     symbol = symbol.upper()
     source_u = source.upper()
@@ -688,13 +890,16 @@ async def build_technical_report(
                 continue
             rule, _period = _TIMEFRAMES[tf]
             tfs[tf] = _collect_timeframe(tf, hist_5y, rule)
-        return tfs
+        return tfs, hist_5y
 
-    tfs = await asyncio.to_thread(run_collection)
+    tfs, hist_5y = await asyncio.to_thread(run_collection)
 
     # 1y daily frame, fetched once: relative strength, historical vol,
     # historical pattern comparison and the price-action candle all use it.
     hist_1y = await asyncio.to_thread(fetch_history, symbol, exchange, "1y")
+
+    # Best-effort earnings calendar for section 56 (never fatal).
+    earnings = await asyncio.to_thread(fetch_earnings_dates, symbol, exchange)
 
     # Benchmark history once for relative strength on the daily frame.
     daily = tfs.get("daily") or {}
@@ -752,8 +957,34 @@ async def build_technical_report(
                 "bars": d.get("bars"),
                 "last": d.get("current_price"),
                 "changes_pct": {k: d.get(k) for k in ("change_pct_1d", "change_pct_1w", "change_pct_1m", "change_pct_3m", "change_pct_1y") if k in d},
+                "changes_window_bars": d.get("changes_window_bars"),
             })
     sections["multi_timeframe_price_analysis"] = _ok(mtf_price)
+
+    # ---- raw OHLCV (5): auditable bars, weekly covers the 200-week MA ----
+    if hist_5y is None or hist_5y.empty:
+        sections["price_history"] = _unsupported("no price data")
+    else:
+        # same frames the indicators used, so every derived number is
+        # recomputable from this section alone
+        weekly_hist = _resample_ohlcv(hist_5y, "W").tail(280)
+        weekly_rows = _ohlcv_rows(weekly_hist)
+        if weekly_rows:
+            # last weekly bar is partial when the week isn't over yet
+            if hist_5y.index[-1] < weekly_hist.index[-1]:
+                weekly_rows[-1]["is_partial"] = True
+            # volume before ~2y isn't comparable (provider adjustments) —
+            # null it so consumer medians aren't skewed by ancient prints
+            cutoff = hist_5y.index[-1] - pd.Timedelta(days=730)
+            for row, ts in zip(weekly_rows, weekly_hist.index):
+                if ts < cutoff:
+                    row["volume"] = None
+        sections["price_history"] = _ok({
+            "adjustment": "split+dividend adjusted",
+            "daily": _ohlcv_rows(hist_5y.tail(320)),
+            "weekly": weekly_rows,
+            "note": "weekly resampled from daily (W rule); 280 weekly bars ≈ 5.4y, enough for the 200-week MA; weekly volume nulled before ~2y (not comparable)",
+        })
 
     # ---- indicators (sections 13-28) ----
     ind_keys = [
@@ -773,7 +1004,13 @@ async def build_technical_report(
         sections[section] = _ok(payload) if payload else _unsupported("not computable on available data")
 
     # ---- volume (21, 23, 24) ----
+    weekly = tfs.get("weekly") or {}
+    monthly = tfs.get("monthly") or {}
     vol_payload = {k: daily.get(k) for k in ("obv", "acc_dist") if daily.get(k) is not None}
+    if daily.get("volume_stats"):
+        vol_payload["volume_stats"] = daily["volume_stats"]
+    if weekly.get("volume_stats"):
+        vol_payload["weekly_volume_stats"] = weekly["volume_stats"]
     sections["volume_analysis"] = _ok(vol_payload) if vol_payload else _unsupported("no volume data")
     sections["obv_accumulation_distribution"] = _ok(vol_payload) if vol_payload else _unsupported("no volume data")
     sections["volume_profile"] = (
@@ -781,7 +1018,10 @@ async def build_technical_report(
         if daily.get("structure", {}).get("volume_profile")
         else _unsupported("needs >= 20 bars with volume")
     )
-    vwap_data = {"daily_anchored_vwap": daily.get("vwap_anchored")}
+    vwap_data = {
+        "daily_anchored_vwap": daily.get("vwap_anchored"),
+        "daily_anchored_vwap_meta": daily.get("vwap_anchored_meta"),
+    }
     if "intraday" in tfs and tfs["intraday"].get("status") == "ok":
         vwap_data["intraday_session_vwap"] = tfs["intraday"].get("session_vwap")
     sections["vwap_analysis"] = _ok(vwap_data) if vwap_data["daily_anchored_vwap"] or vwap_data.get("intraday_session_vwap") else _unsupported("no volume data")
@@ -807,11 +1047,24 @@ async def build_technical_report(
 
     # ---- structure sections (6-12, 22, 32, 37) ----
     structure = daily.get("structure") or {}
+    wstructure = (weekly.get("structure") or {}) if weekly else {}
     sections["market_structure"] = _ok(structure["market_structure"]) if structure.get("market_structure") else _unsupported("insufficient bars")
-    sections["support_resistance"] = _ok(structure["support_resistance"]) if structure.get("support_resistance") else _unsupported("insufficient bars")
+    if structure.get("support_resistance"):
+        sr_payload = dict(structure["support_resistance"])
+        if wstructure.get("support_resistance"):
+            sr_payload["weekly"] = wstructure["support_resistance"]
+        sections["support_resistance"] = _ok(sr_payload)
+    else:
+        sections["support_resistance"] = _unsupported("insufficient bars")
     sections["supply_demand_zones"] = _ok(structure["supply_demand_zones"]) if structure.get("supply_demand_zones") else _unsupported("no zones detected")
-    sections["candlestick_analysis"] = _ok(structure["candlesticks"]) if structure.get("candlesticks") else _unsupported("insufficient bars")
-    sections["chart_pattern_analysis"] = _ok(structure["chart_patterns"]) if structure.get("chart_patterns") else _unsupported("insufficient bars")
+    sections["candlestick_analysis"] = _ok({
+        "daily": structure.get("candlesticks"),
+        "weekly": wstructure.get("candlesticks"),
+    }) if structure.get("candlesticks") else _unsupported("insufficient bars")
+    sections["chart_pattern_analysis"] = _ok({
+        "daily": structure.get("chart_patterns"),
+        "weekly": wstructure.get("chart_patterns"),
+    }) if structure.get("chart_patterns") else _unsupported("insufficient bars")
     sections["breakout_breakdown"] = _ok(structure["chart_patterns"]["breakout"]) if structure.get("chart_patterns", {}).get("breakout") else _ok({"breakout": None, "note": "no active breakout/breakdown from the 60-bar range"})
     sections["gap_analysis"] = _ok(structure["gaps"]) if structure.get("gaps") else _unsupported("no gaps found")
     sections["divergence_analysis"] = _ok(structure["divergence"]) if structure.get("divergence") else _unsupported("insufficient bars")
@@ -836,22 +1089,70 @@ async def build_technical_report(
     else:
         sections["ichimoku_analysis"] = _unsupported("needs >= 78 bars (Senkou B shift)")
 
+    # ---- signals & confluence (35-36, 49) — computed before the trend
+    # sections so trend_analysis can state structure vs momentum apart ----
+    signals = _daily_signals(daily)
+    confluence = _confluence(signals)
+
     # ---- trend & regime (5, 33, 34) ----
+    ms = structure.get("market_structure") or {}
+    price_vs_sma200 = None
+    if price is not None and daily.get("sma_200"):
+        price_vs_sma200 = _pct(price / daily["sma_200"] - 1)
+    structural_dir = ms.get("classification") or ""
+    structural_dir = (
+        "bullish" if structural_dir.startswith("uptrend")
+        else "bearish" if structural_dir.startswith("downtrend")
+        else structural_dir or "unknown"
+    )
+    adx_val = daily.get("adx_14")
+    di_dir = (
+        "unreliable (ADX<=20)"
+        if not adx_val or adx_val <= 20
+        else "bullish" if (daily.get("plus_di_14") or 0) > (daily.get("minus_di_14") or 0)
+        else "bearish"
+    )
+    trend_dimensions = {
+        "structural": {
+            "direction": structural_dir,
+            "confidence": ms.get("confidence"),
+            "basis": "last confirmed pivot pairs (HH/HL vs LH/LL)",
+        },
+        "current": {
+            "momentum": confluence["overall"],
+            "regime": (structure.get("trend_regime") or {}).get("regime"),
+            "di_direction": di_dir,
+            "price_vs_sma200_pct": price_vs_sma200,
+        },
+        "agreement": (
+            structural_dir == confluence["overall"]
+            if structural_dir in ("bullish", "bearish")
+            and confluence["overall"] in ("bullish", "bearish")
+            else None
+        ),
+    }
     sections["trend_analysis"] = _ok({
-        "market_structure": structure.get("market_structure", {}).get("classification"),
+        "market_structure": ms.get("classification"),
+        "structure_confidence": ms.get("confidence"),
+        "price_vs_sma200_pct": price_vs_sma200,
         "trend_regime": structure.get("trend_regime"),
+        # pivot label = long-term structure; confluence = current momentum.
+        # They can legitimately disagree — read both, don't merge them.
+        "current_momentum": confluence["overall"],
+        "trend_dimensions": trend_dimensions,
         "sma_alignment": {
             "sma_20": daily.get("sma_20"),
             "sma_50": daily.get("sma_50"),
             "sma_200": daily.get("sma_200"),
         },
+        "sma_slopes_pct": {
+            f"sma_{p}": daily.get(f"sma_{p}_slope_pct") for p in (20, 50, 200)
+            if daily.get(f"sma_{p}_slope_pct") is not None
+        },
     }) if structure else _unsupported("insufficient bars")
     sections["market_regime"] = _ok(structure.get("trend_regime") or {}) if structure.get("trend_regime") else _unsupported("insufficient bars")
     sections["trend_vs_range"] = _ok(structure.get("trend_regime") or {}) if structure.get("trend_regime") else _unsupported("insufficient bars")
 
-    # ---- signals & scenarios (35-36, 49-53) ----
-    signals = _daily_signals(daily)
-    confluence = _confluence(signals)
     sections["bullish_bearish_signals"] = _ok(signals) if signals else _unsupported("no price data")
     sections["indicator_confluence"] = _ok(confluence)
     sections["technical_signal_summary"] = _ok({
@@ -879,7 +1180,7 @@ async def build_technical_report(
         "invalidation": levels.get("invalidation_level"),
     }) if levels.get("status") == "ok" else levels
 
-    scenarios = _scenarios(tfs, levels, confluence)
+    scenarios = _scenarios(tfs, levels, confluence, signals)
     for sec, key in (
         ("bullish_scenario", "bullish"),
         ("bearish_scenario", "bearish"),
@@ -906,67 +1207,105 @@ async def build_technical_report(
         "nearest_resistance": (levels.get("exit_zones") or [{}])[0].get("level"),
         "nearest_support": (levels.get("entry_zones") or [{}])[0].get("level"),
     }) if levels.get("status") == "ok" else levels
-    weekly = tfs.get("weekly") or {}
+    wms = (weekly.get("structure") or {}).get("market_structure") or {}
     sections["medium_term_setup"] = _ok({
         "basis_timeframe": "weekly",
+        "bars": weekly.get("bars"),
         "rsi_14": weekly.get("rsi_14"),
         "sma_20": weekly.get("sma_20"),
-        "structure": (weekly.get("structure") or {}).get("market_structure", {}).get("classification"),
+        "sma_50": weekly.get("sma_50"),
+        "sma_200": weekly.get("sma_200"),
+        "golden_death_cross_state": weekly.get("golden_death_cross_state"),
+        "sma_slopes_pct": {
+            f"sma_{p}": weekly.get(f"sma_{p}_slope_pct") for p in (20, 50, 200)
+            if weekly.get(f"sma_{p}_slope_pct") is not None
+        },
+        "structure": wms.get("classification"),
+        "structure_confidence": wms.get("confidence"),
+        "changes_pct": {k: weekly.get(k) for k in ("change_pct_1w", "change_pct_1m", "change_pct_3m", "change_pct_1y") if k in weekly},
+        "changes_window_bars": weekly.get("changes_window_bars"),
     }) if weekly and not weekly.get("error") else _unsupported("weekly timeframe unavailable")
-    monthly = tfs.get("monthly") or {}
+    mms = (monthly.get("structure") or {}).get("market_structure") or {}
     sections["long_term_structure"] = _ok({
         "basis_timeframe": "monthly",
         "rsi_14": monthly.get("rsi_14"),
-        "sma_10": monthly.get("sma_20"),
-        "structure": (monthly.get("structure") or {}).get("market_structure", {}).get("classification"),
+        "sma_20": monthly.get("sma_20"),
+        "sma_50": monthly.get("sma_50"),
+        "structure": mms.get("classification"),
+        "structure_confidence": mms.get("confidence"),
     }) if monthly and not monthly.get("error") else _unsupported("monthly timeframe unavailable")
 
     # ---- dashboards (53-54) ----
-    sections["indicator_dashboard"] = _ok(signals) if signals else _unsupported("no price data")
+    dashboard = {
+        tf: {
+            k: tfs[tf].get(k) for k in _DASHBOARD_KEYS
+            if tfs[tf].get(k) is not None
+        }
+        for tf in ("daily", "weekly", "monthly")
+        if not (tfs.get(tf) or {}).get("error")
+    }
+    sections["indicator_dashboard"] = _ok(dashboard) if any(dashboard.values()) else _unsupported("no price data")
     sections["mtf_signal_matrix"] = _ok(_mtf_matrix(tfs))
 
     # ---- 56, 57 ----
-    sections["upcoming_catalysts"] = _catalysts(announcements)
+    sections["upcoming_catalysts"] = _catalysts(announcements, earnings)
     sections["historical_pattern_comparison"] = _historical_comparison(hist_1y)
 
     # ---- 58, 59 ----
-    risk_factors = []
-    if daily.get("adx_14") is not None and daily["adx_14"] < 20:
-        risk_factors.append("ADX below 20: range regime — trend-following signals less reliable")
-    if hv and hv.get("hv_20d_annualized_pct") and hv["hv_20d_annualized_pct"] > 60:
-        risk_factors.append(f"20d realized volatility {hv['hv_20d_annualized_pct']}%: elevated — size positions accordingly")
-    div = structure.get("divergence", {}).get("divergences") or []
-    for d in div:
-        risk_factors.append(f"{d['type']} divergence against current trend at {d['anchor']}")
-    if not bench_ok:
-        risk_factors.append("relative strength could not be computed — benchmark feed unavailable")
-    sections["technical_risk_factors"] = _ok(risk_factors or ["no quantitative risk flags triggered"])
+    sections["technical_risk_factors"] = _ok(
+        _risk_factors(daily, structure, confluence, hv, price, bench_ok)
+        or ["no quantitative risk flags triggered"]
+    )
 
     sections["overall_assessment"] = _ok({
         "confluence": confluence["overall"],
         "regime": (structure.get("trend_regime") or {}).get("regime"),
         "structure": (structure.get("market_structure") or {}).get("classification"),
+        "structure_confidence": ms.get("confidence"),
+        "price_vs_sma200_pct": price_vs_sma200,
         "risk_reward_to_tp1": levels.get("risk_reward_to_tp1") if levels.get("status") == "ok" else None,
         "note": "deterministic synthesis of the sections above; not investment advice",
     })
 
-    # ---- 1 & 60 ----
+    # ---- 1 & 61 ----
+    # placeholder first: the supported/unsupported counts are filled in after
+    # every section (including data_sources_methodology) has been assembled
+    wms_dir = (wms.get("classification") or "unknown") if wms else "unknown"
+    if trend_dimensions["agreement"] is False:
+        trend_headline = (
+            f"structural {structural_dir} ({ms.get('confidence')} confidence) conflicts with "
+            f"{confluence['overall']} current momentum — weekly structure: {wms_dir}"
+        )
+    elif trend_dimensions["agreement"] is True:
+        trend_headline = f"structural and current trend aligned: {confluence['overall']}"
+    else:
+        trend_headline = f"current momentum {confluence['overall']}; structure {structural_dir}"
     sections["executive_summary"] = _ok({
         "symbol": symbol,
         "price": price,
         "confluence": confluence["overall"],
         "regime": (structure.get("trend_regime") or {}).get("regime"),
         "structure_class": (structure.get("market_structure") or {}).get("classification"),
-        "sections_supported": sum(1 for s in sections.values() if isinstance(s, dict) and s.get("status") == "ok"),
-        "sections_unsupported": sum(1 for s in sections.values() if isinstance(s, dict) and s.get("status") == "unsupported"),
+        "structure_confidence": ms.get("confidence"),
+        "trend_headline": trend_headline,
+        "trend_dimensions": trend_dimensions,
+        "weekly_structure": wms_dir,
+        "sections_supported": None,
+        "sections_unsupported": None,
     })
     sections["data_sources_methodology"] = _ok({
         "price_source": "Yahoo Finance (yfinance + chart fallback)",
+        "price_adjustment": "split+dividend adjusted (yfinance auto_adjust=True)",
+        "bar_filter": "zero-volume placeholder bars (exchange-holiday fills) dropped",
         "filings_source": source_u,
         "indicator_definitions": "pandas-only implementations aligned with pandas_ta / Wilder smoothing (see src/tools/nse/technicals.py)",
         "patterns": "rule-based detectors over confirmed fractal pivots (see src/tools/nse/patterns.py)",
         "levels": "deterministic mapping from clustered S/R + Fibonacci + ATR; no discretion",
         "as_of": _utcnow(),
+    })
+    sections["executive_summary"]["data"].update({
+        "sections_supported": sum(1 for s in sections.values() if isinstance(s, dict) and s.get("status") == "ok"),
+        "sections_unsupported": sum(1 for s in sections.values() if isinstance(s, dict) and s.get("status") == "unsupported"),
     })
 
     ordered = {name: sections.get(name, _unsupported("not assembled")) for name in REPORT_SECTIONS}
@@ -978,3 +1317,59 @@ async def build_technical_report(
         "sections_count": len(ordered),
         "sections": ordered,
     }
+
+
+# --------------------------------------------------------------------------
+# Chart image (weekly/daily PNG for chart-image skill inputs)
+# --------------------------------------------------------------------------
+
+def render_chart_png(
+    symbol: str,
+    exchange: str = "NSE",
+    timeframe: str = "weekly",
+    bars: int = 160,
+) -> bytes:
+    """Close + SMA20/50/200 + volume PNG. matplotlib Agg, no display —
+    the weekly chart image that chart-reading skills take as input."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    rule, _period = _TIMEFRAMES.get(timeframe, (None, None))
+    hist = fetch_history(symbol, exchange, period="5y")
+    if hist is None or hist.empty:
+        raise ValueError(f"no price history for {symbol}")
+    if rule is not None:
+        hist = _resample_ohlcv(hist, rule)
+    hist = hist.tail(max(20, min(bars, 400)))
+    close = hist["Close"]
+
+    fig, (ax1, ax2) = plt.subplots(
+        2, 1, figsize=(12, 7), sharex=True,
+        gridspec_kw={"height_ratios": [3, 1]},
+    )
+    ax1.plot(close.index, close.values, color="black", lw=1.2, label="Close")
+    for p, color in ((20, "#e6a817"), (50, "#1f77b4"), (200, "#d62728")):
+        if len(close) >= p:
+            ma = _sma(close, p)
+            ax1.plot(ma.index, ma.values, lw=1.0, color=color, label=f"SMA{p}")
+    ax1.set_title(f"{symbol} — {timeframe} (split+dividend adjusted)")
+    ax1.legend(loc="best", fontsize=8)
+    ax1.grid(alpha=0.3)
+    if "Volume" in hist.columns:
+        # bar width in days: 0.8 of the median spacing, whatever the timeframe
+        step_days = (
+            (hist.index[-1] - hist.index[0]).days / max(len(hist) - 1, 1)
+            if len(hist) > 1 else 1.0
+        )
+        ax2.bar(hist.index, hist["Volume"], color="#999999", width=max(step_days * 0.8, 0.1))
+        ax2.set_ylabel("Volume")
+    ax2.grid(alpha=0.3)
+    fig.autofmt_xdate()
+    fig.tight_layout()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=110)
+    plt.close(fig)
+    return buf.getvalue()

@@ -372,7 +372,7 @@ ADVANCED: List[Endpoint] = [
         "method": "GET",
         "path": "/technicals",
         "auth": "key",
-        "description": "End-to-end technical analysis report: multi-timeframe indicators, structure, patterns, levels, scenarios. Each section degrades to 'unsupported' rather than failing.",
+        "description": "End-to-end technical analysis report: 61 sections across multi-timeframe indicators, raw OHLCV, structure, patterns, levels, scenarios. Each section degrades to 'unsupported' rather than failing.",
         "params": _symbol_params()
         + [
             {
@@ -381,6 +381,19 @@ ADVANCED: List[Endpoint] = [
                 "default": "daily,weekly,monthly",
                 "help": "Comma-separated: intraday, daily, weekly, monthly",
             },
+        ],
+    },
+    {
+        "name": "Technicals chart (PNG)",
+        "group": "Advanced Data Suite",
+        "method": "GET",
+        "path": "/technicals/chart",
+        "auth": "key",
+        "description": "Rendered price chart image (close + SMA20/50/200 + volume) for chart-reading skills.",
+        "params": _symbol_params()
+        + [
+            {"name": "timeframe", "type": "select", "options": ["daily", "weekly", "monthly"], "default": "weekly"},
+            {"name": "bars", "type": "number", "default": "160", "help": "20-400 bars"},
         ],
     },
     {

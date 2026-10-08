@@ -86,7 +86,7 @@ def _macd(close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
 
 def _bbands(close: pd.Series, length: int = 20, std: float = 2.0):
     mid = _sma(close, length)
-    sd = close.rolling(length).std(ddof=1)
+    sd = close.rolling(length).std(ddof=0)
     return mid + std * sd, mid, mid - std * sd
 
 
@@ -358,7 +358,12 @@ def fetch_history(
         try:
             with _yf_lock:
                 ticker = yf.Ticker(yf_symbol)
-                hist = ticker.history(period=period, interval=interval)
+                # auto_adjust pinned explicitly: yfinance has flipped its
+                # default before, and every SMA/fib/S-R level in the report
+                # silently changes with the adjustment mode.
+                hist = ticker.history(
+                    period=period, interval=interval, auto_adjust=True
+                )
         except Exception as exc:  # noqa: BLE001 - never crash callers
             logger.warning(f"yfinance history failed for {yf_symbol}: {exc!r}")
             hist = pd.DataFrame()
@@ -366,6 +371,11 @@ def fetch_history(
             # Drop the live bar when Yahoo pre-allocates it with NaN OHLC:
             # every rolling indicator would otherwise read NaN at idx -1.
             hist = hist.dropna(subset=["Open", "High", "Low", "Close"], how="any")
+            # Drop zero-volume placeholder bars (exchange-holiday fills):
+            # they sit inside ATR/ADX/Stoch windows, shift every N-bar change
+            # window, and poison volume ratios with a fake 0.
+            if "Volume" in hist.columns:
+                hist = hist[hist["Volume"].fillna(0) > 0]
         if hist is not None and not hist.empty:
             break
         if attempt < _HISTORY_ATTEMPTS - 1:
@@ -382,6 +392,41 @@ def fetch_history(
         _cache_evict(_RAW_CACHE)
         _cache_evict(_cache)
     return hist
+
+
+def fetch_earnings_dates(
+    symbol: str, exchange: str = "NSE", limit: int = 4
+) -> List[Dict[str, Any]]:
+    """Upcoming earnings dates from Yahoo (best-effort, never fatal).
+
+    ponytail: one extra uncached Yahoo call per /technicals request — add a
+    short TTL cache if datacenter-IP rate limiting ever bites."""
+    try:
+        df = yf.Ticker(_generate_yf_symbol(symbol, exchange)).get_earnings_dates(
+            limit=limit * 3
+        )
+        if df is None or df.empty:
+            return []
+        today = pd.Timestamp.now().normalize()
+        rows: List[Dict[str, Any]] = []
+        for ts, r in df.iterrows():
+            t = ts.tz_localize(None) if getattr(ts, "tz", None) is not None else ts
+            if pd.isna(t) or t < today:
+                continue
+            est = _to_valid_float(r.get("EPS Estimate"))
+            rep = _to_valid_float(r.get("Reported EPS"))
+            rows.append({
+                "date": t.strftime("%Y-%m-%d"),
+                "eps_estimate": est,
+                "eps_reported": rep,
+                "title": "Quarterly earnings",
+            })
+            if len(rows) >= limit:
+                break
+        return rows
+    except Exception as exc:  # noqa: BLE001 - calendar is additive only
+        logger.warning(f"earnings dates failed for {symbol}.{exchange}: {exc!r}")
+        return []
 
 
 def _resample_ohlcv(hist: pd.DataFrame, rule: str) -> pd.DataFrame:
