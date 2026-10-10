@@ -532,6 +532,184 @@ ADVANCED: List[Endpoint] = [
     },
 ]
 
+def _macro_country() -> Dict[str, Any]:
+    return {
+        "name": "country",
+        "type": "select",
+        "default": "in",
+        "options": ["in", "us"],
+        "help": "Only 'in' is connected; 'us' returns 501.",
+    }
+
+
+def _macro_dates() -> List[Dict[str, Any]]:
+    return [
+        {"name": "start_date", "type": "text", "default": "", "help": "YYYY-MM-DD"},
+        {"name": "end_date", "type": "text", "default": "", "help": "YYYY-MM-DD"},
+    ]
+
+
+def _macro_index_params() -> List[Dict[str, Any]]:
+    return [
+        _macro_country(),
+        {
+            "name": "symbol",
+            "type": "symbol",
+            "required": True,
+            "in_path": True,
+            "default": "NIFTY 50",
+            "help": "NSE index symbol, e.g. 'NIFTY 50'.",
+        },
+    ]
+
+
+MACRO: List[Endpoint] = [
+    {
+        "name": "Macro overview",
+        "group": "Macro",
+        "method": "GET",
+        "path": "/macro/overview",
+        "auth": "key",
+        "description": "One-shot dashboard: top indices, FII/DII flows, turnover, repo rate.",
+        "params": [_macro_country()],
+    },
+    {
+        "name": "Index universe",
+        "group": "Macro",
+        "method": "GET",
+        "path": "/macro/indices",
+        "auth": "key",
+        "description": "Full NSE index universe with live snapshot, valuation and breadth.",
+        "params": [
+            _macro_country(),
+            {"name": "limit", "type": "int", "default": 50, "min": 1, "max": 300},
+        ],
+    },
+    {
+        "name": "Index snapshot",
+        "group": "Macro",
+        "method": "GET",
+        "path": "/macro/indices/{symbol}",
+        "auth": "key",
+        "description": "Live snapshot for a single index.",
+        "params": _macro_index_params(),
+    },
+    {
+        "name": "Index history",
+        "group": "Macro",
+        "method": "GET",
+        "path": "/macro/indices/{symbol}/history",
+        "auth": "key",
+        "description": "Daily OHLC history for an index.",
+        "params": _macro_index_params() + _macro_dates(),
+    },
+    {
+        "name": "Index valuation",
+        "group": "Macro",
+        "method": "GET",
+        "path": "/macro/indices/{symbol}/valuation",
+        "auth": "key",
+        "description": "Historical PE/PB/DY for an index.",
+        "params": _macro_index_params() + _macro_dates(),
+    },
+    {
+        "name": "Index total returns",
+        "group": "Macro",
+        "method": "GET",
+        "path": "/macro/indices/{symbol}/returns",
+        "auth": "key",
+        "description": "Total-return (TRI) history for an index.",
+        "params": _macro_index_params() + _macro_dates(),
+    },
+    {
+        "name": "Index constituents",
+        "group": "Macro",
+        "method": "GET",
+        "path": "/macro/indices/{symbol}/constituents",
+        "auth": "key",
+        "description": "Constituent stocks of an index.",
+        "params": _macro_index_params(),
+    },
+    {
+        "name": "Market valuation",
+        "group": "Macro",
+        "method": "GET",
+        "path": "/macro/valuation",
+        "auth": "key",
+        "description": "Whole-market per-equity P/E. 503 when the upstream CSV is missing (by design).",
+        "params": [
+            _macro_country(),
+            {"name": "date", "type": "text", "default": "", "help": "Trade date YYYY-MM-DD"},
+        ],
+    },
+    {
+        "name": "Market breadth",
+        "group": "Macro",
+        "method": "GET",
+        "path": "/macro/breadth",
+        "auth": "key",
+        "description": "Advances/declines, top gainers and losers.",
+        "params": [
+            _macro_country(),
+            {"name": "limit", "type": "int", "default": 10, "min": 1, "max": 50},
+        ],
+    },
+    {
+        "name": "FII/DII flows",
+        "group": "Macro",
+        "method": "GET",
+        "path": "/macro/flows",
+        "auth": "key",
+        "description": "FII/DII daily cash-market net flows.",
+        "params": [_macro_country()],
+    },
+    {
+        "name": "NSDL FPI flows",
+        "group": "Macro",
+        "method": "GET",
+        "path": "/macro/flows/fpi",
+        "auth": "key",
+        "description": "NSDL FPI flows. 503 unless headless Chromium is available upstream.",
+        "params": [_macro_country()],
+    },
+    {
+        "name": "Cash turnover",
+        "group": "Macro",
+        "method": "GET",
+        "path": "/macro/turnover",
+        "auth": "key",
+        "description": "Cash-market turnover by segment.",
+        "params": [_macro_country()],
+    },
+    {
+        "name": "F&O option chain",
+        "group": "Macro",
+        "method": "GET",
+        "path": "/macro/derivatives",
+        "auth": "key",
+        "description": "Option-chain summary: OI, PCR, max-pain.",
+        "params": [
+            _macro_country(),
+            {
+                "name": "symbol",
+                "type": "text",
+                "required": True,
+                "default": "NIFTY",
+                "help": "Underlying, e.g. NIFTY or BANKNIFTY",
+            },
+        ],
+    },
+    {
+        "name": "RBI rates",
+        "group": "Macro",
+        "method": "GET",
+        "path": "/macro/rates",
+        "auth": "key",
+        "description": "RBI current policy rates and reference FX.",
+        "params": [_macro_country()],
+    },
+]
+
 ADMIN: List[Endpoint] = [
     {
         "name": "Create API key",
@@ -601,7 +779,7 @@ ADMIN: List[Endpoint] = [
     },
 ]
 
-ALL_ENDPOINTS: List[Endpoint] = PUBLIC + LIST + DATA + PULLS + ADVANCED + ADMIN
+ALL_ENDPOINTS: List[Endpoint] = PUBLIC + LIST + DATA + PULLS + ADVANCED + MACRO + ADMIN
 
 AUTH_LABELS = {
     "public": "public",

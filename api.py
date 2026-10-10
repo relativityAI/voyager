@@ -46,6 +46,16 @@ from src.schemas import (
     JobPublic,
     KeyPublic,
     ListResponse,
+    MacroConstituents,
+    MacroDerivatives,
+    MacroFlows,
+    MacroHistory,
+    MacroIndexQuoteOrSnapshot,
+    MacroIndices,
+    MacroOverview,
+    MacroRates,
+    MacroTurnover,
+    MacroValuationOrBreadth,
     MetricsBatch,
     OkResponse,
     SearchResponse,
@@ -67,6 +77,20 @@ from src.services import (
     get_youtube_search,
     get_youtube_transcript,
     list_category,
+    macro_breadth,
+    macro_derivatives,
+    macro_flows,
+    macro_flows_fpi,
+    macro_index_constituents,
+    macro_index_history,
+    macro_index_quote,
+    macro_index_returns,
+    macro_index_valuation,
+    macro_indices,
+    macro_market_valuation,
+    macro_overview,
+    macro_rates,
+    macro_turnover,
     search_symbols,
 )
 from src.services._common import _validate_source
@@ -110,6 +134,7 @@ openapi_tags = [
     {"name": "System", "description": "Health, liveness, readiness and metrics probes."},
     {"name": "Lists", "description": "Enumerations of available categories (sources, countries, etc.)."},
     {"name": "Financials", "description": "Financial statements and computed financial metrics."},
+    {"name": "Macro", "description": "India macro market endpoints: index universe, valuations, flows, turnover, F&O and rates."},
     {"name": "Corporate Actions", "description": "Corporate announcements and shareholding patterns."},
     {"name": "Data Pulls", "description": "Pull raw data from the exchange and track async pull jobs."},
     {"name": "Advanced Data Suite", "description": "News, social signals and document structuring."},
@@ -191,6 +216,7 @@ _STATUS_CODE = {
 _SERVICE_CODE = {
     "InvalidRequestError": "invalid_request",
     "NotFoundError": "not_found",
+    "UnsupportedCountryError": "country_not_supported",
     "UnsupportedSourceError": "unsupported_source",
     "ServiceUnavailableError": "service_unavailable",
     "UpstreamError": "upstream_error",
@@ -331,6 +357,20 @@ _RESPONSE_MODELS = {
     },
     ("GET", "/financial-metrics"): Snapshot,
     ("GET", "/financial-metrics/batch"): MetricsBatch,
+    ("GET", "/macro/overview"): MacroOverview,
+    ("GET", "/macro/indices"): MacroIndices,
+    ("GET", "/macro/indices/{symbol}"): MacroIndexQuoteOrSnapshot,
+    ("GET", "/macro/indices/{symbol}/history"): MacroHistory,
+    ("GET", "/macro/indices/{symbol}/valuation"): MacroHistory,
+    ("GET", "/macro/indices/{symbol}/returns"): MacroHistory,
+    ("GET", "/macro/indices/{symbol}/constituents"): MacroConstituents,
+    ("GET", "/macro/valuation"): MacroValuationOrBreadth,
+    ("GET", "/macro/breadth"): MacroValuationOrBreadth,
+    ("GET", "/macro/flows"): MacroFlows,
+    ("GET", "/macro/flows/fpi"): MacroValuationOrBreadth,
+    ("GET", "/macro/turnover"): MacroTurnover,
+    ("GET", "/macro/derivatives"): MacroDerivatives,
+    ("GET", "/macro/rates"): MacroRates,
     ("GET", "/announcements"): Announcements,
     ("GET", "/shareholdings"): Snapshot,
     ("GET", "/news/stories"): Doc,
@@ -1129,6 +1169,178 @@ async def social_youtube_transcript(
     video_id: str,
 ):
     return await get_youtube_transcript(video_id)
+
+
+_COUNTRY = Query("in", pattern=r"^[A-Za-z]{2}$", description="ISO-3166 alpha-2. Only 'in' is connected.")
+_MACRO_SYM = "NSE index symbol, URL-encoded (e.g. 'NIFTY 50')."
+_MACRO_DATES = "Window (YYYY-MM-DD). Default: trailing 1 year."
+
+
+@app.get(
+    "/macro/overview",
+    summary="One-shot macro dashboard: top indices, FII/DII flows, turnover, repo rate",
+    tags=["Macro"],
+    dependencies=[Depends(require_api_key)],
+)
+async def macro_overview_endpoint(country: str = _COUNTRY):
+    return await macro_overview(country)
+
+
+@app.get(
+    "/macro/indices",
+    summary="Full NSE index universe with live snapshot, valuation and breadth",
+    tags=["Macro"],
+    dependencies=[Depends(require_api_key)],
+)
+async def macro_indices_endpoint(
+    country: str = _COUNTRY,
+    limit: int = Query(None, ge=1, le=300, description="Max indices to return"),
+):
+    return await macro_indices(country, limit)
+
+
+@app.get(
+    "/macro/indices/{symbol}",
+    summary="Live snapshot for a single index",
+    tags=["Macro"],
+    dependencies=[Depends(require_api_key)],
+)
+async def macro_index_quote_endpoint(symbol: str, country: str = _COUNTRY):
+    return await macro_index_quote(country, symbol)
+
+
+@app.get(
+    "/macro/indices/{symbol}/history",
+    summary="Daily OHLC history for an index",
+    tags=["Macro"],
+    dependencies=[Depends(require_api_key)],
+)
+async def macro_index_history_endpoint(
+    symbol: str,
+    country: str = _COUNTRY,
+    start_date: str = Query(None, description=_MACRO_DATES),
+    end_date: str = Query(None, description=_MACRO_DATES),
+):
+    return await macro_index_history(country, symbol, start_date, end_date)
+
+
+@app.get(
+    "/macro/indices/{symbol}/valuation",
+    summary="Historical PE/PB/DY for an index",
+    tags=["Macro"],
+    dependencies=[Depends(require_api_key)],
+)
+async def macro_index_valuation_endpoint(
+    symbol: str,
+    country: str = _COUNTRY,
+    start_date: str = Query(None, description=_MACRO_DATES),
+    end_date: str = Query(None, description=_MACRO_DATES),
+):
+    return await macro_index_valuation(country, symbol, start_date, end_date)
+
+
+@app.get(
+    "/macro/indices/{symbol}/returns",
+    summary="Total-return (TRI) history for an index",
+    tags=["Macro"],
+    dependencies=[Depends(require_api_key)],
+)
+async def macro_index_returns_endpoint(
+    symbol: str,
+    country: str = _COUNTRY,
+    start_date: str = Query(None, description=_MACRO_DATES),
+    end_date: str = Query(None, description=_MACRO_DATES),
+):
+    return await macro_index_returns(country, symbol, start_date, end_date)
+
+
+@app.get(
+    "/macro/indices/{symbol}/constituents",
+    summary="Constituent stocks of an index",
+    tags=["Macro"],
+    dependencies=[Depends(require_api_key)],
+)
+async def macro_index_constituents_endpoint(symbol: str, country: str = _COUNTRY):
+    return await macro_index_constituents(country, symbol)
+
+
+@app.get(
+    "/macro/valuation",
+    summary="Whole-market per-equity P/E",
+    tags=["Macro"],
+    dependencies=[Depends(require_api_key)],
+)
+async def macro_market_valuation_endpoint(
+    country: str = _COUNTRY,
+    date: str = Query(None, description="Trade date (YYYY-MM-DD)"),
+):
+    return await macro_market_valuation(country, date)
+
+
+@app.get(
+    "/macro/breadth",
+    summary="Market breadth: advances/declines, top gainers and losers",
+    tags=["Macro"],
+    dependencies=[Depends(require_api_key)],
+)
+async def macro_breadth_endpoint(
+    country: str = _COUNTRY,
+    limit: int = Query(10, ge=1, le=50, description="Top gainers/losers to return"),
+):
+    return await macro_breadth(country, limit)
+
+
+@app.get(
+    "/macro/flows",
+    summary="FII/DII daily cash-market net flows",
+    tags=["Macro"],
+    dependencies=[Depends(require_api_key)],
+)
+async def macro_flows_endpoint(country: str = _COUNTRY):
+    return await macro_flows(country)
+
+
+@app.get(
+    "/macro/flows/fpi",
+    summary="NSDL FPI flows (requires headless Chromium upstream)",
+    tags=["Macro"],
+    dependencies=[Depends(require_api_key)],
+)
+async def macro_flows_fpi_endpoint(country: str = _COUNTRY):
+    return await macro_flows_fpi(country)
+
+
+@app.get(
+    "/macro/turnover",
+    summary="Cash-market turnover by segment",
+    tags=["Macro"],
+    dependencies=[Depends(require_api_key)],
+)
+async def macro_turnover_endpoint(country: str = _COUNTRY):
+    return await macro_turnover(country)
+
+
+@app.get(
+    "/macro/derivatives",
+    summary="F&O option-chain summary: OI, PCR, max-pain",
+    tags=["Macro"],
+    dependencies=[Depends(require_api_key)],
+)
+async def macro_derivatives_endpoint(
+    symbol: str = Query(..., description="Underlying symbol, e.g. 'NIFTY' or 'BANKNIFTY'"),
+    country: str = _COUNTRY,
+):
+    return await macro_derivatives(country, symbol)
+
+
+@app.get(
+    "/macro/rates",
+    summary="RBI current policy rates and reference FX",
+    tags=["Macro"],
+    dependencies=[Depends(require_api_key)],
+)
+async def macro_rates_endpoint(country: str = _COUNTRY):
+    return await macro_rates(country)
 
 
 if __name__ == "__main__":

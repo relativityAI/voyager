@@ -24,7 +24,19 @@ from starlette.middleware.base import BaseHTTPMiddleware
 # GET paths whose responses are server-cached/semi-static — they get an ETag
 # (conditional-request support) and short Cache-Control (audit P2-10).
 _CACHEABLE_GET_PATHS = {"/news/stories", "/news/ticker", "/list", "/announcements"}
+# Macro sub-routes that are immutable for a given date window (historical series,
+# whole-market valuation, RBI rate snapshot). Live routes (/macro/overview,
+# /macro/indices, /macro/indices/{symbol}, /macro/flows, ...) stay uncached.
+_MACRO_CACHEABLE_SUFFIXES = ("/history", "/valuation", "/returns")
 _CACHE_MAX_AGE = 120
+
+
+def _is_cacheable_path(path: str) -> bool:
+    if path in _CACHEABLE_GET_PATHS:
+        return True
+    if path == "/macro/valuation" or path == "/macro/rates":
+        return True
+    return path.startswith("/macro/indices/") and path.endswith(_MACRO_CACHEABLE_SUFFIXES)
 
 
 def _etag_for(body: bytes) -> str:
@@ -39,7 +51,7 @@ class HttpCacheMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next):
-        if request.method != "GET" or request.url.path not in _CACHEABLE_GET_PATHS:
+        if request.method != "GET" or not _is_cacheable_path(request.url.path):
             return await call_next(request)
 
         response = await call_next(request)

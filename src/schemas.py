@@ -111,3 +111,99 @@ class KeyPublic(Doc):
     rpm: int
     enabled: bool
     created_at: Optional[str] = None
+
+
+class MacroIndex(Doc):
+    symbol: Optional[str] = None
+    name: Optional[str] = None
+    last: Optional[float] = None
+    change_pct: Optional[float] = None
+
+
+class MacroOverview(Doc):
+    country: str
+    as_of: str
+    indices: List[MacroIndex]
+    flows: Optional[dict] = None
+    turnover_cash_crore: Optional[float] = None
+    policy_repo_rate_pct: Optional[float] = None
+
+
+class MacroIndices(Doc):
+    country: str
+    as_of: str
+    count: int
+    indices: List[MacroIndex]
+
+
+class MacroBar(Doc):
+    date: str
+    open: Optional[float] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
+    close: Optional[float] = None
+
+
+class MacroHistory(Doc):
+    country: str
+    symbol: str
+    source: str
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    bars: List[MacroBar]
+    bars_available: Optional[int] = None
+    downsampled: Optional[bool] = None
+
+
+class MacroConstituents(Doc):
+    country: str
+    symbol: str
+    count: int
+    constituents: List[dict]
+
+
+class MacroIndexQuoteOrSnapshot(Doc):
+    country: str
+    index: Optional[MacroIndex] = None
+    as_of: Optional[str] = None
+
+
+class MacroValuationOrBreadth(Doc):
+    country: str
+    as_of: Optional[str] = None
+    date: Optional[str] = None
+    total: Optional[int] = None
+    data: Optional[List[dict]] = None
+    bars_available: Optional[int] = None
+    downsampled: Optional[bool] = None
+
+
+class MacroFlows(Doc):
+    country: str
+    as_of: str
+    fii_dii: List[dict]
+
+
+class MacroTurnover(Doc):
+    country: str
+    as_of: str
+    turnover: List[dict]
+
+
+class MacroDerivatives(Doc):
+    country: str
+    underlying: str
+    as_of: str
+    spot: Optional[float] = None
+    expiry_date: Optional[str] = None
+    total_oi_lots: Optional[float] = None
+    change_oi_pct: Optional[float] = None
+    put_call_ratio: Optional[float] = None
+    maxpain: Optional[float] = None
+
+
+class MacroRates(Doc):
+    country: str
+    as_of: str
+    provider: str
+    rates: dict

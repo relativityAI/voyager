@@ -22,6 +22,10 @@ class UnsupportedSourceError(ServiceError):
     status_code = 501
 
 
+class UnsupportedCountryError(ServiceError):
+    status_code = 501
+
+
 class NotFoundError(ServiceError):
     status_code = 404
 

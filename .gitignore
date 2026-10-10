@@ -4,7 +4,7 @@
 # Mongo connection profiles (never commit real credentials)
 profiles/*.env
 !profiles/*.env.example
-
+research
 # Created by https://www.toptal.com/developers/gitignore/api/python
 # Edit at https://www.toptal.com/developers/gitignore?templates=python
 

@@ -13,6 +13,8 @@ rich==14.2.0
 # indicators that are plain pandas rolling windows — see technicals.py)
 pandas==2.3.3
 numpy==2.2.6
+# Vendored nsepython imports scipy.stats.norm at module load (rahu.py)
+scipy>=1.13
 yfinance==1.4.1
 edgartools==5.56.0
 # Chart PNG endpoint (/technicals/chart) — direct import, pin it (it was only
