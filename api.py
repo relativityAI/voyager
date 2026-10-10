@@ -520,7 +520,8 @@ LLMS_TXT = """\
 
 > Financial data API: NSE (India) and US SEC/EDGAR — financial statements and
 > computed metrics, prices/OHLCV, corporate announcements, shareholding
-> patterns, technical reports, news/social signals, and async data pulls.
+> patterns, India macro-market data (index universe, valuations, flows,
+> turnover, F&O, RBI rates), technical reports, and news/social signals.
 
 Voyager serves a machine-readable contract first. An agent should read the
 OpenAPI spec, then this page for conventions.
@@ -535,7 +536,7 @@ OpenAPI spec, then this page for conventions.
 ## Auth
 
 - Data endpoints: `X-API-Key: <key>` or `Authorization: Bearer <key>` (scopes `data:read`, `data:write`).
-- Admin key management: `X-Voyager-Admin-Key`.
+- Admin key management: `X-Voyager-Admin-Key` (not covered here; see OpenAPI).
 
 ## Conventions
 
@@ -545,6 +546,68 @@ OpenAPI spec, then this page for conventions.
 - Errors: RFC 9457 `application/problem+json` with `detail` (string) and `code` (stable token); `retry`/`retry_after_seconds` say whether to wait. 422 adds per-field `errors`.
 - Rate limits: `X-RateLimit-*` headers, `429` beyond them.
 - Consolidation fallback: `consolidated=true` returns consolidated statements, except periods where the issuer only filed standalone — those fall back to the standalone filing (the whole-company picture at that time), so charts stay continuous when reporting basis changes mid-history.
+- `?fields=...` (financial-metrics only) keeps a subset of metrics; identifier/meta fields are always kept.
+
+## Endpoints
+
+Data endpoints require an API key (see Auth). Grouped by OpenAPI tag. The
+`Data Pulls` and `Admin` groups are intentionally omitted here.
+
+### Lists
+
+- `GET /list?category=sources|countries|industries|sectors|indices&source=nse` — enumerate available categories.
+- `GET /search?q=relian&source=nse&limit=20` — case-insensitive symbol search against the stored universe.
+
+### Financials
+
+- `GET /financials?symbol=X&source=nse&consolidated=true&filing_type=quarterly|annual` — merged income/balance/cash-flow for a stock; `history=true` returns all stored periods (`report_period_gte`/`report_period_lte` window them).
+- `GET /financials/income-statements` · `GET /financials/balance-sheets` · `GET /financials/cash-flows` — per-statement, with `limit`/`offset` pagination and the same window/consolidation params.
+- `GET /financial-metrics?symbol=X` — computed ratios, margins and growth snapshot; `?fields=` narrows it.
+- `GET /financial-metrics/batch?symbols=A,B,C` — metrics for several symbols in one call (max 10).
+
+### Macro (NSE India / niftyindices / RBI)
+
+- `GET /macro/overview` — one-shot dashboard: top indices, FII/DII flows, cash turnover, repo rate.
+- `GET /macro/indices?limit=50` — full NSE index universe with live snapshot, valuation and breadth.
+- `GET /macro/indices/{symbol}` — live snapshot for one index (e.g. `NIFTY 50`).
+- `GET /macro/indices/{symbol}/history` — daily OHLC history.
+- `GET /macro/indices/{symbol}/valuation` — historical PE/PB/DY.
+- `GET /macro/indices/{symbol}/returns` — total-return (TRI) history.
+- `GET /macro/indices/{symbol}/constituents` — constituent stocks.
+- `GET /macro/valuation?date=` — whole-market per-equity P/E (by trade date); `503` when the upstream CSV is missing.
+- `GET /macro/breadth?limit=10` — advances/declines plus top gainers and losers.
+- `GET /macro/flows` — FII/DII daily cash-market net flows.
+- `GET /macro/flows/fpi` — NSDL FPI flows (requires headless Chromium upstream; `503` otherwise).
+- `GET /macro/turnover` — cash-market turnover by segment.
+- `GET /macro/derivatives?symbol=NIFTY` — F&O option-chain summary: OI, PCR, max-pain.
+- `GET /macro/rates` — RBI current policy rates and reference FX.
+
+Timeseries guidance: index `history`/`valuation`/`returns` accept
+`start_date`/`end_date` (default: trailing 1 year). Spans longer than ~500 bars
+are thinned by an even stride — first and last bars are always kept — and the
+response reports `bars_available` (the true underlying count) plus
+`downsampled` so you know when granularity was reduced. A 1-week/1-month
+window is always returned in full.
+
+### Corporate Actions
+
+- `GET /announcements?symbol=X` — corporate announcements for a stock.
+- `GET /shareholdings?symbol=X&source=nse` — shareholding pattern parsed from XBRL (values in percent).
+
+### Advanced Data Suite
+
+- `GET /history?symbol=X&interval=daily` — raw OHLCV price history (intraday via `interval`).
+- `GET /technicals?symbol=X` — end-to-end technical report (~61 sections: trend, indicators, levels).
+- `GET /technicals/chart?symbol=X&period=weekly` — close + SMA20/50/200 + volume as a PNG.
+- `GET /news/stories` — latest market news stories (RSS, cached).
+- `GET /news/ticker?symbol=X` — news stories mentioning a stock.
+- `GET /social/reddit?symbol=X` · `GET /social/youtube/search?symbol=X` — mention search.
+- `GET /social/youtube/transcript?video_id=Y` — YouTube captions.
+- `POST /documents/parse` (async) + `GET /documents/{document_id}/index` — PDF → cached PageIndex tree.
+
+### System
+
+- `GET /healthz` · `GET /readyz` · `GET /` — probes. `GET /metrics` — Prometheus. `GET /llms.txt` — this page.
 
 ## Quick start
 
@@ -554,8 +617,8 @@ OpenAPI spec, then this page for conventions.
     curl -H "X-API-Key: $VOYAGER_API_KEY" \\
       "http://localhost:8001/search?q=relian"
 
-Async pull: `POST /pull?symbol=X&filing_type=quarterly` -> `202 {job_id,
-status_url}`; poll `status_url` until `status` is `done` or `failed`.
+    curl -H "X-API-Key: $VOYAGER_API_KEY" \\
+      "http://localhost:8001/macro/indices/NIFTY%2050/history?start_date=2025-01-01"
 """
 
 
