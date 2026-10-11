@@ -11,6 +11,7 @@ import streamlit as st
 
 from admin_panel.pages.database import database
 from admin_panel.pages.keys import keys
+from admin_panel.pages.mcp import mcp
 from admin_panel.pages.metrics import metrics
 from admin_panel.pages.overview import overview
 from admin_panel.pages.playground import playground
@@ -26,6 +27,7 @@ st.navigation(
         st.Page(overview, title="Overview", icon="🛰️", default=True),
         st.Page(pulls, title="Pull Manager", icon="📥"),
         st.Page(playground, title="Playground", icon="▶️"),
+        st.Page(mcp, title="MCP Tools", icon="🔧"),
         st.Page(database, title="Database Stats", icon="🗄️"),
         st.Page(keys, title="API Keys", icon="🔑"),
         st.Page(metrics, title="Metrics", icon="📈"),
