@@ -86,8 +86,9 @@ def job_rows(client, limit: int = 50) -> tuple[list, PanelHTTPError | None]:
             {
                 "job_id": j.get("job_id"),
                 "symbol": j.get("symbol"),
-                # Task jobs (documents.parse) have no
-                # symbol — they run against task_args, not an exchange.
+                # Task jobs have no symbol — they run against task_args, not an
+                # exchange. (No task jobs exist anymore; kept for the generic
+                # pull rows.)
                 "task": j.get("task"),
                 "source": j.get("source", "nse"),
                 "filing_type": j.get("filing_type"),

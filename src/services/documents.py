@@ -1,33 +1,29 @@
-"""PDF structuring with PageIndex Flash.
+"""PDF structuring with PageIndex Flash, behind one read endpoint.
 
-Builds a hierarchical tree index of a PDF's layout (headings, sections) on a
-fully local, LLM-free path (``summary=False, optimize='merge'``), caches it in
-the ``document_indices`` table keyed by URL + content hash so the same PDF is
-only parsed once. Non-text (scanned) PDFs fail with a clear error — OCR is not
-supported (see options decision).
+GET /documents/index?url=... fetches the PDF (URL or local path), parses it with
+PageIndex Flash (LLM-free), caches the tree in ``document_indices`` keyed by
+URL + content hash, and returns the tree. Cache hit returns immediately.
 """
 
 import asyncio
 import hashlib
 import io
-from typing import Any, Dict
+from pathlib import Path
+from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 from loguru import logger
+from pypdf import PdfReader
 from requests import Session
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.db.engine import get_session_factory
-from src.utils.helpers import utcnow
 from src.db.models import DocumentIndex
+from src.utils.helpers import utcnow
 from src.utils.web import generate_fake_headers
 
-from ._common import (
-    InvalidRequestError,
-    NotFoundError,
-    ServiceUnavailableError,
-    UpstreamError,
-)
+from ._common import InvalidRequestError, ServiceUnavailableError, UpstreamError
 
 
 def _pdf_hash(data: bytes) -> str:
@@ -35,16 +31,29 @@ def _pdf_hash(data: bytes) -> str:
 
 
 def _fetch_pdf(url: str) -> bytes:
-    try:
-        resp = Session().get(
-            url, headers=generate_fake_headers(), timeout=60
-        )
-        resp.raise_for_status()
-    except Exception as exc:
-        raise UpstreamError(f"Failed to download PDF from {url}: {exc}")
-    if not resp.content or not resp.content.startswith(b"%PDF-"):
+    # ponytail: accepts an http(s) URL or a local path (the endpoint's contract
+    # says "PDF URL or path"). No zip archives, no redirects without a suffix,
+    # no streaming for huge files — upgrade to urllib.parse + streaming once a
+    # caller needs those.
+    if url.startswith("file:"):
+        url = url[7:]
+    if not urlparse(url).scheme:
+        try:
+            data = Path(url).read_bytes()
+        except OSError as exc:
+            raise InvalidRequestError(f"Cannot read local PDF {url}: {exc}") from exc
+    else:
+        try:
+            resp = Session().get(
+                url, headers=generate_fake_headers(), timeout=60
+            )
+            resp.raise_for_status()
+        except Exception as exc:
+            raise UpstreamError(f"Failed to download PDF from {url}: {exc}")
+        data = resp.content
+    if not data or not data.startswith(b"%PDF-"):
         raise InvalidRequestError("URL did not return a PDF file")
-    return resp.content
+    return data
 
 
 def _page_index_flash(data: bytes) -> Dict[str, Any]:
@@ -59,94 +68,89 @@ def _page_index_flash(data: bytes) -> Dict[str, Any]:
     return page_index_flash(io.BytesIO(data), summary=False, optimize="merge")
 
 
-async def _parse_pdf_in_thread(data: bytes) -> Dict[str, Any]:
-    return await asyncio.to_thread(_page_index_flash, data)
+def _page_texts(data: bytes) -> list:
+    """Per-page text: [{"page": N, "text": ...}]. Nodes' start/end_index are
+    page numbers, so callers slice `text` by a node's range."""
+    return [
+        {"page": i + 1, "text": page.extract_text() or ""}
+        for i, page in enumerate(PdfReader(io.BytesIO(data)).pages)
+    ]
 
 
-async def parse_document(task_args: Dict[str, Any]) -> Dict[str, Any]:
-    """Run inside a job: download the PDF, build the PageIndex tree, cache it."""
-    url = task_args.get("url")
-    if not url:
-        raise InvalidRequestError("task_args must include a PDF url")
+def _structure_and_text(data: bytes) -> tuple:
+    return _page_index_flash(data), _page_texts(data)
 
+
+async def read_document(
+    url: str, symbol: Optional[str] = None, source: str = "nse"
+) -> Dict[str, Any]:
+    """PageIndex tree + per-page text for a PDF, parsed once, cached by URL+hash.
+
+    ponytail: parse runs inline in the request (PageIndex Flash is local, ~2s
+    for a 15-page PDF). No job queue, no polling, no document id — the caller
+    gets the tree back directly. Ceiling: a huge PDF can outlast a gateway
+    timeout; if that ever bites, re-add the async job path behind the same URL.
+    """
     data = await asyncio.to_thread(_fetch_pdf, url)
     pdf_hash = _pdf_hash(data)
 
     factory = get_session_factory()
     async with factory() as session:
-        result = await session.execute(
-            select(DocumentIndex).where(DocumentIndex.url == url)
-        )
-        existing = result.scalar_one_or_none()
-        if existing and existing.pdf_hash == pdf_hash and existing.page_index:
-            logger.info(f"Serving cached page index for {url}")
-            return {"cached": True, "document_id": existing.id}
-
-        try:
-            parsed = await _parse_pdf_in_thread(data)
-        except Exception as exc:
-            result = await session.execute(
+        existing = (
+            await session.execute(
                 select(DocumentIndex).where(DocumentIndex.url == url)
             )
-            existing = result.scalar_one_or_none()
-            if existing:
-                existing.status = "failed"
-                existing.error = str(exc)
-            else:
-                session.add(
-                    DocumentIndex(
-                        url=url,
-                        pdf_hash=pdf_hash,
-                        status="failed",
-                        error=str(exc),
-                    )
-                )
-            await session.commit()
-            raise ServiceUnavailableError(str(exc)) from exc
+        ).scalar_one_or_none()
+        if existing and existing.pdf_hash == pdf_hash and existing.page_index:
+            logger.info(f"Serving cached page index for {url}")
+            # Rows written before text existed: extract now (PDF already in
+            # hand) and backfill, next call is a plain cache hit.
+            if not existing.page_index.get("text"):
+                existing.page_index = {
+                    **existing.page_index,
+                    "text": await asyncio.to_thread(_page_texts, data),
+                }
+                await session.commit()
+            return _serialize(existing, cached=True)
 
+        parsed, text = await asyncio.to_thread(_structure_and_text, data)
         structure = parsed.get("structure", [])
         doc_title = parsed.get("doc_title") or parsed.get("doc_name") or ""
+        # flash doesn't report page count — count from the bytes we already have.
+        num_pages = parsed.get("num_pages") or len(text)
 
         row = {
             "url": url,
             "pdf_hash": pdf_hash,
-            "symbol": task_args.get("symbol"),
-            "source": task_args.get("source", "nse"),
+            "symbol": symbol,
+            "source": source,
             "doc_title": doc_title,
-            "num_pages": parsed.get("num_pages"),
-            "page_index": {"structure": structure},
+            "num_pages": num_pages,
+            "page_index": {"structure": structure, "text": text},
             "status": "parsed",
             "indexed_at": utcnow(),
         }
-        stmt = (
+        result = await session.execute(
             pg_insert(DocumentIndex)
             .values(**row)
             .on_conflict_do_update(
                 index_elements=["url"],
                 set_={k: v for k, v in row.items() if k != "url"},
             )
+            .returning(DocumentIndex.id)
         )
-        await session.execute(stmt)
         await session.commit()
-        result = await session.execute(
-            select(DocumentIndex).where(DocumentIndex.url == url)
-        )
-        saved = result.scalar_one()
-        return {"cached": False, "document_id": saved.id}
+        return {
+            **row,
+            "page_index": {"structure": structure},
+            "id": result.scalar_one(),
+            "text": text,
+            "cached": False,
+        }
 
 
-async def get_document_index(document_id: int) -> Dict[str, Any]:
-    """Return the cached page index for a document, or 404 if not parsed."""
-    factory = get_session_factory()
-    async with factory() as session:
-        result = await session.execute(
-            select(DocumentIndex).where(DocumentIndex.id == document_id)
-        )
-        doc = result.scalar_one_or_none()
-    if doc is None:
-        raise NotFoundError(f"No document with id {document_id}")
-    if doc.status != "parsed" or not doc.page_index:
-        raise NotFoundError(f"Document {document_id} has not been parsed yet")
+def _serialize(doc: DocumentIndex, *, cached: bool) -> Dict[str, Any]:
+    page_index = doc.page_index or {}
     return {
         "id": doc.id,
         "url": doc.url,
@@ -154,6 +158,7 @@ async def get_document_index(document_id: int) -> Dict[str, Any]:
         "source": doc.source,
         "doc_title": doc.doc_title,
         "num_pages": doc.num_pages,
-        "indexed_at": doc.indexed_at.isoformat() if doc.indexed_at else None,
-        "page_index": doc.page_index,
+        "page_index": {"structure": page_index.get("structure", [])},
+        "text": page_index.get("text", []),
+        "cached": cached,
     }

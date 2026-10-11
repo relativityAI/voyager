@@ -134,7 +134,7 @@ async def test_queue_full_blocks_same_task_only(monkeypatch):
 
     async def _execute(stmt):
         params = getattr(stmt.compile(), "params", {})
-        if "documents.parse" in str(params.values()):
+        if "documents.read" in str(params.values()):
             return _CountResult([("queued", 20)])  # queue full
         return _CountResult([("queued", 0)])  # plenty of room
 
@@ -143,7 +143,7 @@ async def test_queue_full_blocks_same_task_only(monkeypatch):
     monkeypatch.setattr(jobs, "MAX_QUEUED_JOBS", 20)
 
     with pytest.raises(jobs.PullLimitReached):
-        await jobs._check_queue_capacity(task="documents.parse")
+        await jobs._check_queue_capacity(task="documents.read")
 
     await jobs._check_queue_capacity(task="other.task")
 

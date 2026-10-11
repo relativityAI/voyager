@@ -113,7 +113,10 @@ def display_response(resp, name: str = "response") -> None:
     if resp is None:
         return
     ok = 200 <= resp.status_code < 300
-    st.markdown(f"**HTTP {resp.status_code}** {'✅' if ok else '⚠️'} · {resp.elapsed_ms} ms")
+    size = _fmt_size(len((resp.text or "").encode()))
+    st.markdown(
+        f"**HTTP {resp.status_code}** {'✅' if ok else '⚠️'} · {resp.elapsed_ms} ms · {size}"
+    )
     data = resp.json if isinstance(resp.json, (dict, list)) else None
     if data is None:
         st.code(resp.text or "(empty response)", language="text")
@@ -153,6 +156,14 @@ def to_dataframe(data):
             if isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
                 return pd.json_normalize(v)
     return None
+
+
+def _fmt_size(n: int) -> str:
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024**2:
+        return f"{n / 1024:.1f} KB"
+    return f"{n / 1024**2:.2f} MB"
 
 
 def banner_for_error(err: PanelHTTPError, admin_key_set: bool) -> None:

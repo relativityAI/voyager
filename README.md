@@ -156,8 +156,7 @@ Data endpoints require an API key via the `X-API-Key` (or `Authorization: Bearer
 | `GET /social/reddit?query=` | 🔑 | Reddit mentions for a ticker/company |
 | `GET /social/youtube/search?query=` | 🔑 | YouTube search (e.g. earnings calls) |
 | `GET /social/youtube/transcript?video_id=` | 🔑 | Captions/transcript for a video |
-| `POST /documents/parse?url=` | ✍️ | Async PDF → PageIndex tree (`202`, polled via `/pull/jobs/{id}`) |
-| `GET /documents/{id}/index` | 🔑 | Cached document index tree |
+| `GET /documents/index?url=` | 🔑 | PDF → PageIndex tree (parsed once, cached by URL+hash) |
 | `GET /llms.txt` | 🔓 | llms.txt guide for AI agents (auth, conventions, quick start) |
 
 > The advanced suite also serves `GET /technicals` (61-section technical analysis report), `GET /technicals/chart` (price chart PNG) and `GET /history` (raw OHLCV) — see the [Advanced Data Suite](#advanced-data-suite-1) tag in `/docs`.

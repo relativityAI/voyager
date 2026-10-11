@@ -456,18 +456,18 @@ ADVANCED: List[Endpoint] = [
         ],
     },
     {
-        "name": "Parse document",
+        "name": "Read document",
         "group": "Advanced Data Suite",
-        "method": "POST",
-        "path": "/documents/parse",
-        "auth": "write",
-        "description": "Build + cache a PageIndex tree for a PDF (async job, 202).",
+        "method": "GET",
+        "path": "/documents/index",
+        "auth": "key",
+        "description": "PageIndex tree + per-page text for a PDF (URL or local path). Parsed once, then cached.",
         "params": [
             {
                 "name": "url",
                 "type": "text",
                 "required": True,
-                "help": "PDF URL or path to structure.",
+                "help": "PDF URL or local path.",
             },
             {"name": "symbol", "type": "symbol", "default": ""},
             {
@@ -475,23 +475,6 @@ ADVANCED: List[Endpoint] = [
                 "type": "select",
                 "default": "nse",
                 "options": ["nse", "sec"],
-            },
-        ],
-    },
-    {
-        "name": "Document index",
-        "group": "Advanced Data Suite",
-        "method": "GET",
-        "path": "/documents/{document_id}/index",
-        "auth": "key",
-        "description": "Get the cached PageIndex tree for a parsed document.",
-        "params": [
-            {
-                "name": "document_id",
-                "type": "int",
-                "default": 1,
-                "min": 1,
-                "in_path": True,
             },
         ],
     },

@@ -374,10 +374,6 @@ async def _dispatch(db_job: PullJobModel) -> Dict[str, Any]:
 
 async def _run_task(task: str, task_args: Dict[str, Any]) -> Dict[str, Any]:
     """Dispatch a named task to its handler module."""
-    if task == "documents.parse":
-        from src.services.documents import parse_document
-
-        return await parse_document(task_args)
     raise ValueError(f"Unknown task: {task}")
 
 

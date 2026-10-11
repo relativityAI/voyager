@@ -5,11 +5,8 @@ from urllib.parse import urlparse
 
 import requests
 from pypdf import PdfReader
-from rich.console import Console
 
 from src.utils.web import generate_fake_headers
-
-console = Console()
 
 
 def utcnow() -> datetime:
@@ -24,8 +21,10 @@ def load_pdf(file_path: str) -> PdfReader:
         url = file_path
         _, extension = os.path.splitext(url)
         if not extension or extension not in [".pdf", ".zip"]:
-            console.error("URL parse error")
-            return
+            # ponytail: only http(s) URLs with a .pdf/.zip suffix. No redirects
+            # without an extension, no content-type sniffing — upgrade to
+            # sniff by magic bytes once a real caller hits a suffixless URL.
+            raise ValueError(f"URL has no .pdf/.zip extension: {url}")
 
         response = requests.get(url, headers=generate_fake_headers(), timeout=10)
         response.raise_for_status()

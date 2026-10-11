@@ -512,7 +512,8 @@ async def build_technical_report(
 async def read_document(
     url: str, symbol: str | None = None, source: str = "nse"
 ) -> dict:
-    """PageIndex tree for a PDF (URL or local path). Parsed once, then cached.
+    """PageIndex tree + per-page text for a PDF (URL or local path). Parsed once, then cached.
+    Returns `text` = [{"page": N, "text": ...}] — slice by node start/end_index.
 
     Args:
         url: Direct URL to a PDF file, or a local path.

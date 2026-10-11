@@ -12,7 +12,7 @@
 |---|---|
 | Base URL | `$VOYAGER_BASE_URL`, default `https://voyager-1hpq.onrender.com` |
 | Auth | header `X-API-Key: $VOYAGER_API_KEY` — never echo the key into any artifact or report |
-| Method | `GET` only. `POST /pull`, `/documents/parse`, `/sentiment/*` are forbidden in this eval |
+| Method | `GET` only. `POST /pull`, `/sentiment/*` are forbidden in this eval |
 | Default params | `filing_type=ttm`, `consolidated=true`; also run `filing_type=quarterly` for the basis checks (D4) |
 | Report | `evals/runs/<YYYY-MM-DD_HHMM>_financial-metrics.md` |
 | Artifacts | `evals/runs/<YYYY-MM-DD_HHMM>_financial-metrics.json`, `..._voyager_raw.json` |

@@ -80,7 +80,7 @@ class PullJob(Base):
     source = Column(Text, default="nse")
     filing_type = Column(Text, nullable=True)
     refresh = Column(Boolean, default=False)
-    # Generic async task (e.g. "documents.parse").
+    # Generic async task (e.g. "pull.data").
     # When set, the job runs the named task instead of a symbol pull.
     task = Column(Text, nullable=True)
     task_args = Column(JSONB, nullable=True)

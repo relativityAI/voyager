@@ -16,41 +16,29 @@ except ImportError:
     pytest.skip("Skipping API tests: import issue", allow_module_level=True)
 
 class TestDocuments:
-    def test_parse_submits_task(self):
-        job = MagicMock()
-        job.job_id = "job-123"
-        job.status = "queued"
-        with patch("api.submit_task", new=AsyncMock(return_value=job)):
-            resp = client.post("/documents/parse?url=https://x.com/a.pdf")
-        assert resp.status_code == 202
-        assert resp.json()["job_id"] == "job-123"
+    def test_index_returns_tree(self):
+        tree = {
+            "url": "https://x.com/a.pdf",
+            "page_index": {"structure": []},
+            "cached": False,
+        }
+        with patch("api.read_document", new=AsyncMock(return_value=tree)):
+            resp = client.get("/documents/index?url=https://x.com/a.pdf")
+        assert resp.status_code == 200
+        assert resp.json()["page_index"] == {"structure": []}
 
-    def test_parse_requires_url(self):
-        with patch("api.submit_task", new=AsyncMock()) as m:
-            resp = client.post("/documents/parse")
+    def test_index_requires_url(self):
+        with patch("api.read_document", new=AsyncMock()) as m:
+            resp = client.get("/documents/index")
         assert resp.status_code == 422
         m.assert_not_awaited()
 
-    def test_get_index_not_parsed(self):
-        from src.services._common import NotFoundError
-
+    def test_index_passes_symbol_and_source(self):
         with patch(
-            "api.get_document_index",
-            new=AsyncMock(side_effect=NotFoundError("not parsed")),
-        ):
-            resp = client.get("/documents/123/index")
-        assert resp.status_code == 404
-
-    def test_get_index_cached(self):
-        with patch(
-            "api.get_document_index",
-            new=AsyncMock(
-                return_value={"id": 1, "page_index": {"structure": []}, "status": "parsed"}
-            ),
-        ):
-            resp = client.get("/documents/1/index")
-        assert resp.status_code == 200
-        assert resp.json()["page_index"] == {"structure": []}
+            "api.read_document", new=AsyncMock(return_value={"cached": True})
+        ) as m:
+            client.get("/documents/index?url=https://x.com/a.pdf&symbol=X&source=sec")
+        m.assert_awaited_once_with("https://x.com/a.pdf", symbol="X", source="sec")
 
 
 class TestNews:

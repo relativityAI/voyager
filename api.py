@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.routing import APIRoute
 from loguru import logger
+from starlette.middleware.gzip import GZipMiddleware
 
 from __version__ import __version__
 from src.auth import APIKey, require_api_key, require_scope
@@ -28,7 +29,6 @@ from src.jobs import (
     reap_stale_jobs,
     requeue_orphaned_running,
     submit_pull,
-    submit_task,
 )
 from src.logging_config import setup_logging
 from src.observability import (
@@ -94,7 +94,7 @@ from src.services import (
     search_symbols,
 )
 from src.services._common import _validate_source
-from src.services.documents import get_document_index
+from src.services.documents import read_document
 from src.services.technical_report import build_technical_report
 
 # Shared query-copy so every route describes the same parameter the same way
@@ -175,6 +175,7 @@ if _cors_origins:
 
 app.add_middleware(PrometheusMiddleware)
 app.add_middleware(HttpCacheMiddleware)
+app.add_middleware(GZipMiddleware)
 
 app.include_router(admin_router)
 
@@ -375,8 +376,7 @@ _RESPONSE_MODELS = {
     ("GET", "/shareholdings"): Snapshot,
     ("GET", "/news/stories"): Doc,
     ("GET", "/news/ticker"): Doc,
-    ("POST", "/documents/parse"): JobAccepted,
-    ("GET", "/documents/{document_id}/index"): Doc,
+    ("GET", "/documents/index"): Doc,
     ("GET", "/social/reddit"): Doc,
     ("GET", "/social/youtube/search"): Doc,
     ("GET", "/social/youtube/transcript"): Doc,
@@ -603,7 +603,7 @@ window is always returned in full.
 - `GET /news/ticker?symbol=X` — news stories mentioning a stock.
 - `GET /social/reddit?symbol=X` · `GET /social/youtube/search?symbol=X` — mention search.
 - `GET /social/youtube/transcript?video_id=Y` — YouTube captions.
-- `POST /documents/parse` (async) + `GET /documents/{document_id}/index` — PDF → cached PageIndex tree.
+- `GET /documents/index?url=` — PDF → PageIndex tree + per-page `text` (parsed once, cached by URL+hash).
 
 ### System
 
@@ -1156,44 +1156,18 @@ async def news_ticker(
     return await get_ticker_mentions(symbol, country, days)
 
 
-@app.post(
-    "/documents/parse",
-    summary="Build + cache a PageIndex tree for a PDF (async job)",
-    status_code=status.HTTP_202_ACCEPTED,
-    tags=["Advanced Data Suite"],
-)
-async def documents_parse(
-    url: str = Query(..., description="PDF URL or path to structure"),
-    symbol: str = Query(None),
-    source: str = Query("nse"),
-    callback_url: str = Query(
-        None, description="Optional webhook URL; POSTed the job result on completion"
-    ),
-    key: APIKey = Depends(require_scope("data:write")),
-):
-    try:
-        job = await submit_task(
-            "documents.parse",
-            {"url": url, "symbol": symbol, "source": source, "callback_url": callback_url},
-            created_by=key.prefix,
-        )
-    except PullLimitReached as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
-    return {
-        "job_id": job.job_id,
-        "status": job.status,
-        "status_url": f"/pull/jobs/{job.job_id}",
-    }
-
-
 @app.get(
-    "/documents/{document_id}/index",
-    summary="Get the cached PageIndex tree for a document",
+    "/documents/index",
+    summary="PageIndex tree + per-page text for a PDF (URL or local path), parsed once and cached",
     tags=["Advanced Data Suite"],
     dependencies=[Depends(require_api_key)],
 )
-async def document_index(document_id: int):
-    return await get_document_index(document_id)
+async def documents_index(
+    url: str = Query(..., description="PDF URL or local path"),
+    symbol: str = Query(None),
+    source: str = Query("nse"),
+):
+    return await read_document(url, symbol=symbol, source=source)
 
 
 @app.get(
