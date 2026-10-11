@@ -9,9 +9,7 @@ import csv
 import io
 import math
 import re
-import sys
 from datetime import date, datetime, timedelta
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
@@ -21,18 +19,9 @@ from ._common import (
     UnsupportedCountryError,
     UpstreamError,
 )
-
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_NSEPY = str(_REPO_ROOT / "research" / "projects" / "nsepython")
-_JUGAAD = str(_REPO_ROOT / "research" / "projects" / "jugaad-data")
-
-for _p in (_NSEPY, _JUGAAD):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
-
-from jugaad_data.nse.live import NSELive  # noqa: E402
-from jugaad_data.rbi import RBI  # noqa: E402
-from nsepython import (  # noqa: E402
+from ._vendored import (
+    RBI,
+    NSELive,
     index_history,
     index_pe_pb_div,
     index_total_returns,
