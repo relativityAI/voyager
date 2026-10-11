@@ -18,6 +18,10 @@ scipy>=1.13
 # Vendored jugaad-data imports appdirs at module load (util.py) — without it
 # src.services fails to import and the whole API refuses to start
 appdirs>=1.4.4
+# research/projects/ vendored copies are gitignored — PyPI fallback so the
+# Docker build (macro.py imports) still boots on Render
+jugaad-data==0.35.10
+nsepython==2.101
 yfinance==1.4.1
 edgartools==5.56.0
 # Chart PNG endpoint (/technicals/chart) — direct import, pin it (it was only
