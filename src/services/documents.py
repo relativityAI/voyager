@@ -84,11 +84,26 @@ def _fetch_pdf(url: str) -> bytes:
 
 def _page_index_flash(data: bytes) -> Dict[str, Any]:
     try:
+        import pageindex.flash.api as _flash_api
         from pageindex.flash import page_index_flash
     except ImportError as exc:
         raise ServiceUnavailableError(
             "pageindex is not installed. Run: pip install pageindex"
         ) from exc
+
+    # page_index_flash never forwards `workers`, so a doc of >=64 pages auto-
+    # spawns cpu_count()-1 spawn processes — each re-imports pageindex/pdfium
+    # and parses its own copy, ~550MB tree peak on 72 pages vs ~144MB one
+    # process. That is what OOMs the 512MB worker. Force the sequential path;
+    # pageindex documents parallel and sequential output as identical.
+    _orig = _flash_api.extract_toc
+    if not getattr(_orig, "_voyager_sequential", False):
+
+        def _extract_toc_sequential(doc_handle, workers=None, **kwargs):
+            return _orig(doc_handle, workers=1, **kwargs)
+
+        _extract_toc_sequential._voyager_sequential = True
+        _flash_api.extract_toc = _extract_toc_sequential
 
     # summary=False, optimize='merge' = deterministic, no LLM, no API key.
     return page_index_flash(io.BytesIO(data), summary=False, optimize="merge")

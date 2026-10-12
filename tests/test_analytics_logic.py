@@ -113,6 +113,28 @@ class TestPDFReading:
             with pytest.raises(InvalidRequestError, match="limit is"):
                 documents._structure_and_text(pdf_bytes)
 
+    def test_flash_parser_forced_sequential(self, pdf_bytes):
+        # A >=64-page doc makes pageindex auto-spawn cpu_count()-1 worker
+        # processes (~550MB tree peak on 72p) and OOMs the 512MB worker.
+        # _page_index_flash must force workers=1 (sequential, same output).
+        import pageindex.flash.api as flash_api
+
+        from src.services import documents
+
+        calls = {}
+
+        def spy(doc_handle, workers=None, **kwargs):
+            calls["workers"] = workers
+            return {"structure": []}
+
+        real = flash_api.extract_toc
+        flash_api.extract_toc = spy
+        try:
+            documents._page_index_flash(pdf_bytes)
+        finally:
+            flash_api.extract_toc = real
+        assert calls["workers"] == 1
+
     def test_read_pdf_rejects_extensionless_url(self):
         # must raise a clear error, not return None (and not hit console.error)
         from src.utils.helpers import read_pdf
