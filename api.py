@@ -1,6 +1,9 @@
 import asyncio
+import json
 import os
+import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Literal, Optional
 
 import uvicorn
@@ -9,9 +12,10 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fastapi.routing import APIRoute
 from loguru import logger
+
 from starlette.middleware.gzip import GZipMiddleware
 
 from __version__ import __version__
@@ -173,6 +177,81 @@ if _cors_origins:
         allow_headers=["*"],
     )
 
+class _EnvelopeMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = {k.lower(): v for k, v in scope.get("headers", [])}
+        wants = (
+            b"application/vnd.voyager.envelope+json" in headers.get(b"accept", b"")
+            or b"envelope=true" in scope.get("query_string", b"")
+        )
+        if not wants:
+            await self.app(scope, receive, send)
+            return
+
+        status_code = None
+        resp_headers = None
+        body_parts = []
+
+        async def send_wrapper(message):
+            nonlocal status_code, resp_headers
+            if message["type"] == "http.response.start":
+                status_code = message["status"]
+                resp_headers = message.get("headers", [])
+            elif message["type"] == "http.response.body":
+                body_parts.append(message.get("body", b""))
+
+        await self.app(scope, receive, send_wrapper)
+
+        if status_code is None or status_code >= 400:
+            await send({"type": "http.response.start", "status": status_code, "headers": resp_headers})
+            await send({"type": "http.response.body", "body": b"".join(body_parts)})
+            return
+
+        ct = dict(resp_headers).get(b"content-type", b"")
+        if b"application/json" not in ct:
+            await send({"type": "http.response.start", "status": status_code, "headers": resp_headers})
+            await send({"type": "http.response.body", "body": b"".join(body_parts)})
+            return
+
+        try:
+            data = json.loads(b"".join(body_parts))
+        except Exception:
+            await send({"type": "http.response.start", "status": status_code, "headers": resp_headers})
+            await send({"type": "http.response.body", "body": b"".join(body_parts)})
+            return
+
+        if isinstance(data, dict) and "data" in data and "meta" in data:
+            await send({"type": "http.response.start", "status": status_code, "headers": resp_headers})
+            await send({"type": "http.response.body", "body": b"".join(body_parts)})
+            return
+
+        wrapped = json.dumps({
+            "data": data,
+            "meta": {
+                "request_id": str(uuid.uuid4()),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        }).encode()
+
+        await send({
+            "type": "http.response.start",
+            "status": status_code,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(wrapped)).encode()),
+            ],
+        })
+        await send({"type": "http.response.body", "body": wrapped})
+
+
+app.add_middleware(_EnvelopeMiddleware)
 app.add_middleware(PrometheusMiddleware)
 app.add_middleware(HttpCacheMiddleware)
 app.add_middleware(GZipMiddleware)
@@ -222,6 +301,23 @@ _SERVICE_CODE = {
     "ServiceUnavailableError": "service_unavailable",
     "UpstreamError": "upstream_error",
 }
+# What an agent should do on this status. Defaults by class; callers can
+# pass agent_action= to override when one status is ambiguous.
+_STATUS_ACTION = {
+    400: "reduce_scope",
+    401: "authenticate",
+    403: "authenticate",
+    404: "abort_and_report",
+    405: "abort_and_report",
+    409: "abort_and_report",
+    413: "reduce_scope",
+    422: "reduce_scope",
+    429: "retry_with_backoff",
+    500: "abort_and_report",
+    501: "abort_and_report",
+    502: "retry_with_backoff",
+    503: "retry_with_backoff",
+}
 
 
 def _problem(
@@ -230,6 +326,7 @@ def _problem(
     code: Optional[str] = None,
     headers: Optional[dict] = None,
     errors=None,
+    agent_action: Optional[str] = None,
 ) -> JSONResponse:
     code = code or _STATUS_CODE.get(status_code, "error")
     body = {
@@ -239,6 +336,7 @@ def _problem(
         "detail": str(detail) if detail is not None else "",
         "code": code,
         "retry": status_code in _RETRYABLE,
+        "agent_action": agent_action or _STATUS_ACTION.get(status_code, "abort_and_report"),
     }
     if headers and headers.get("Retry-After"):
         try:
@@ -300,6 +398,7 @@ _PROBLEM_SCHEMA = {
         "detail": {"type": "string", "description": "Human-readable message"},
         "code": {"type": "string", "description": "Stable machine token; branch on this"},
         "retry": {"type": "boolean", "description": "True when retrying later may succeed"},
+        "agent_action": {"type": "string", "description": "retry_with_backoff | abort_and_report | refresh_and_retry | reduce_scope | authenticate"},
         "retry_after_seconds": {"type": "integer"},
         "errors": {"type": "array", "items": {"type": "object"}},
     },
@@ -548,6 +647,7 @@ OpenAPI spec, then this page for conventions.
 - Rate limits: `X-RateLimit-*` headers, `429` beyond them.
 - Consolidation fallback: `consolidated=true` returns consolidated statements, except periods where the issuer only filed standalone — those fall back to the standalone filing (the whole-company picture at that time), so charts stay continuous when reporting basis changes mid-history.
 - `?fields=...` (financial-metrics only) keeps a subset of metrics; identifier/meta fields are always kept.
+- Response envelope: send `Accept: application/vnd.voyager.envelope+json` or add `?envelope=true` to wrap any `2xx` JSON body as `{"data": <body>, "meta": {"request_id", "timestamp"}}`. Errors keep their `application/problem+json` shape. Default responses are unchanged.
 
 ## Endpoints
 
