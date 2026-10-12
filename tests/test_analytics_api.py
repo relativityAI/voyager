@@ -22,23 +22,39 @@ class TestDocuments:
             "page_index": {"structure": []},
             "cached": False,
         }
-        with patch("api.read_document", new=AsyncMock(return_value=tree)):
+        with patch("api.index_document", new=AsyncMock(return_value=tree)):
             resp = client.get("/documents/index?url=https://x.com/a.pdf")
         assert resp.status_code == 200
         assert resp.json()["page_index"] == {"structure": []}
 
     def test_index_requires_url(self):
-        with patch("api.read_document", new=AsyncMock()) as m:
+        with patch("api.index_document", new=AsyncMock()) as m:
             resp = client.get("/documents/index")
         assert resp.status_code == 422
         m.assert_not_awaited()
 
     def test_index_passes_symbol_and_source(self):
         with patch(
-            "api.read_document", new=AsyncMock(return_value={"cached": True})
+            "api.index_document", new=AsyncMock(return_value={"cached": True})
         ) as m:
             client.get("/documents/index?url=https://x.com/a.pdf&symbol=X&source=sec")
         m.assert_awaited_once_with("https://x.com/a.pdf", symbol="X", source="sec")
+
+    def test_pages_fetches_only_requested(self):
+        out = {"pages": [5, 6, 7], "text": [{"page": 5, "text": "x"}]}
+        with patch(
+            "api.read_document_pages", new=AsyncMock(return_value=out)
+        ) as m:
+            resp = client.get("/documents/pages?url=https://x.com/a.pdf&pages=5-7")
+        assert resp.status_code == 200
+        assert resp.json()["pages"] == [5, 6, 7]
+        m.assert_awaited_once_with(
+            "https://x.com/a.pdf", "5-7", symbol=None, source="nse"
+        )
+
+    def test_pages_requires_pages_param(self):
+        resp = client.get("/documents/pages?url=https://x.com/a.pdf")
+        assert resp.status_code == 422
 
 
 class TestNews:

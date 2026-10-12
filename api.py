@@ -94,7 +94,7 @@ from src.services import (
     search_symbols,
 )
 from src.services._common import _validate_source
-from src.services.documents import read_document
+from src.services.documents import index_document, read_document_pages
 from src.services.technical_report import build_technical_report
 
 # Shared query-copy so every route describes the same parameter the same way
@@ -377,6 +377,7 @@ _RESPONSE_MODELS = {
     ("GET", "/news/stories"): Doc,
     ("GET", "/news/ticker"): Doc,
     ("GET", "/documents/index"): Doc,
+    ("GET", "/documents/pages"): Doc,
     ("GET", "/social/reddit"): Doc,
     ("GET", "/social/youtube/search"): Doc,
     ("GET", "/social/youtube/transcript"): Doc,
@@ -1158,7 +1159,7 @@ async def news_ticker(
 
 @app.get(
     "/documents/index",
-    summary="PageIndex tree + per-page text for a PDF (URL or local path), parsed once and cached",
+    summary="Index a PDF (URL or local path): parse once, cache, return the PageIndex tree",
     tags=["Advanced Data Suite"],
     dependencies=[Depends(require_api_key)],
 )
@@ -1167,7 +1168,22 @@ async def documents_index(
     symbol: str = Query(None),
     source: str = Query("nse"),
 ):
-    return await read_document(url, symbol=symbol, source=source)
+    return await index_document(url, symbol=symbol, source=source)
+
+
+@app.get(
+    "/documents/pages",
+    summary="Per-page text for selected pages of an indexed PDF (e.g. pages=3,5-9)",
+    tags=["Advanced Data Suite"],
+    dependencies=[Depends(require_api_key)],
+)
+async def documents_pages(
+    url: str = Query(..., description="PDF URL or local path (same as /documents/index)"),
+    pages: str = Query(..., description='1-based page spec, e.g. "3,5-9" or "1-3,7"'),
+    symbol: str = Query(None),
+    source: str = Query("nse"),
+):
+    return await read_document_pages(url, pages, symbol=symbol, source=source)
 
 
 @app.get(

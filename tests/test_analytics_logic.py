@@ -93,6 +93,26 @@ class TestPDFReading:
         assert parsed["structure"] == [{"title": "T"}]
         assert len(text) == 1
 
+    def test_parse_pages_spec(self):
+        from src.services._common import InvalidRequestError
+        from src.services.documents import _parse_pages
+
+        assert _parse_pages("3,5-7", 10) == {3, 5, 6, 7}
+        assert _parse_pages(" 1-3 , 7 ", 10) == {1, 2, 3, 7}
+        assert _parse_pages("1-999", 4) == {1, 2, 3, 4}  # clamps to doc length
+        with pytest.raises(InvalidRequestError, match="No requested page"):
+            _parse_pages("99", 4)
+        with pytest.raises(InvalidRequestError, match="Bad page spec"):
+            _parse_pages("abc", 4)
+
+    def test_structure_rejects_oversized_pdf(self, pdf_bytes):
+        from src.services import documents
+        from src.services._common import InvalidRequestError
+
+        with patch.object(documents, "MAX_PDF_CHARS", -1):
+            with pytest.raises(InvalidRequestError, match="limit is"):
+                documents._structure_and_text(pdf_bytes)
+
     def test_read_pdf_rejects_extensionless_url(self):
         # must raise a clear error, not return None (and not hit console.error)
         from src.utils.helpers import read_pdf

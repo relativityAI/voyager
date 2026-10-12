@@ -461,13 +461,42 @@ ADVANCED: List[Endpoint] = [
         "method": "GET",
         "path": "/documents/index",
         "auth": "key",
-        "description": "PageIndex tree + per-page text for a PDF (URL or local path). Parsed once, then cached.",
+        "description": "Index a PDF (URL or local path): parse once, cache, return the PageIndex tree.",
         "params": [
             {
                 "name": "url",
                 "type": "text",
                 "required": True,
                 "help": "PDF URL or local path.",
+            },
+            {"name": "symbol", "type": "symbol", "default": ""},
+            {
+                "name": "source",
+                "type": "select",
+                "default": "nse",
+                "options": ["nse", "sec"],
+            },
+        ],
+    },
+    {
+        "name": "Document pages",
+        "group": "Advanced Data Suite",
+        "method": "GET",
+        "path": "/documents/pages",
+        "auth": "key",
+        "description": "Per-page text for selected pages of an indexed PDF.",
+        "params": [
+            {
+                "name": "url",
+                "type": "text",
+                "required": True,
+                "help": "PDF URL or local path (same as /documents/index).",
+            },
+            {
+                "name": "pages",
+                "type": "text",
+                "required": True,
+                "help": '1-based page spec, e.g. "3,5-9".',
             },
             {"name": "symbol", "type": "symbol", "default": ""},
             {
