@@ -58,11 +58,11 @@ async def init_db():
 
         await conn.run_sync(Base.metadata.create_all)
 
-        # Idempotent schema evolution for new columns on existing tables.
-        # create_all() won't ALTER an existing table.
+        # Idempotent schema evolution for columns/constraints on existing tables.
+        # create_all() won't ALTER an existing table, so EVERY schema change must
+        # be added here — this list is the single migration mechanism.
         for ddl in [
-            "ALTER TABLE pull_jobs ADD COLUMN IF NOT EXISTS task TEXT",
-            "ALTER TABLE pull_jobs ADD COLUMN IF NOT EXISTS task_args JSONB",
+
             "ALTER TABLE income_statements ADD COLUMN IF NOT EXISTS cost_of_revenue NUMERIC",
             "ALTER TABLE cash_flows ADD COLUMN IF NOT EXISTS cash_flows_from_used_in_investing_activities NUMERIC",
             "ALTER TABLE cash_flows ADD COLUMN IF NOT EXISTS cash_flows_from_used_in_financing_activities NUMERIC",
@@ -77,7 +77,50 @@ async def init_db():
             "ALTER TABLE income_statements ADD COLUMN IF NOT EXISTS weighted_average_shares_diluted NUMERIC",
             "ALTER TABLE balance_sheets ADD COLUMN IF NOT EXISTS stockholders_equity NUMERIC",
             "ALTER TABLE balance_sheets ADD COLUMN IF NOT EXISTS total_equity_including_nci NUMERIC",
+            # Ratio-system columns (Aug 2026) — see FINANCIAL_FIELDS in src/tools/nse/ratios.py
+            "ALTER TABLE income_statements ADD COLUMN IF NOT EXISTS depreciation_depletion_and_amortisation_expense NUMERIC",
+            "ALTER TABLE balance_sheets ADD COLUMN IF NOT EXISTS current_liabilities NUMERIC",
+            # Per-source rows (Sept 2026 SEC/US): source on statement tables,
+            # exchange on metadata, one metadata row per (symbol, source).
+            "ALTER TABLE income_statements ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'NSE'",
+            "ALTER TABLE balance_sheets ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'NSE'",
+            "ALTER TABLE cash_flows ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'NSE'",
+            "ALTER TABLE shareholdings ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'NSE'",
+            "ALTER TABLE nse_stock_metadata ADD COLUMN IF NOT EXISTS exchange TEXT",
+            "ALTER TABLE nse_stock_metadata ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'NSE'",
+            "ALTER TABLE nse_stock_metadata DROP CONSTRAINT IF EXISTS nse_stock_metadata_symbol_key",
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_stock_meta_symbol_source ON nse_stock_metadata (symbol, source)",
+            # H1: dedupe key must include source, else NSE and SEC rows for the
+            # same (symbol, period_end, consolidated, endpoint) overwrite each
+            # other. DROP+CREATE because ADD CONSTRAINT has no IF NOT EXISTS.
+            "ALTER TABLE income_statements DROP CONSTRAINT IF EXISTS uq_income_stmt",
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_income_stmt ON income_statements (symbol, period_end_date, consolidated, source_endpoint, source)",
+            "ALTER TABLE balance_sheets DROP CONSTRAINT IF EXISTS uq_balance_sheet",
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_balance_sheet ON balance_sheets (symbol, period_end_date, consolidated, source_endpoint, source)",
+            "ALTER TABLE cash_flows DROP CONSTRAINT IF EXISTS uq_cash_flow",
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_cash_flow ON cash_flows (symbol, period_end_date, consolidated, source_endpoint, source)",
+            "ALTER TABLE shareholdings DROP CONSTRAINT IF EXISTS uq_shareholding",
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_shareholding ON shareholdings (symbol, period_end_date, consolidated, source_endpoint, source)",
+            # H2: an_dt was TEXT; type it so SQL date ranges/sorts work, then drop
+            # the always-NULL sort_date it had replaced. Guarded: ALTER ... TYPE
+            # has no IF NOT EXISTS and to_timestamp() fails if already typed.
+            """DO $$ BEGIN
+                IF (SELECT data_type FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND table_name = 'nse_announcements' AND column_name = 'an_dt') = 'text' THEN
+                    ALTER TABLE nse_announcements ALTER COLUMN an_dt TYPE timestamp
+                        USING to_timestamp(an_dt, 'DD-Mon-YYYY HH24:MI:SS')::timestamp;
+                END IF;
+            END $$""",
+            "ALTER TABLE nse_announcements DROP COLUMN IF EXISTS sort_date",
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_nse_announcements_raw ON nse_announcements (symbol, raw_data)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_price_ohlcv ON price_ohlcv (symbol, exchange, date)",
+            "CREATE INDEX IF NOT EXISTS idx_price_ohlcv_lookup ON price_ohlcv (symbol, exchange, date)",
+            "ALTER TABLE stock_data_ledger DROP CONSTRAINT IF EXISTS uq_stock_data_ledger",
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_stock_data_ledger ON stock_data_ledger (symbol, exchange, country)",
+            "ALTER TABLE price_ohlcv DROP CONSTRAINT IF EXISTS uq_price_ohlcv",
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_price_ohlcv ON price_ohlcv (symbol, exchange, date)",
+            "ALTER TABLE price_ohlcv DROP COLUMN IF EXISTS interval",
         ]:
             await conn.execute(text(ddl))
 

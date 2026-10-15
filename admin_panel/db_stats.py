@@ -229,59 +229,7 @@ def metrics_field_coverage(engine) -> List[dict]:
 
 @safe
 def job_stats(engine) -> dict:
-    errors: list[str] = []
-    with engine.connect() as conn:
-        try:
-            total = conn.execute(text("SELECT COUNT(*) FROM pull_jobs")).scalar() or 0
-        except Exception as exc:
-            return {"error": f"pull_jobs: {exc}"}
-
-        status_counts = {}
-        for r in conn.execute(text("SELECT status, COUNT(*) AS cnt FROM pull_jobs GROUP BY status")):
-            status_counts[r.status or "unknown"] = r.cnt
-
-        per_day = []
-        try:
-            result = conn.execute(
-                text(
-                    "SELECT DATE(created_at) AS d, COUNT(*) AS cnt FROM pull_jobs "
-                    "GROUP BY DATE(created_at) ORDER BY d ASC LIMIT 60"
-                )
-            )
-            per_day = [{"date": str(r.d), "jobs": r.cnt} for r in result]
-        except Exception as exc:
-            errors.append(f"jobs per day: {exc}")
-
-        durations = []
-        try:
-            for r in conn.execute(
-                text("SELECT started_at, finished_at FROM pull_jobs "
-                     "WHERE started_at IS NOT NULL AND finished_at IS NOT NULL")
-            ):
-                try:
-                    durations.append((r.finished_at - r.started_at).total_seconds())
-                except (TypeError, AttributeError):
-                    pass
-        except Exception as exc:
-            errors.append(f"durations: {exc}")
-
-        recent_failed = []
-        try:
-            result = conn.execute(
-                text("SELECT * FROM pull_jobs WHERE status = 'failed' "
-                     "ORDER BY created_at DESC LIMIT 10")
-            )
-            recent_failed = [dict(r._mapping) for r in result]
-        except Exception as exc:
-            errors.append(f"recent failures: {exc}")
-
-    return {
-        "total": total,
-        "by_status": status_counts,
-        "per_day": per_day,
-        "avg_duration_sec": round(sum(durations) / len(durations), 1) if durations else None,
-        "recent_failed": recent_failed,
-        "errors": errors,
+    return {"error": "Job subsystem removed"}
     }
 
 

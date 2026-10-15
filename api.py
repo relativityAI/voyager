@@ -1,7 +1,9 @@
 import asyncio
+import base64
 import json
 import os
 import uuid
+from pathlib import Path
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Literal, Optional
@@ -22,18 +24,6 @@ from __version__ import __version__
 from src.auth import APIKey, require_api_key, require_scope
 from src.auth.routes import router as admin_router
 from src.db.engine import init_db, ping_database
-from src.jobs import (
-    JobNotCancellable,
-    PullLimitReached,
-    cancel_job,
-    drain_forever,
-    get_job,
-    list_jobs,
-    reap_forever,
-    reap_stale_jobs,
-    requeue_orphaned_running,
-    submit_pull,
-)
 from src.logging_config import setup_logging
 from src.observability import (
     HttpCacheMiddleware,
@@ -46,8 +36,6 @@ from src.schemas import (
     Announcements,
     Doc,
     HistoryResponse,
-    JobAccepted,
-    JobPublic,
     KeyPublic,
     ListResponse,
     MacroConstituents,
@@ -69,12 +57,16 @@ from src.schemas import (
 from src.services import (
     InvalidRequestError,
     ServiceError,
+    download_and_store,
     financial_metrics,
     get_announcements,
     get_financials,
     get_news_stories,
+    get_price_history,
     get_pull_status,
     get_reddit,
+    pull_nse_data,
+    pull_sec_data,
     get_shareholdings,
     get_statement_data,
     get_ticker_mentions,
@@ -119,31 +111,57 @@ init_sentry()
 async def lifespan(app: FastAPI):
     logger.info("Initializing database...")
     await init_db()
-    # Running rows from the previous process are orphans: requeue them so the
-    # drain loop resumes them, then reap anything genuinely hung. Startup alone
-    # is not enough: Render keeps serving the old instance when a deploy fails
-    # its health check, so the reaper also runs on a timer.
-    await requeue_orphaned_running()
-    await reap_stale_jobs()
-    reaper = asyncio.create_task(reap_forever())
-    drainer = asyncio.create_task(drain_forever())
-    try:
-        yield
-    finally:
-        reaper.cancel()
-        drainer.cancel()
+    yield
 
 
 openapi_tags = [
     {"name": "System", "description": "Health, liveness, readiness and metrics probes."},
-    {"name": "Lists", "description": "Enumerations of available categories (sources, countries, etc.)."},
+    {"name": "Explore", "description": "Enumerations of available categories (sources, countries, etc.)."},
     {"name": "Financials", "description": "Financial statements and computed financial metrics."},
     {"name": "Macro", "description": "India macro market endpoints: index universe, valuations, flows, turnover, F&O and rates."},
     {"name": "Corporate Actions", "description": "Corporate announcements and shareholding patterns."},
-    {"name": "Data Pulls", "description": "Pull raw data from the exchange and track async pull jobs."},
+    {"name": "Download Data", "description": "Download raw data from the exchange and track async download jobs."},
     {"name": "Advanced Data Suite", "description": "News, social signals and document structuring."},
     {"name": "Admin", "description": "API key management (guarded by VOYAGER_ADMIN_KEY)."},
 ]
+
+def _encode_cursor(offset: int) -> str:
+    return base64.urlsafe_b64encode(str(offset).encode()).decode().rstrip("=")
+
+
+def _decode_cursor(cursor: str) -> int:
+    try:
+        return int(base64.urlsafe_b64decode(cursor + "==").decode())
+    except Exception:
+        return 0
+
+
+def _load_openapi_overrides() -> dict:
+    p = Path(__file__).parent / "openapi_overrides.json"
+    if p.exists():
+        with open(p) as f:
+            return json.load(f)
+    return {}
+
+
+_OPENAPI_OVERRIDES = _load_openapi_overrides()
+
+
+def _apply_openapi_overrides():
+    for path, methods in _OPENAPI_OVERRIDES.items():
+        for route in app.routes:
+            if getattr(route, "path", None) != path:
+                continue
+            for method, meta in methods.items():
+                if method.upper() not in getattr(route, "methods", []):
+                    continue
+                if "summary" in meta:
+                    route.summary = meta["summary"]
+                if "description" in meta:
+                    route.description = meta["description"]
+                if "openapi_extra" in meta:
+                    route.openapi_extra = {**(route.openapi_extra or {}), **meta["openapi_extra"]}
+
 
 agent_guide = """\
 **Auth:** `X-API-Key: <key>` or `Authorization: Bearer <key>` (scopes `data:read`, `data:write`). Admin routes use `X-Voyager-Admin-Key`.
@@ -154,7 +172,7 @@ agent_guide = """\
 
 **Consolidation fallback:** `consolidated=true` returns consolidated statements, except for periods where the issuer only filed standalone — those fall back to the standalone filing, the whole-company picture at that time. Charts from this data are therefore continuous even when an issuer's reporting basis changes mid-history.
 
-**Async pulls:** `POST /pull` returns `202 {job_id, status_url}`; poll `status_url` until `status` is `done` or `failed`.\
+**Async downloads:** `POST /pull` returns `202 {job_id, status_url}`; poll `status_url` until `status` is `done` or `failed`.\
 """
 
 app = FastAPI(
@@ -435,20 +453,17 @@ _RESPONSE_MODELS = {
     ("GET", "/metrics"): OkResponse,
     ("GET", "/llms.txt"): {"type": "string", "description": "llms.txt agent guide"},
     ("GET", "/list"): ListResponse,
-    ("GET", "/search"): SearchResponse,
+    ("GET", "/search-symbol"): SearchResponse,
     ("GET", "/financials"): Snapshot,
     ("GET", "/financials/income-statements"): StatementPage,
     ("GET", "/financials/balance-sheets"): StatementPage,
     ("GET", "/financials/cash-flows"): StatementPage,
-    ("POST", "/pull"): JobAccepted,
-    ("GET", "/pull"): Snapshot,
-    ("GET", "/pull/jobs/{job_id}"): JobPublic,
-    ("DELETE", "/pull/jobs/{job_id}"): JobPublic,
-    ("GET", "/pull/jobs"): {
-        "type": "array",
-        "items": {"$ref": "#/components/schemas/JobPublic"},
-    },
+
     ("GET", "/history"): HistoryResponse,
+    ("GET", "/prices/ohlcv"): Snapshot,
+    ("GET", "/download-financials"): Snapshot,
+    ("POST", "/download-financials"): Snapshot,
+    ("POST", "/download-prices"): Snapshot,
     ("GET", "/technicals"): Snapshot,
     ("GET", "/technicals/chart"): {
         "type": "string",
@@ -731,7 +746,7 @@ def llms_txt():
 @app.get(
     "/list",
     summary="List available categories",
-    tags=["Lists"],
+    tags=["Explore"],
     dependencies=[Depends(require_api_key)],
 )
 def list_category_endpoint(
@@ -745,9 +760,9 @@ def list_category_endpoint(
 
 
 @app.get(
-    "/search",
+    "/search-symbol",
     summary="Search symbols stored in the DB (case-insensitive substring match)",
-    tags=["Lists"],
+    tags=["Explore"],
     dependencies=[Depends(require_api_key)],
 )
 async def search_endpoint(
@@ -927,10 +942,9 @@ async def financials_cash_flows(
 
 
 @app.post(
-    "/pull",
-    summary="Pull raw stock data from exchange into DB (async job)",
-    status_code=status.HTTP_202_ACCEPTED,
-    tags=["Data Pulls"],
+    "/download-financials",
+    summary="Download raw stock data from exchange into DB",
+    tags=["Download Data"],
 )
 async def financials_pull(
     symbol: str = Query(..., description=_SYM),
@@ -944,26 +958,16 @@ async def financials_pull(
     ),
 ):
     symbol = symbol.upper()
-
     country, source = _validate_source(None, source)
-    try:
-        job = await submit_pull(
-            symbol, filing_type, refresh, created_by=key.prefix,
-            country=country, source=source,
-        )
-    except PullLimitReached as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
-    return {
-        "job_id": job.job_id,
-        "status": job.status,
-        "status_url": f"/pull/jobs/{job.job_id}",
-    }
+    if source == "SEC":
+        return await pull_sec_data(symbol, filing_type, refresh)
+    return await pull_nse_data(symbol, filing_type, refresh)
 
 
 @app.get(
-    "/pull",
-    summary="Get pull status and data availability for a stock",
-    tags=["Data Pulls"],
+    "/download-financials",
+    summary="Get download status and data availability for a stock",
+    tags=["Download Data"],
     dependencies=[Depends(require_api_key)],
 )
 async def financials_pull_status(
@@ -971,47 +975,6 @@ async def financials_pull_status(
     source: str = Query("nse", description=_SRC),
 ):
     return await get_pull_status(symbol, None, source)
-
-
-@app.get(
-    "/pull/jobs/{job_id}",
-    summary="Get the status/result of an async pull job",
-    tags=["Data Pulls"],
-    dependencies=[Depends(require_scope("data:write"))],
-)
-async def pull_job_status(job_id: str, key: APIKey = Depends(require_scope("data:write"))):
-    job = await get_job(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Pull job not found")
-    return job.to_public_dict()
-
-
-@app.delete(
-    "/pull/jobs/{job_id}",
-    summary="Cancel a queued/running job (frees its concurrency slot)",
-    tags=["Data Pulls"],
-)
-async def pull_job_cancel(job_id: str, key: APIKey = Depends(require_scope("data:write"))):
-    try:
-        job = await cancel_job(job_id, created_by=key.prefix)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Pull job not found")
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
-    except JobNotCancellable as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-    return job.to_public_dict()
-
-
-@app.get(
-    "/pull/jobs",
-    summary="List recent pull jobs",
-    tags=["Data Pulls"],
-    dependencies=[Depends(require_scope("data:write"))],
-)
-async def pull_job_list(limit: int = Query(20, ge=1, le=100)):
-    jobs = await list_jobs(limit)
-    return [j.to_public_dict() for j in jobs]
 
 
 @app.get(
@@ -1212,8 +1175,24 @@ async def announcements(
     market: Literal["equities", "sme"] = Query(
         "equities", description="Market segment"
     ),
+    cursor: Optional[str] = Query(None, description="Pagination cursor"),
+    limit: int = Query(20, ge=1, le=100),
 ):
-    return await get_announcements(symbol, None, source, market)
+    offset = _decode_cursor(cursor) if cursor else 0
+    result = await get_announcements(symbol, None, source, market, limit + 1, offset)
+    items = result.get("announcements", [])
+    has_next = len(items) > limit
+    items = items[:limit]
+    if cursor is None:
+        return result
+    return {
+        "data": items,
+        "meta": {
+            "next_cursor": _encode_cursor(offset + limit) if has_next else None,
+            "has_next": has_next,
+            "limit": limit,
+        },
+    }
 
 
 @app.get(
@@ -1495,6 +1474,43 @@ async def macro_derivatives_endpoint(
 async def macro_rates_endpoint(country: str = _COUNTRY):
     return await macro_rates(country)
 
+
+@app.get(
+    "/prices/ohlcv",
+    summary="OHLCV price history from DB (stored via yfinance)",
+    tags=["Advanced Data Suite"],
+    dependencies=[Depends(require_api_key)],
+)
+async def prices_ohlcv(
+    symbol: str = Query(..., description=_SYM),
+    exchange: str = Query(..., description="Real exchange name: 'NSE', 'BSE', 'NYSE', 'NASDAQ'"),
+    country: str = Query(None, description="ISO-3166 alpha-2, e.g. 'IN' or 'US'"),
+    interval: Literal["daily", "weekly", "monthly"] = Query("daily"),
+    start_date: str = Query(None, description="Start date (YYYY-MM-DD)"),
+    end_date: str = Query(None, description="End date (YYYY-MM-DD)"),
+    limit: int = Query(500, ge=1, le=5000),
+    offset: int = Query(0, ge=0),
+):
+    return await get_price_history(symbol.upper(), exchange.upper(), country, start_date, end_date, interval, limit, offset)
+
+
+@app.post(
+    "/download-prices",
+    summary="Download OHLCV from yfinance and store in DB",
+    tags=["Download Data"],
+    dependencies=[Depends(require_scope("data:write"))],
+)
+async def prices_ohlcv_download(
+    symbol: str = Query(..., description=_SYM),
+    exchange: str = Query(..., description="Real exchange name: 'NSE', 'BSE', 'NYSE', 'NASDAQ'"),
+    country: str = Query(..., description="ISO-3166 alpha-2: 'IN' or 'US'"),
+    period: Literal["3mo", "6mo", "1y", "2y", "5y", "10y", "max"] = Query("max"),
+    interval: Literal["1d", "1wk", "1mo"] = Query("1d"),
+):
+    return await download_and_store(symbol.upper(), exchange.upper(), country.upper(), period, interval)
+
+
+_apply_openapi_overrides()
 
 if __name__ == "__main__":
     uvicorn.run(

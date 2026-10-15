@@ -1,9 +1,9 @@
 """Admin panel pure helpers.
 
 These cover the four calculations that were silently wrong: histogram
-percentile estimation, 5xx rate weighting, symbol parsing, and response
-table selection. No Streamlit runtime needed — the helpers live in the page
-modules, which only call st.* inside render().
+percentile estimation, 5xx rate weighting, and response table selection. No
+Streamlit runtime needed — the helpers live in the page modules, which only
+call st.* inside render().
 """
 
 from collections import namedtuple
@@ -11,7 +11,6 @@ from collections import namedtuple
 import pytest
 
 from admin_panel.pages.metrics import aggregate_routes, histogram_rows, percentile
-from admin_panel.pages.pulls import parse_symbols
 from admin_panel.state import to_dataframe
 
 # Mirrors prometheus_client's Sample: name, labels, value.
@@ -125,23 +124,6 @@ def test_histogram_rows_interpolates_and_ignores_sum_and_count():
 def test_histogram_rows_skips_a_route_with_no_traffic():
     samples = [_bucket("GET", "/cold", le, 0.0) for le in ("0.1", "+Inf")]
     assert histogram_rows(samples) == []
-
-
-# --- symbol parsing ---------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "text,expected",
-    [
-        ("RELIANCE", ["RELIANCE"]),
-        ("TCS, INFY\nHDFCBANK", ["HDFCBANK", "INFY", "TCS"]),
-        ("reliance reliance  tcs", ["RELIANCE", "TCS"]),
-        ("M&M BAJAJ-AUTO", ["BAJAJ-AUTO", "M&M"]),
-        ("   ", []),
-    ],
-)
-def test_parse_symbols(text, expected):
-    assert parse_symbols(text) == expected
 
 
 # --- response table selection -----------------------------------------------

@@ -41,6 +41,7 @@ from .sec import (
     pull_sec_data,
 )
 from .social import get_reddit, get_youtube_search, get_youtube_transcript
+from .prices import get_price_history, download_and_store
 
 __all__ = [
     "ServiceError",
@@ -82,4 +83,6 @@ __all__ = [
     "macro_turnover",
     "macro_derivatives",
     "macro_rates",
+    "get_price_history",
+    "download_and_store",
 ]

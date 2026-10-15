@@ -1,0 +1,345 @@
+{
+  "/": {
+    "GET": {
+      "summary": "Health check",
+      "description": "Minimal liveness probe. Returns service name and status. No auth required.",
+      "openapi_extra": {"x-agent-tags": ["system"], "x-typical-use-case": "Verify the API is up before making data calls"}
+    }
+  },
+  "/healthz": {
+    "GET": {
+      "summary": "Liveness probe",
+      "description": "Returns 200 if the process is running. No DB check. No auth required.",
+      "openapi_extra": {"x-agent-tags": ["system"], "x-typical-use-case": "Uptime monitoring"}
+    }
+  },
+  "/readyz": {
+    "GET": {
+      "summary": "Readiness probe (checks DB)",
+      "description": "Returns 200 only if the database is reachable. No auth required.",
+      "openapi_extra": {"x-agent-tags": ["system"], "x-typical-use-case": "Pre-flight check before batch operations"}
+    }
+  },
+  "/metrics": {
+    "GET": {
+      "summary": "Prometheus metrics",
+      "description": "Prometheus-formatted metrics (request counts, latencies, error rates). No auth required.",
+      "openapi_extra": {"x-agent-tags": ["system"], "x-typical-use-case": "Monitoring and alerting"}
+    }
+  },
+  "/llms.txt": {
+    "GET": {
+      "summary": "LLM/agent guide (llms.txt)",
+      "description": "Markdown guide for agents: auth, conventions, endpoint catalog, quick-start examples. No auth required.",
+      "openapi_extra": {"x-agent-tags": ["system"], "x-typical-use-case": "Agent onboarding — read this first"}
+    }
+  },
+  "/list": {
+    "GET": {
+      "summary": "List available categories",
+      "description": "Enumerate available values for sources, countries, industries, sectors, or indices. Use to discover valid query parameters before calling data endpoints.\n\n**Agent usage:**\n- `?category=sources` — list connected data sources\n- `?category=indices` — list available NSE indices\n- `?category=industries` — list industry classifications",
+      "openapi_extra": {"x-agent-tags": ["discovery"], "x-typical-use-case": "Discover valid parameter values before querying data"}
+    }
+  },
+  "/search-symbol": {
+    "GET": {
+      "summary": "Search symbols stored in the DB",
+      "description": "Case-insensitive substring match against the stock data ledger. Returns matching symbols with price/filing/announcement counts.\n\n**Agent usage:**\n- `?q=relian` — find symbols containing 'relian'\n- `?limit=20` — control result count (max 50)\n- Use before `/financials` or `/financial-metrics` to resolve ticker symbols",
+      "openapi_extra": {"x-agent-tags": ["discovery"], "x-typical-use-case": "Resolve a company name or partial ticker to a symbol"}
+    }
+  },
+  "/financials": {
+    "GET": {
+      "summary": "Get merged financial data (income, balance, cash flow) for a stock",
+      "description": "Returns merged income statement, balance sheet, and cash flow data for a single symbol. By default returns the latest filing; use `history=true` for the full archive.\n\n**Agent usage:**\n- `?symbol=RELIANCE&consolidated=true` — latest consolidated financials\n- `?history=true` — all stored periods merged per period\n- `?filing_type=annual` — annual only (default: quarterly)\n- `?all_fields=true` — return all stored fields instead of priority metrics only\n- `?report_period_gte=2024-01-01&report_period_lte=2024-12-31` — filter by period",
+      "openapi_extra": {"x-agent-tags": ["fundamentals"], "x-typical-use-case": "Get a company's full financial picture in one call"}
+    }
+  },
+  "/financials/income-statements": {
+    "GET": {
+      "summary": "Fetch income statement data from DB",
+      "description": "Income statement (P&L) data for a symbol. Supports pagination and date filtering.\n\n**Agent usage:**\n- `?symbol=TCS&limit=10&offset=0` — paginate through periods\n- `?consolidated=true` — consolidated only (with standalone fallback)\n- `?all_fields=true` — all line items, not just priority metrics\n- Response includes `pagination.total` for page count",
+      "openapi_extra": {"x-agent-tags": ["fundamentals"], "x-typical-use-case": "Analyze revenue, profit margins, and growth trends"}
+    }
+  },
+  "/financials/balance-sheets": {
+    "GET": {
+      "summary": "Fetch balance sheet data from DB",
+      "description": "Balance sheet data for a symbol. Supports pagination and date filtering.\n\n**Agent usage:**\n- `?symbol=TCS&limit=10` — paginate through periods\n- `?consolidated=true` — consolidated only (with standalone fallback)\n- `?all_fields=true` — all line items\n- Response includes `pagination.total`",
+      "openapi_extra": {"x-agent-tags": ["fundamentals"], "x-typical-use-case": "Analyze assets, liabilities, and equity structure"}
+    }
+  },
+  "/financials/cash-flows": {
+    "GET": {
+      "summary": "Fetch cash flow data from DB",
+      "description": "Cash flow statement data for a symbol. Supports pagination and date filtering.\n\n**Agent usage:**\n- `?symbol=TCS&limit=10` — paginate through periods\n- `?consolidated=true` — consolidated only (with standalone fallback)\n- `?all_fields=true` — all line items\n- Response includes `pagination.total`",
+      "openapi_extra": {"x-agent-tags": ["fundamentals"], "x-typical-use-case": "Analyze operating, investing, and financing cash flows"}
+    }
+  },
+  "/financial-metrics": {
+    "GET": {
+      "summary": "Retrieve computed financial metrics for a stock",
+      "description": "Computed ratios and metrics: P/E, P/B, ROE, debt-to-equity, margins, growth rates, and more.\n\n**Agent usage:**\n- `?symbol=RELIANCE` — latest TTM metrics\n- `?filing_type=annual` — annual metrics instead of TTM\n- `?fields=pe_ratio,roe` — request only needed metrics (reduces token usage)\n- `?source=sec` — US filings (default: nse)\n- Response includes `fiscal_year` and `filing_type` for context",
+      "openapi_extra": {"x-agent-tags": ["fundamentals", "valuation"], "x-typical-use-case": "Analyze a company's valuation and financial health"}
+    }
+  },
+  "/financial-metrics/batch": {
+    "GET": {
+      "summary": "Computed financial metrics for several symbols in one call",
+      "description": "Batch version of `/financial-metrics`. Returns metrics for up to 10 symbols in a single request.\n\n**Agent usage:**\n- `?symbols=RELIANCE,TCS,INFY` — compare multiple companies\n- `?fields=pe_ratio,roe` — limit returned metrics per symbol\n- Per-symbol errors are returned inline (not thrown), so partial results are still useful",
+      "openapi_extra": {"x-agent-tags": ["fundamentals", "valuation"], "x-typical-use-case": "Compare valuation across multiple companies"}
+    }
+  },
+  "/pull": {
+    "POST": {
+      "summary": "Pull raw stock data from exchange into DB (async job)",
+      "description": "Triggers an async data download from the exchange (NSE/SEC) into the database. Returns a job ID immediately.\n\n**Agent usage:**\n- Returns `202 {job_id, status_url}`\n- Poll `status_url` until `status` is `done` or `failed`\n- `?refresh=true` — re-download even if data exists\n- Requires `data:write` scope",
+      "openapi_extra": {"x-agent-tags": ["data-ingestion"], "x-typical-use-case": "Refresh data when stale or missing"}
+    }
+  },
+  "/pull": {
+    "GET": {
+      "summary": "Get download status and data availability for a stock",
+      "description": "Check what data exists for a symbol and when it was last downloaded. Shows record counts per statement type.\n\n**Agent usage:**\n- Use before deciding whether to `POST /pull`\n- Returns per-statement record counts and date ranges",
+      "openapi_extra": {"x-agent-tags": ["data-ingestion"], "x-typical-use-case": "Check data freshness before querying"}
+    }
+  },
+  "/pull/jobs/{job_id}": {
+    "GET": {
+      "summary": "Get the status/result of an async download job",
+      "description": "Poll a download job for completion. Returns status, progress, and result when done.\n\n**Agent usage:**\n- Poll every 2-5 seconds until `status` is `done` or `failed`\n- Returns error details on failure",
+      "openapi_extra": {"x-agent-tags": ["data-ingestion"], "x-typical-use-case": "Track async data download progress"}
+    }
+  },
+  "/pull/jobs/{job_id}": {
+    "DELETE": {
+      "summary": "Cancel a queued/running job (frees its concurrency slot)",
+      "description": "Cancel a download job that is queued or running. Frees the concurrency slot for other jobs.\n\n**Agent usage:**\n- Only the owning API key (or admin) may cancel\n- Returns 409 if the job is already done/failed",
+      "openapi_extra": {"x-agent-tags": ["data-ingestion"], "x-typical-use-case": "Cancel a stuck or unnecessary download job"}
+    }
+  },
+  "/pull/jobs": {
+    "GET": {
+      "summary": "List recent download jobs",
+      "description": "List recent download jobs across all symbols, ordered by creation time (newest first).\n\n**Agent usage:**\n- `?limit=20` — control result count (max 100)\n- Requires `data:write` scope",
+      "openapi_extra": {"x-agent-tags": ["data-ingestion"], "x-typical-use-case": "Monitor recent data ingestion activity"}
+    }
+  },
+  "/history": {
+    "GET": {
+      "summary": "Raw OHLCV price history (daily, or intraday via interval)",
+      "description": "Raw price bars (open, high, low, close, volume) for a symbol. Supports daily and intraday intervals.\n\n**Agent usage:**\n- `?symbol=RELIANCE&period=1y&interval=1d` — daily bars for 1 year\n- `?interval=15m` — intraday bars\n- `?period=max` — full available history\n- Long spans are downsampled; response includes `bars_available` and `downsampled` flags",
+      "openapi_extra": {"x-agent-tags": ["prices"], "x-typical-use-case": "Price analysis, backtesting, charting"}
+    }
+  },
+  "/technicals": {
+    "GET": {
+      "summary": "End-to-end technical analysis report",
+      "description": "Comprehensive technical analysis: trend, indicators (RSI, MACD, moving averages), support/resistance levels, chart patterns, and scenarios. ~61 sections.\n\n**Agent usage:**\n- `?symbol=RELIANCE&timeframes=daily,weekly` — multi-timeframe analysis\n- `?timeframes=intraday` — include intraday sections\n- Unsupported timeframes degrade gracefully with a reason",
+      "openapi_extra": {"x-agent-tags": ["technical-analysis"], "x-typical-use-case": "Full technical report for a stock"}
+    }
+  },
+  "/technicals/chart": {
+    "GET": {
+      "summary": "Weekly/daily price chart PNG (close + SMA20/50/200 + volume)",
+      "description": "Renders a price chart as a PNG image. Includes close price, SMA20/50/200 overlays, and volume.\n\n**Agent usage:**\n- `?symbol=RELIANCE&timeframe=weekly` — weekly chart\n- `?bars=160` — number of bars (20-400)\n- Returns `image/png`",
+      "openapi_extra": {"x-agent-tags": ["technical-analysis"], "x-typical-use-case": "Visual price chart for a stock"}
+    }
+  },
+  "/announcements": {
+    "GET": {
+      "summary": "Fetch corporate announcements for a stock",
+      "description": "Corporate announcements (earnings, dividends, splits, board meetings, etc.) for a symbol.\n\n**Agent usage:**\n- `?symbol=RELIANCE` — latest announcements\n- `?market=sme` — SME segment (default: equities)\n- `?cursor=<base64>&limit=20` — cursor-based pagination\n- Without cursor, returns flat response; with cursor, returns `{data, meta: {next_cursor, has_next, limit}}`",
+      "openapi_extra": {"x-agent-tags": ["corporate-actions"], "x-typical-use-case": "Track corporate events and news for a stock"}
+    }
+  },
+  "/shareholdings": {
+    "GET": {
+      "summary": "Fetch shareholding pattern for a stock (parsed from XBRL)",
+      "description": "Shareholding pattern (promoter, FII, DII, public, etc.) parsed from XBRL filings. Values in percent.\n\n**Agent usage:**\n- `?symbol=RELIANCE` — latest shareholding pattern\n- `?source=nse` — NSE filings (default)",
+      "openapi_extra": {"x-agent-tags": ["corporate-actions"], "x-typical-use-case": "Analyze ownership structure and promoter holding"}
+    }
+  },
+  "/news/stories": {
+    "GET": {
+      "summary": "Latest news stories for a market (RSS, cached)",
+      "description": "Recent market news stories from RSS feeds. Cached for freshness.\n\n**Agent usage:**\n- `?country=in` — India market (default) or `us`\n- `?days=7` — lookback window (1-30 days)\n- `?limit=20` — max stories (1-50)",
+      "openapi_extra": {"x-agent-tags": ["news"], "x-typical-use-case": "Get recent market news for context"}
+    }
+  },
+  "/news/ticker": {
+    "GET": {
+      "summary": "News stories mentioning a stock symbol",
+      "description": "News stories that mention a specific stock symbol.\n\n**Agent usage:**\n- `?symbol=RELIANCE&days=7` — recent news for a stock\n- `?country=us` — US market news",
+      "openapi_extra": {"x-agent-tags": ["news"], "x-typical-use-case": "Track news sentiment for a specific stock"}
+    }
+  },
+  "/documents/index": {
+    "GET": {
+      "summary": "Index a PDF (URL or local path): parse once, cache, return the PageIndex tree",
+      "description": "Parses a PDF document and returns a PageIndex tree (table of contents, page structure). Result is cached by URL+hash.\n\n**Agent usage:**\n- `?url=https://example.com/annual-report.pdf` — index a PDF\n- `?symbol=RELIANCE` — associate with a symbol for context\n- Use `/documents/pages` to read specific pages after indexing",
+      "openapi_extra": {"x-agent-tags": ["documents"], "x-typical-use-case": "Parse and navigate a PDF document"}
+    }
+  },
+  "/documents/pages": {
+    "GET": {
+      "summary": "Per-page text for selected pages of an indexed PDF",
+      "description": "Extract text from specific pages of a previously indexed PDF.\n\n**Agent usage:**\n- `?url=...&pages=3,5-9` — extract pages 3, 5, 6, 7, 8, 9\n- `?pages=1-3,7` — pages 1, 2, 3, and 7\n- PDF must be indexed first via `/documents/index`",
+      "openapi_extra": {"x-agent-tags": ["documents"], "x-typical-use-case": "Read specific pages of a PDF"}
+    }
+  },
+  "/social/reddit": {
+    "GET": {
+      "summary": "Search Reddit for a ticker/company mention",
+      "description": "Search Reddit posts and comments for mentions of a ticker or company name.\n\n**Agent usage:**\n- `?query=RELIANCE&limit=10` — recent Reddit mentions\n- Returns post titles, scores, and URLs",
+      "openapi_extra": {"x-agent-tags": ["social"], "x-typical-use-case": "Gauge retail sentiment for a stock"}
+    }
+  },
+  "/social/youtube/search": {
+    "GET": {
+      "summary": "Search YouTube for a ticker/company (e.g. earnings call)",
+      "description": "Search YouTube for videos mentioning a ticker or company (earnings calls, interviews, analysis).\n\n**Agent usage:**\n- `?query=RELIANCE+earnings+call&limit=15` — find earnings call videos\n- Returns video IDs, titles, and channel names",
+      "openapi_extra": {"x-agent-tags": ["social"], "x-typical-use-case": "Find video content for a stock"}
+    }
+  },
+  "/social/youtube/transcript": {
+    "GET": {
+      "summary": "Fetch the transcript (captions) for a YouTube video",
+      "description": "Fetch captions/transcript for a YouTube video by video ID.\n\n**Agent usage:**\n- `?video_id=abc123` — get transcript for a video found via `/social/youtube/search`\n- Returns timestamped caption text",
+      "openapi_extra": {"x-agent-tags": ["social"], "x-typical-use-case": "Extract spoken content from a video"}
+    }
+  },
+  "/macro/overview": {
+    "GET": {
+      "summary": "One-shot macro dashboard: top indices, FII/DII flows, turnover, repo rate",
+      "description": "Aggregated macro dashboard: top index snapshots, FII/DII flow data, cash turnover, and RBI repo rate.\n\n**Agent usage:**\n- Single call for a market overview\n- `?country=in` — India (default)",
+      "openapi_extra": {"x-agent-tags": ["macro"], "x-typical-use-case": "Get a quick macro market snapshot"}
+    }
+  },
+  "/macro/indices": {
+    "GET": {
+      "summary": "Full NSE index universe with live snapshot, valuation and breadth",
+      "description": "All NSE indices with live price, change, valuation (P/E, P/B), and breadth data.\n\n**Agent usage:**\n- `?limit=50` — control result count (max 300)\n- Use to screen indices by valuation or breadth",
+      "openapi_extra": {"x-agent-tags": ["macro"], "x-typical-use-case": "Screen the full index universe"}
+    }
+  },
+  "/macro/indices/{symbol}": {
+    "GET": {
+      "summary": "Live snapshot for a single index",
+      "description": "Live price, change, and key metrics for a single NSE index.\n\n**Agent usage:**\n- `?symbol=NIFTY 50` — live snapshot (URL-encode space as %20)",
+      "openapi_extra": {"x-agent-tags": ["macro"], "x-typical-use-case": "Get live quote for an index"}
+    }
+  },
+  "/macro/indices/{symbol}/history": {
+    "GET": {
+      "summary": "Daily OHLC history for an index",
+      "description": "Daily open, high, low, close history for an index.\n\n**Agent usage:**\n- `?symbol=NIFTY 50&start_date=2025-01-01&end_date=2025-06-30`\n- Long spans are downsampled; response includes `bars_available` and `downsampled`",
+      "openapi_extra": {"x-agent-tags": ["macro"], "x-typical-use-case": "Analyze index price history"}
+    }
+  },
+  "/macro/indices/{symbol}/valuation": {
+    "GET": {
+      "summary": "Historical PE/PB/DY for an index",
+      "description": "Historical valuation metrics (P/E, P/B, dividend yield) for an index over time.\n\n**Agent usage:**\n- `?symbol=NIFTY 50&start_date=2024-01-01`\n- Use to assess if an index is over/undervalued historically",
+      "openapi_extra": {"x-agent-tags": ["macro", "valuation"], "x-typical-use-case": "Historical valuation analysis for an index"}
+    }
+  },
+  "/macro/indices/{symbol}/returns": {
+    "GET": {
+      "summary": "Total-return (TRI) history for an index",
+      "description": "Total-return index history (includes dividends reinvested).\n\n**Agent usage:**\n- `?symbol=NIFTY 50&start_date=2024-01-01`\n- Use for accurate return calculations",
+      "openapi_extra": {"x-agent-tags": ["macro"], "x-typical-use-case": "Calculate total returns for an index"}
+    }
+  },
+  "/macro/indices/{symbol}/constituents": {
+    "GET": {
+      "summary": "Constituent stocks of an index",
+      "description": "List of stocks that make up an index.\n\n**Agent usage:**\n- `?symbol=NIFTY 50` — get all constituents\n- Use to analyze index composition",
+      "openapi_extra": {"x-agent-tags": ["macro"], "x-typical-use-case": "Analyze index composition"}
+    }
+  },
+  "/macro/valuation": {
+    "GET": {
+      "summary": "Whole-market per-equity P/E",
+      "description": "Whole-market price-to-earnings ratio by trade date.\n\n**Agent usage:**\n- `?date=2025-01-15` — P/E for a specific trade date\n- Returns 503 if the upstream CSV is missing for that date",
+      "openapi_extra": {"x-agent-tags": ["macro", "valuation"], "x-typical-use-case": "Assess overall market valuation"}
+    }
+  },
+  "/macro/breadth": {
+    "GET": {
+      "summary": "Market breadth: advances/declines, top gainers and losers",
+      "description": "Market breadth indicators: advancing/declining counts, top gainers, and top losers.\n\n**Agent usage:**\n- `?limit=10` — top N gainers/losers (max 50)\n- Use to gauge market sentiment",
+      "openapi_extra": {"x-agent-tags": ["macro"], "x-typical-use-case": "Assess market breadth and sentiment"}
+    }
+  },
+  "/macro/flows": {
+    "GET": {
+      "summary": "FII/DII daily cash-market net flows",
+      "description": "Foreign and Domestic Institutional Investor daily net flows in the cash market.\n\n**Agent usage:**\n- Returns recent flow data\n- Use to track institutional sentiment",
+      "openapi_extra": {"x-agent-tags": ["macro"], "x-typical-use-case": "Track institutional money flow"}
+    }
+  },
+  "/macro/flows/fpi": {
+    "GET": {
+      "summary": "NSDL FPI flows (requires headless Chromium upstream)",
+      "description": "Foreign Portfolio Investor flows from NSDL. Requires headless Chromium (pyppeteer) in the environment.\n\n**Agent usage:**\n- Returns 503 if the upstream dependency is not installed\n- Use when FPI flow data is needed",
+      "openapi_extra": {"x-agent-tags": ["macro"], "x-typical-use-case": "Track FPI money flow"}
+    }
+  },
+  "/macro/turnover": {
+    "GET": {
+      "summary": "Cash-market turnover by segment",
+      "description": "Cash-market turnover data by segment (NSE, BSE, etc.).\n\n**Agent usage:**\n- Returns recent turnover figures\n- Use to assess market activity",
+      "openapi_extra": {"x-agent-tags": ["macro"], "x-typical-use-case": "Assess market liquidity and activity"}
+    }
+  },
+  "/macro/derivatives": {
+    "GET": {
+      "summary": "F&O option-chain summary: OI, PCR, max-pain",
+      "description": "Derivatives market summary: open interest, put-call ratio, and max-pain levels.\n\n**Agent usage:**\n- `?symbol=NIFTY` — F&O summary for an underlying\n- Use to gauge derivatives sentiment",
+      "openapi_extra": {"x-agent-tags": ["macro", "derivatives"], "x-typical-use-case": "Analyze derivatives market sentiment"}
+    }
+  },
+  "/macro/rates": {
+    "GET": {
+      "summary": "RBI current policy rates and reference FX",
+      "description": "RBI policy rates (repo, reverse repo, SDF) and reference exchange rates.\n\n**Agent usage:**\n- Returns current rates\n- Use for macro context in financial analysis",
+      "openapi_extra": {"x-agent-tags": ["macro"], "x-typical-use-case": "Get current interest rates and FX for context"}
+    }
+  },
+  "/admin/keys": {
+    "POST": {
+      "summary": "Create a new API key",
+      "description": "Create a new API key with specified scopes, rate limit, and optional expiration. Returns the full key (shown only once).\n\n**Agent usage:**\n- Requires admin key (`X-Voyager-Admin-Key`)\n- `scopes`: data:read, data:write\n- `rpm`: requests per minute (1-10000)\n- `expires_in_days`: optional expiration",
+      "openapi_extra": {"x-agent-tags": ["admin"], "x-typical-use-case": "Create API keys for agents or services"}
+    }
+  },
+  "/admin/keys": {
+    "GET": {
+      "summary": "List API keys",
+      "description": "List all API keys with their metadata (prefix, label, scopes, status). Supports filtering by label and pagination.\n\n**Agent usage:**\n- Requires admin key\n- `?label=agent-1` — filter by label\n- `?limit=50&offset=0` — paginate",
+      "openapi_extra": {"x-agent-tags": ["admin"], "x-typical-use-case": "Audit existing API keys"}
+    }
+  },
+  "/admin/keys/{key_id}": {
+    "GET": {
+      "summary": "Get API key details",
+      "description": "Get details for a specific API key by ID or prefix.\n\n**Agent usage:**\n- Requires admin key\n- Returns key metadata (never the full key)",
+      "openapi_extra": {"x-agent-tags": ["admin"], "x-typical-use-case": "Inspect a specific API key"}
+    }
+  },
+  "/admin/keys/{key_id}": {
+    "DELETE": {
+      "summary": "Revoke an API key",
+      "description": "Revoke an API key (disables it immediately). Idempotent — returns `already_revoked` if already revoked.\n\n**Agent usage:**\n- Requires admin key\n- Returns the key prefix and status",
+      "openapi_extra": {"x-agent-tags": ["admin"], "x-typical-use-case": "Revoke a compromised or unused key"}
+    }
+  },
+  "/admin/keys/{key_id}/enable": {
+    "POST": {
+      "summary": "Re-enable a revoked API key",
+      "description": "Re-enable a previously revoked API key.\n\n**Agent usage:**\n- Requires admin key\n- Returns the key prefix and status",
+      "openapi_extra": {"x-agent-tags": ["admin"], "x-typical-use-case": "Re-enable a key after revocation"}
+    }
+  }
+}

@@ -12,10 +12,12 @@ load_dotenv()
 
 from src.logging_config import setup_logging
 from src.services import (
+    download_and_store,
     financial_metrics,
     get_announcements,
     get_financials,
     get_news_stories,
+    get_price_history,
     get_reddit,
     get_shareholdings,
     get_statement_data,
@@ -549,6 +551,53 @@ async def pull_sec_data(
         refresh: Re-pull even if data exists.
     """
     return await pull_sec_data(symbol, filing_type, refresh)
+
+
+@mcp.tool()
+async def get_price_history(
+    symbol: str,
+    exchange: str,
+    country: str | None = None,
+    interval: str = "daily",
+    start_date: str | None = None,
+    end_date: str | None = None,
+    limit: int = 500,
+    offset: int = 0,
+) -> dict:
+    """OHLCV price history from DB.
+
+    Args:
+        symbol: Exchange ticker in UPPER CASE, e.g. 'RELIANCE' or 'AAPL'.
+        exchange: Real exchange name: 'NSE', 'BSE', 'NYSE', 'NASDAQ'.
+        country: ISO-3166 alpha-2, e.g. 'IN' or 'US'.
+        interval: 'daily' (default), 'weekly', or 'monthly'.
+        start_date: Start date (YYYY-MM-DD).
+        end_date: End date (YYYY-MM-DD).
+        limit: Max rows (1-5000, default 500).
+        offset: Rows to skip (pagination).
+    """
+    return await get_price_history(symbol, exchange, country, start_date, end_date, interval, limit, offset)
+
+
+@mcp.tool()
+async def download_price_history(
+    symbol: str,
+    exchange: str,
+    country: str,
+    period: str = "max",
+    interval: str = "1d",
+) -> dict:
+    """Download OHLCV from yfinance and store in DB.
+
+    Args:
+        symbol: Exchange ticker in UPPER CASE.
+        exchange: Real exchange name: 'NSE', 'BSE', 'NYSE', 'NASDAQ'.
+        country: ISO-3166 alpha-2: 'IN' or 'US'.
+        period: '3mo', '6mo', '1y', '2y', '5y', '10y', or 'max' (default).
+        interval: '1d' (default), '1wk', or '1mo'.
+    """
+    import asyncio
+    return await asyncio.to_thread(download_and_store, symbol, exchange, country, period, interval)
 
 
 if __name__ == "__main__":

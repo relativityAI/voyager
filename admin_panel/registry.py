@@ -105,7 +105,7 @@ def _statement_params() -> List[Dict[str, Any]]:
 LIST: List[Endpoint] = [
     {
         "name": "List categories",
-        "group": "Lists",
+        "group": "Explore",
         "method": "GET",
         "path": "/list",
         "auth": "key",
@@ -127,11 +127,11 @@ LIST: List[Endpoint] = [
     },
     {
         "name": "Search symbols",
-        "group": "Lists",
+        "group": "Explore",
         "method": "GET",
-        "path": "/search",
+        "path": "/search-symbol",
         "auth": "key",
-        "description": "Case-insensitive substring search over symbols in the DB, ranked by data coverage.",
+        "description": "Case-insensitive substring search over the stock data ledger.",
         "params": [
             {"name": "q", "type": "text", "required": True, "help": "e.g. 'relian'"},
             {
@@ -289,78 +289,46 @@ DATA: List[Endpoint] = [
         "description": "All shareholding periods, newest first (promoter / FII / DII / public, NSE); US insider-ownership schema (SEC).",
         "params": _symbol_params(),
     },
-]
-
-PULLS: List[Endpoint] = [
     {
-        "name": "Submit pull",
-        "group": "Pulls",
+        "name": "Download status",
+        "group": "Download Data",
+        "method": "GET",
+        "path": "/download-financials",
+        "auth": "key",
+        "description": "Download status and data availability for a stock.",
+        "params": _symbol_params(),
+    },
+    {
+        "name": "Download financials",
+        "group": "Download Data",
         "method": "POST",
-        "path": "/pull",
+        "path": "/download-financials",
         "auth": "write",
-        "description": "Submit an async XBRL pull job (returns 202 + job_id).",
-        "params": [
-            {"name": "symbol", "type": "symbol", "required": True},
-            {
-                "name": "source",
-                "type": "select",
-                "default": "nse",
-                "options": ["nse", "sec"],
-            },
+        "description": "Fetch raw statements from the exchange (NSE) or EDGAR (SEC) into the DB.",
+        "params": _symbol_params()
+        + [
             {
                 "name": "filing_type",
                 "type": "select",
                 "default": "quarterly",
                 "options": ["quarterly", "annual"],
             },
-            {
-                "name": "refresh",
-                "type": "bool",
-                "default": False,
-                "help": "Re-download and re-parse XBRL already present in the DB.",
-            },
+            {"name": "refresh", "type": "bool", "default": False},
         ],
     },
     {
-        "name": "Pull status",
-        "group": "Pulls",
-        "method": "GET",
-        "path": "/pull",
-        "auth": "key",
-        "description": "Pull history, record counts and date coverage per collection.",
-        "params": _symbol_params(),
-    },
-    {
-        "name": "Pull job status",
-        "group": "Pulls",
-        "method": "GET",
-        "path": "/pull/jobs/{job_id}",
+        "name": "Download prices",
+        "group": "Download Data",
+        "method": "POST",
+        "path": "/download-prices",
         "auth": "write",
-        "description": "Poll the status/result of a pull job.",
+        "description": "Download OHLCV from yfinance and store in the DB.",
         "params": [
-            {"name": "job_id", "type": "text", "required": True, "in_path": True}
-        ],
-    },
-    {
-        "name": "List pull jobs",
-        "group": "Pulls",
-        "method": "GET",
-        "path": "/pull/jobs",
-        "auth": "write",
-        "description": "Recent pull jobs, newest first.",
-        "params": [
-            {"name": "limit", "type": "int", "default": 20, "min": 1, "max": 100}
-        ],
-    },
-    {
-        "name": "Cancel pull job",
-        "group": "Pulls",
-        "method": "DELETE",
-        "path": "/pull/jobs/{job_id}",
-        "auth": "write",
-        "description": "Cancel a queued/running job to free its concurrency slot (stuck-job escape hatch).",
-        "params": [
-            {"name": "job_id", "type": "text", "required": True, "in_path": True}
+            {"name": "symbol", "type": "symbol", "required": True},
+            {"name": "exchange", "type": "text", "required": True, "help": "Real exchange name: NSE, BSE, NYSE, NASDAQ"},
+            {"name": "country", "type": "select", "default": "in", "options": ["in", "us"]},
+            {"name": "period", "type": "select", "default": "max", "options": ["3mo", "6mo", "1y", "2y", "5y", "10y", "max"]},
+            {"name": "interval", "type": "select", "default": "1d", "options": ["1d", "1wk", "1mo"]},
         ],
     },
 ]
@@ -417,6 +385,24 @@ ADVANCED: List[Endpoint] = [
                 "default": "1d",
                 "help": "1d (default) or intraday like 5m, 15m, 1h",
             },
+        ],
+    },
+    {
+        "name": "Stored prices (OHLCV)",
+        "group": "Advanced Data Suite",
+        "method": "GET",
+        "path": "/prices/ohlcv",
+        "auth": "key",
+        "description": "OHLCV price history read from the DB (paginated).",
+        "params": [
+            {"name": "symbol", "type": "symbol", "required": True},
+            {"name": "exchange", "type": "text", "required": True, "help": "Real exchange name: NSE, BSE, NYSE, NASDAQ"},
+            {"name": "country", "type": "select", "default": "in", "options": ["in", "us"]},
+            {"name": "interval", "type": "select", "default": "daily", "options": ["daily", "weekly", "monthly"]},
+            {"name": "start_date", "type": "text", "help": "Start date YYYY-MM-DD"},
+            {"name": "end_date", "type": "text", "help": "End date YYYY-MM-DD"},
+            {"name": "limit", "type": "int", "default": 500, "min": 1, "max": 5000},
+            {"name": "offset", "type": "int", "default": 0, "min": 0},
         ],
     },
     {
@@ -791,7 +777,7 @@ ADMIN: List[Endpoint] = [
     },
 ]
 
-ALL_ENDPOINTS: List[Endpoint] = PUBLIC + LIST + DATA + PULLS + ADVANCED + MACRO + ADMIN
+ALL_ENDPOINTS: List[Endpoint] = PUBLIC + LIST + DATA + ADVANCED + MACRO + ADMIN
 
 AUTH_LABELS = {
     "public": "public",

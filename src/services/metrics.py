@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from src.db.engine import get_session_factory
 from src.db.models import BalanceSheet, CashFlow, IncomeStatement, NSEStockMetadata
@@ -22,6 +22,7 @@ async def _compute_metrics_async(
     cashflow_docs: dict,
     yf_exchange: str,
     anchor_idx: int = 0,
+    annual_end=None,
 ) -> Dict[str, Any]:
     latest = records[anchor_idx] if anchor_idx < len(records) else records[0]
     from src.tools.nse.technicals import fetch_price_info
@@ -32,6 +33,14 @@ async def _compute_metrics_async(
         from src.tools.nse.valuation import compute_shares_outstanding
 
         shares_outstanding = compute_shares_outstanding(latest)
+    if shares_outstanding is None:
+        shares_outstanding = _to_float(latest.get("weighted_average_shares_basic"))
+    if shares_outstanding is None:
+        for r in records:
+            v = _to_float(r.get("weighted_average_shares_basic"))
+            if v:
+                shares_outstanding = v
+                break
 
     assets_t = _to_float(latest.get("assets"))
     equity_sc = _to_float(latest.get("equity_share_capital"))
@@ -116,10 +125,16 @@ async def _compute_metrics_async(
     ttm_cor = ttm_values.get("cost_of_revenue")
     ttm_tax = ttm_values.get("tax_expense")
     ttm_div = ttm_values.get("dividends_paid")
+    ttm_op_income = _ttm_window(records, "operating_income")
+    # Prefer the directly-tagged operating income (US-GAAP OperatingIncomeLoss).
+    # PBT + finance_costs is only a fallback for filers (e.g. NSE) that tag
+    # interest as finance_costs but not as a line above operating profit: when
+    # finance_costs is absent, PBT + 0 would silently equal PBT and make
+    # operating_margin duplicate pretax_profit_margin.
     ttm_ebit = (
-        (ttm_pbt or 0) + (ttm_fc or 0)
-        if ttm_pbt is not None or ttm_fc is not None
-        else None
+        ttm_op_income
+        if ttm_op_income is not None
+        else (ttm_pbt + ttm_fc if ttm_pbt is not None and ttm_fc is not None else None)
     )
 
     if is_ttm:
@@ -137,7 +152,12 @@ async def _compute_metrics_async(
                 "basic_earnings_loss_per_share_from_continuing_and_discontinued_operations"
             )
         )
-    ebit = (pbt or 0) + (fc or 0) if pbt is not None or fc is not None else None
+    op_income = _to_float(latest.get("operating_income"))
+    ebit = (
+        op_income
+        if op_income is not None
+        else (pbt + fc if pbt is not None and fc is not None else None)
+    )
     val_capex = ttm_capex if ttm_capex is not None else capex
 
     total_debt = (borrowings_c or 0) + (borrowings_nc or 0)
@@ -154,6 +174,10 @@ async def _compute_metrics_async(
     )
 
     def _growth_rate(current_val, previous_val):
+        # All growth fields (revenue_growth*, earnings_growth*, *_growth_annual,
+        # *_quarterly_qoq, *_quarterly_yoy, book_value_growth*) are returned in
+        # PERCENT, never as fractions: _pct multiplies by 100. A small QoQ like
+        # 0.97 means +0.97%, not +97%.
         if current_val is not None and previous_val is not None and previous_val != 0:
             return _pct(_safe_div(current_val - previous_val, previous_val))
         return None
@@ -195,10 +219,15 @@ async def _compute_metrics_async(
         )
         pbt_prior = _ttm_window(records, "profit_before_tax", 4)
         fc_prior = _ttm_window(records, "finance_costs", 4)
+        op_income_prior = _ttm_window(records, "operating_income", 4)
         ebit_prior = (
-            (pbt_prior or 0) + (fc_prior or 0)
-            if pbt_prior is not None or fc_prior is not None
-            else None
+            op_income_prior
+            if op_income_prior is not None
+            else (
+                (pbt_prior + fc_prior)
+                if pbt_prior is not None and fc_prior is not None
+                else None
+            )
         )
 
         revenue_growth = _growth_rate(ttm_rev, rev_prior)
@@ -215,9 +244,14 @@ async def _compute_metrics_async(
             )
         fcf_growth = _growth_rate(fcf_now, fcf_prior)
         ebitda_now = ebitda_prior = None
-        if ttm_dep is not None and dep_prior is not None:
-            ebitda_now = (ttm_ebit or 0) + ttm_dep
-            ebitda_prior = (ebit_prior or 0) + dep_prior
+        if (
+            ttm_dep is not None
+            and dep_prior is not None
+            and ttm_ebit is not None
+            and ebit_prior is not None
+        ):
+            ebitda_now = ttm_ebit + ttm_dep
+            ebitda_prior = ebit_prior + dep_prior
         ebitda_growth = _growth_rate(ebitda_now, ebitda_prior)
     else:
         revenue_growth = _growth_rate(
@@ -275,6 +309,10 @@ async def _compute_metrics_async(
             if yoy_rec is not None and dep is not None and yoy_dep is not None
             else op_income_growth
         )
+    # PEG uses trailing annual EPS growth (TTM vs prior TTM), expressed in
+    # percent. Finviz uses a forward 5-year analyst estimate we don't have, so
+    # its PEG is not directly comparable; this basis is explicit and
+    # reproducible. Exposed via peg_ratio_growth_basis.
     peg_growth = eps_growth
 
     # TTM window completeness is a consumer-visible basis fact: a degraded
@@ -303,7 +341,12 @@ async def _compute_metrics_async(
         k for k, d in balance_docs.items()
         if (d.get("filing_type") == "annual")
     ]
-    if annual_dates:
+    if annual_end is not None:
+        result["last_annual_end_date"] = (
+            annual_end.isoformat() if hasattr(annual_end, "isoformat") else str(annual_end)
+        )
+        result["last_annual_end_date_source"] = "filing"
+    elif annual_dates:
         result["last_annual_end_date"] = max(annual_dates)
         result["last_annual_end_date_source"] = "filing"
     else:
@@ -384,6 +427,7 @@ async def _compute_metrics_async(
         if pe is not None and peg_growth is not None and peg_growth > 0
         else None
     )
+    result["peg_ratio_growth_basis"] = "trailing_annual_eps_growth_pct"
 
     # Gross margin = (revenue - cost of revenue) / revenue. No fallback: on both
     # NSE and SEC statements `expenses` is not COGS, so (revenue - expenses)
@@ -419,20 +463,48 @@ async def _compute_metrics_async(
         if ttm_pbt is not None and val_rev
         else None
     )
-    # Return ratios compare TTM flows against point-in-time stocks; a single
-    # quarter's PAT over equity understates ROE ~4x.
+    # Return ratios compare TTM flows against average balance-sheet stocks;
+    # period-end equity/assets understate ROE/ROA for growing firms.
     ret_pat = ttm_pat if ttm_pat is not None else pat
     ret_ebit = ttm_ebit if ttm_ebit is not None else ebit
+    yoy_equity = (
+        (_to_float(yoy_rec.get("equity_share_capital")) or 0)
+        + (_to_float(yoy_rec.get("other_equity")) or 0)
+        if yoy_rec
+        else None
+    )
+    yoy_assets = _to_float(yoy_rec.get("assets")) if yoy_rec else None
+    avg_equity = (
+        (total_equity + yoy_equity) / 2
+        if total_equity and yoy_equity
+        else total_equity
+    )
+    avg_assets = (
+        (assets_t + yoy_assets) / 2 if assets_t and yoy_assets else assets_t
+    )
     result["return_on_equity"] = (
-        _pct(_safe_div(ret_pat, total_equity)) if total_equity else None
+        _pct(_safe_div(ret_pat, avg_equity)) if avg_equity else None
     )
     result["return_on_assets"] = (
-        _pct(_safe_div(ret_pat, assets_t)) if assets_t else None
+        _pct(_safe_div(ret_pat, avg_assets)) if avg_assets else None
     )
     # ROIC: TTM NOPAT (EBIT x (1 - effective tax rate)) / invested capital
     # (total debt + equity). Screener-style convention; the old assets-minus-
     # non-current-liabilities proxy understated it for cash-rich firms.
-    invested_capital = total_debt + total_equity
+    yoy_debt = (
+        (_to_float(yoy_rec.get("borrowings_current")) or 0)
+        + (_to_float(yoy_rec.get("borrowings_noncurrent")) or 0)
+        if yoy_rec
+        else None
+    )
+    yoy_invested = (
+        yoy_debt + yoy_equity if yoy_debt is not None and yoy_equity else None
+    )
+    invested_capital = (
+        (total_debt + total_equity + yoy_invested) / 2
+        if yoy_invested and total_debt is not None
+        else total_debt + total_equity
+    )
     # One effective-rate definition reused by NOPAT and effective_tax_rate so
     # the two can't disagree. Clamped to 0..1: a loss year or a tax benefit
     # would otherwise yield a nonsensical rate and a negative NOPAT.
@@ -445,8 +517,8 @@ async def _compute_metrics_async(
     if ret_ebit is not None:
         if tax_rate is not None:
             nopat = ret_ebit * (1 - tax_rate)
-        elif ttm_pat is not None:
-            nopat = ttm_pat + ttm_fc if ttm_fc is not None else None
+        elif ttm_pat is not None and ttm_fc is not None:
+            nopat = ttm_pat + ttm_fc
     result["effective_tax_rate"] = _pct(tax_rate)
     result["return_on_invested_capital"] = (
         _pct(_safe_div(nopat, invested_capital))
@@ -466,10 +538,18 @@ async def _compute_metrics_async(
         if inventories
         else None
     )
-    result["working_capital_turnover"] = (
-        _safe_div(val_rev, assets_cur - current_liab)
+    working_capital = (
+        assets_cur - current_liab
         if assets_cur is not None and current_liab is not None
-        and (assets_cur - current_liab) != 0
+        else None
+    )
+    # Near-zero working capital makes revenue/WC explode (a few percent of
+    # revenue swings the ratio by orders of magnitude), so report None below
+    # 1% of revenue instead of a meaningless outlier.
+    result["working_capital_turnover"] = (
+        _safe_div(val_rev, working_capital)
+        if working_capital is not None and val_rev
+        and abs(working_capital) >= 0.01 * abs(val_rev)
         else None
     )
 
@@ -785,6 +865,9 @@ def _find_record(records: list, ref_date: str, offset_months: int) -> Optional[d
 
 async def _safe_market_fetch(func, symbol: str, source: str) -> Dict[str, Any]:
     try:
+        import inspect
+        if inspect.iscoroutinefunction(func):
+            return await func(symbol, source)
         return await asyncio.to_thread(func, symbol, source)
     except Exception as exc:
         logger.warning(f"Market data fetch failed for {symbol}: {exc}")
@@ -815,6 +898,7 @@ async def financial_metrics(
     income_docs: dict = {}
     balance_docs: dict = {}
     cashflow_docs: dict = {}
+    annual_end = None
 
     db_ft = "quarterly" if filing_type in ("ttm", "annual") else filing_type
 
@@ -850,6 +934,21 @@ async def financial_metrics(
                 if key and key not in dest:
                     key_str = key.isoformat() if hasattr(key, "isoformat") else str(key)
                     dest[key_str] = d
+
+        # The TTM/annual load above queries only quarterly rows (so annual
+        # amounts never leak into the TTM window). Fetch the true latest annual
+        # period-end separately so last_annual_end_date is the real fiscal
+        # year-end from the filing, not a month-end approximation.
+        if filing_type in ("ttm", "annual"):
+            result = await session.execute(
+                select(func.max(BalanceSheet.period_end_date)).where(
+                    BalanceSheet.symbol == symbol,
+                    BalanceSheet.consolidated == is_cons,
+                    BalanceSheet.filing_type == "annual",
+                    BalanceSheet.source == source,
+                )
+            )
+            annual_end = result.scalar_one_or_none()
 
     all_dates = sorted(
         set(income_docs.keys()) | set(balance_docs.keys()) | set(cashflow_docs.keys()),
@@ -956,6 +1055,7 @@ async def financial_metrics(
         cashflow_docs=cashflow_docs,
         yf_exchange=yf_exchange,
         anchor_idx=0,
+        annual_end=annual_end,
     )
     if not wants_list:
         return single
@@ -984,6 +1084,7 @@ async def financial_metrics(
                 cashflow_docs=cashflow_docs,
                 yf_exchange=yf_exchange,
                 anchor_idx=aidx,
+                annual_end=annual_end,
             )
             results.append(res)
         except Exception:

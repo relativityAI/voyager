@@ -208,13 +208,13 @@ def test_metrics_renders_the_counter_block(tmp_path, monkeypatch):
 # --- auth hint ---------------------------------------------------------------
 
 
-def test_job_list_403_names_the_missing_scope(tmp_path, monkeypatch):
+def test_403_hint_names_the_missing_scope(tmp_path, monkeypatch):
     at, _ = _app(
-        tmp_path, "pulls", monkeypatch,
+        tmp_path, "playground", monkeypatch,
         [PanelHTTPError(403, "This key requires the 'data:write' scope")],
     )
     at.run()
-    at.toggle[0].set_value(True).run()
+    at.button[0].click().run()  # ▶️ Execute
     # The hint must key off status_code; the detail string never contains "403".
     assert any("data:write" in w.value for w in at.warning), (
         "403 hint did not fire"

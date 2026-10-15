@@ -70,46 +70,6 @@ class APIKey(Base):
         return {c.key: getattr(self, c.key) for c in self.__table__.columns}
 
 
-class PullJob(Base):
-    __tablename__ = "pull_jobs"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    job_id = Column(Text, nullable=False, unique=True)
-    symbol = Column(Text, nullable=False)
-    country = Column(Text, default="in")
-    source = Column(Text, default="nse")
-    filing_type = Column(Text, nullable=True)
-    refresh = Column(Boolean, default=False)
-    # Generic async task (e.g. "pull.data").
-    # When set, the job runs the named task instead of a symbol pull.
-    task = Column(Text, nullable=True)
-    task_args = Column(JSONB, nullable=True)
-    status = Column(Text, default="queued")
-    result = Column(JSONB, nullable=True)
-    error = Column(Text, nullable=True)
-    created_by = Column(Text, nullable=True)
-    created_at = Column(DateTime, nullable=False, default=_utcnow)
-    started_at = Column(DateTime, nullable=True)
-    finished_at = Column(DateTime, nullable=True)
-
-    def to_public_dict(self) -> dict:
-        return {
-            "job_id": self.job_id,
-            "symbol": self.symbol,
-            "country": self.country,
-            "source": self.source,
-            "filing_type": self.filing_type,
-            "refresh": self.refresh,
-            "task": self.task,
-            "status": self.status,
-            "created_at": self.created_at.isoformat(),
-            "started_at": self.started_at.isoformat() if self.started_at else None,
-            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
-            "result": self.result,
-            "error": self.error,
-        }
-
-
 class NSEStockMetadata(Base):
     __tablename__ = "nse_stock_metadata"
 
@@ -187,7 +147,7 @@ class IncomeStatement(Base):
     diluted_earnings_loss_per_share_from_continuing_and_discontinued_operations = Column(Numeric, nullable=True)
 
     __table_args__ = (
-        UniqueConstraint("symbol", "period_end_date", "consolidated", "source_endpoint",
+        UniqueConstraint("symbol", "period_end_date", "consolidated", "source_endpoint", "source",
                          name="uq_income_stmt"),
     )
 
@@ -256,7 +216,7 @@ class BalanceSheet(Base):
     total_equity_including_nci = Column(Numeric, nullable=True)
 
     __table_args__ = (
-        UniqueConstraint("symbol", "period_end_date", "consolidated", "source_endpoint",
+        UniqueConstraint("symbol", "period_end_date", "consolidated", "source_endpoint", "source",
                          name="uq_balance_sheet"),
     )
 
@@ -300,7 +260,7 @@ class CashFlow(Base):
     dividends_paid = Column(Numeric, nullable=True)
 
     __table_args__ = (
-        UniqueConstraint("symbol", "period_end_date", "consolidated", "source_endpoint",
+        UniqueConstraint("symbol", "period_end_date", "consolidated", "source_endpoint", "source",
                          name="uq_cash_flow"),
     )
 
@@ -344,7 +304,7 @@ class Shareholding(Base):
     non_promoter_non_public_shareholding = Column(Numeric, nullable=True)
 
     __table_args__ = (
-        UniqueConstraint("symbol", "period_end_date", "consolidated", "source_endpoint",
+        UniqueConstraint("symbol", "period_end_date", "consolidated", "source_endpoint", "source",
                          name="uq_shareholding"),
     )
 
@@ -365,13 +325,12 @@ class NSEAnnouncement(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     symbol = Column(Text, nullable=False)
-    an_dt = Column(Text, nullable=True)
+    an_dt = Column(DateTime, nullable=True)
     attchmnt_text = Column(Text, nullable=True)
     desc = Column(Text, nullable=True)
     attchmnt_file = Column(Text, nullable=True)
     att_file_size = Column(BigInteger, nullable=True)
     has_xbrl = Column(Boolean, default=False)
-    sort_date = Column(Text, nullable=True)
     raw_data = Column(JSONB, nullable=True)
 
 
@@ -411,7 +370,7 @@ class NewsArticle(Base):
 
     __tablename__ = "news_articles"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(Integer, primary_key=True)
     country = Column(Text, nullable=False)
     source = Column(Text, nullable=False)
     url = Column(Text, nullable=False)
@@ -423,3 +382,51 @@ class NewsArticle(Base):
     __table_args__ = (
         UniqueConstraint("url", name="uq_news_article_url"),
     )
+
+
+class PriceOHLCV(Base):
+    __tablename__ = "price_ohlcv"
+
+    id = Column(Integer, primary_key=True)
+    symbol = Column(Text, nullable=False)
+    exchange = Column(Text, nullable=False)
+    country = Column(Text, nullable=False)
+    date = Column(Date, nullable=False)
+    open = Column(Numeric, nullable=True)
+    high = Column(Numeric, nullable=True)
+    low = Column(Numeric, nullable=True)
+    close = Column(Numeric, nullable=True)
+    adjusted_close = Column(Numeric, nullable=True)
+    volume = Column(BigInteger, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "exchange", "date", name="uq_price_ohlcv"),
+    )
+
+    def to_dict(self) -> dict:
+        return {c.key: getattr(self, c.key) for c in self.__table__.columns}
+
+
+class StockDataLedger(Base):
+    __tablename__ = "stock_data_ledger"
+
+    id = Column(Integer, primary_key=True)
+    symbol = Column(Text, nullable=False)
+    exchange = Column(Text, nullable=False)
+    country = Column(Text, nullable=False)
+    price_records = Column(Integer, default=0)
+    price_last_updated = Column(DateTime, nullable=True)
+    filing_records = Column(Integer, default=0)
+    filing_last_updated = Column(DateTime, nullable=True)
+    announcement_records = Column(Integer, default=0)
+    announcement_last_updated = Column(DateTime, nullable=True)
+    total_records = Column(Integer, default=0)
+    last_updated = Column(DateTime, nullable=False, default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "exchange", "country", name="uq_stock_data_ledger"),
+    )
+
+    def to_dict(self) -> dict:
+        return {c.key: getattr(self, c.key) for c in self.__table__.columns}

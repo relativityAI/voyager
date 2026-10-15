@@ -294,34 +294,28 @@ def _chart_price(yf_symbol: str) -> Optional[float]:
         return None
 
 
-def fetch_price_info(symbol: str, exchange: str = "NSE") -> Dict[str, Any]:
-    ticker, hist = _get_yf_raw(symbol, exchange)
-    info: Dict[str, Any] = {}
-    if ticker is not None:
-        with _yf_lock:
-            try:
-                info = ticker.info or {}
-            except Exception as exc:  # noqa: BLE001 - rate limits should not crash callers
-                logger.warning(
-                    f"yfinance info failed for {symbol}.{exchange}: {exc!r}"
+async def fetch_price_info(symbol: str, exchange: str = "NSE") -> Dict[str, Any]:
+    from sqlalchemy import select
+    from src.db.engine import get_session_factory
+    from src.db.models import PriceOHLCV
+
+    factory = get_session_factory()
+    async with factory() as session:
+        row = (
+            await session.execute(
+                select(PriceOHLCV.close)
+                .where(
+                    PriceOHLCV.symbol == symbol.upper(),
+                    PriceOHLCV.exchange == exchange.upper(),
                 )
-                info = {}
-    shares = _to_valid_float(info.get("sharesOutstanding"))
-    current_price = _to_valid_float(
-        info.get("currentPrice") or info.get("regularMarketPrice")
-    )
-    # Live info may lag or be blocked; the last *completed* close is the
-    # next-best source. fetch_history() drops the NaN partial candle.
-    if current_price is None and hist is not None and not hist.empty and "Close" in hist:
-        valid_closes = hist["Close"].dropna()
-        if not valid_closes.empty:
-            current_price = _to_valid_float(valid_closes.iloc[-1])
-    if current_price is None:
-        current_price = _chart_price(_generate_yf_symbol(symbol, exchange))
-    logger.info(
-        f"[PRICE] {symbol}.{exchange} current_price={current_price} shares={shares}"
-    )
-    return {"current_price": current_price, "shares_outstanding": shares}
+                .order_by(PriceOHLCV.date.desc())
+                .limit(1)
+            )
+        ).first()
+
+    current_price = _to_valid_float(row[0]) if row else None
+    logger.info(f"[PRICE] {symbol}.{exchange} current_price={current_price} (from DB)")
+    return {"current_price": current_price, "shares_outstanding": None}
 
 
 # A rate-limited (empty) response must not be cached for the full TTL: one

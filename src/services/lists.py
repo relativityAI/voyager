@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 from sqlalchemy import func, or_, select
 
 from src.db.engine import get_session_factory
-from src.db.models import BalanceSheet, CashFlow, IncomeStatement, NSEStockMetadata, Shareholding
+from src.db.models import StockDataLedger
 
 from ._common import InvalidRequestError, _validate_source
 
@@ -54,11 +54,9 @@ async def search_symbols(
     source: str = "nse",
     limit: int = 20,
 ) -> Dict[str, Any]:
-    """Fuzzy symbol search over symbols already pulled into the DB.
+    """Fuzzy symbol search over the stock data ledger.
 
     Matches by substring, case-insensitively (e.g. "relian" -> RELIANCE).
-    Symbols with stored statements rank first; the stock-metadata registry
-    covers pulled-but-empty symbols via a has_data flag.
     """
     query = (query or "").strip()
     if not query:
@@ -72,81 +70,27 @@ async def search_symbols(
 
     factory = get_session_factory()
     async with factory() as session:
-        # Symbols that actually have statement rows, with a row count for ranking.
-        stmt_stmt = (
-            select(
-                IncomeStatement.symbol,
-                func.count().label("row_count"),
-                func.max(IncomeStatement.period_end_date).label("latest_period"),
-            )
-            .where(
-                IncomeStatement.symbol.ilike(pattern),
-                IncomeStatement.source == source,
-            )
-            .group_by(IncomeStatement.symbol)
+        stmt = (
+            select(StockDataLedger)
+            .where(StockDataLedger.symbol.ilike(pattern))
+            .order_by(StockDataLedger.total_records.desc(), StockDataLedger.symbol)
+            .limit(limit)
         )
-        is_rows = (await session.execute(stmt_stmt)).all()
-        is_counts = {sym: cnt for sym, cnt, _ in is_rows}
-        latest_periods = {sym: latest for sym, _, latest in is_rows}
-        bsb_stmt = (
-            select(BalanceSheet.symbol, func.count())
-            .where(BalanceSheet.symbol.ilike(pattern), BalanceSheet.source == source)
-            .group_by(BalanceSheet.symbol)
-        )
-        cf_stmt = (
-            select(CashFlow.symbol, func.count())
-            .where(CashFlow.symbol.ilike(pattern), CashFlow.source == source)
-            .group_by(CashFlow.symbol)
-        )
-        sh_stmt = (
-            select(Shareholding.symbol, func.count())
-            .where(Shareholding.symbol.ilike(pattern), Shareholding.source == source)
-            .group_by(Shareholding.symbol)
-        )
+        rows = (await session.execute(stmt)).scalars().all()
 
-        def _counts(res):
-            return {sym: cnt for sym, cnt in res.all()}
-
-        bs_counts = _counts(await session.execute(bsb_stmt))
-        cf_counts = _counts(await session.execute(cf_stmt))
-        sh_counts = _counts(await session.execute(sh_stmt))
-
-        # Metadata registry (covers pulled-but-empty symbols too).
-        meta_stmt = (
-            select(NSEStockMetadata)
-            .where(
-                NSEStockMetadata.symbol.ilike(pattern),
-                NSEStockMetadata.source == source,
-            )
-            .limit(limit * 3)
-        )
-        metas = {
-            m.symbol: m for m in (await session.execute(meta_stmt)).scalars().all()
+    results = [
+        {
+            "symbol": r.symbol,
+            "exchange": r.exchange,
+            "country": r.country,
+            "price_records": r.price_records,
+            "filing_records": r.filing_records,
+            "announcement_records": r.announcement_records,
+            "total_records": r.total_records,
+            "price_last_updated": r.price_last_updated.isoformat() if r.price_last_updated else None,
+            "filing_last_updated": r.filing_last_updated.isoformat() if r.filing_last_updated else None,
+            "announcement_last_updated": r.announcement_last_updated.isoformat() if r.announcement_last_updated else None,
         }
-
-    results = []
-    seen = set(is_counts) | set(bs_counts) | set(cf_counts) | set(sh_counts) | set(metas)
-    for sym in seen:
-        counts = {
-            "income_statements": is_counts.get(sym, 0),
-            "balance_sheets": bs_counts.get(sym, 0),
-            "cash_flows": cf_counts.get(sym, 0),
-            "shareholdings": sh_counts.get(sym, 0),
-        }
-        total = sum(counts.values())
-        meta = metas.get(sym)
-        latest = latest_periods.get(sym)
-        results.append(
-            {
-                "symbol": sym,
-                "source": source,
-                "has_data": total > 0,
-                "record_counts": counts,
-                "total_records": total,
-                "latest_income_period": latest.isoformat() if latest else None,
-                "last_pull": meta.last_pull.isoformat() if meta and meta.last_pull else None,
-            }
-        )
-    # Rank: symbols with real data first, then most records, then A-Z.
-    results.sort(key=lambda r: (-r["total_records"], r["symbol"]))
-    return {"query": query, "source": source, "count": len(results), "results": results[:limit]}
+        for r in rows
+    ]
+    return {"query": query, "source": source, "count": len(results), "results": results}

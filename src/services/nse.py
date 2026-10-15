@@ -110,6 +110,10 @@ def _parse_datetime(dt_str):
     except (ValueError, TypeError):
         pass
     try:
+        return datetime.strptime(str(dt_str), "%d-%b-%Y %H:%M:%S")
+    except (ValueError, TypeError):
+        pass
+    try:
         return datetime.strptime(str(dt_str), "%Y-%m-%dT%H:%M:%S")
     except (ValueError, TypeError):
         return None
@@ -304,7 +308,6 @@ async def pull_nse_data(
         "attchmntFile": "attchmnt_file",
         "attFileSize": "att_file_size",
         "hasXbrl": "has_xbrl",
-        "sortDateTime": "sort_date",
     }
 
     seen_xbrl: set = set()
@@ -379,7 +382,7 @@ async def pull_nse_data(
                 model_class = STATEMENT_MODELS[coll_name]
                 await _upsert_rows(
                     session, model_class, rows,
-                    on_conflict_cols=["symbol", "period_end_date", "consolidated", "source_endpoint"],
+                    on_conflict_cols=["symbol", "period_end_date", "consolidated", "source_endpoint", "source"],
                 )
                 logger.info(f"Upserted {len(rows)} {coll_name} docs for {symbol}")
 
@@ -395,6 +398,8 @@ async def pull_nse_data(
                         row["att_file_size"] = int(row["att_file_size"])
                     except (TypeError, ValueError):
                         row["att_file_size"] = None
+                if "an_dt" in row:
+                    row["an_dt"] = _parse_datetime(row["an_dt"])
                 ann_rows.append(row)
         if ann_rows:
             await _upsert_rows(
@@ -433,7 +438,10 @@ async def pull_nse_data(
         factory = get_session_factory()
         async with factory() as session:
             result = await session.execute(
-                select(NSEStockMetadata).where(NSEStockMetadata.symbol == symbol)
+                select(NSEStockMetadata).where(
+                    NSEStockMetadata.symbol == symbol,
+                    NSEStockMetadata.source == "NSE",
+                )
             )
             meta = result.scalar_one_or_none()
             if meta:
@@ -458,6 +466,15 @@ async def pull_nse_data(
     timing["total_ms"] = round((time.perf_counter() - _started) * 1000, 1)
     for key in timing["phases"]:
         timing["phases"][key] = round(timing["phases"][key], 1)
+
+    from ._common import record_pull
+    factory = get_session_factory()
+    async with factory() as session:
+        ex_row = await session.execute(
+            select(NSEStockMetadata.exchange).where(NSEStockMetadata.symbol == symbol).limit(1)
+        )
+        ex = ex_row.scalar_one_or_none() or "NSE"
+    await record_pull(symbol.upper(), ex, country)
 
     return {
         "symbol": symbol,
@@ -836,6 +853,8 @@ async def get_announcements(
     country: Optional[str] = None,
     source: str = "nse",
     market: str = "equities",
+    limit: Optional[int] = None,
+    offset: int = 0,
 ) -> Dict[str, Any]:
     symbol = symbol.upper()
     country, source = _validate_nse(country, source)
@@ -843,7 +862,7 @@ async def get_announcements(
     if source == "SEC":
         from .sec import get_announcements_us
 
-        return await get_announcements_us(symbol, country, source, market)
+        return await get_announcements_us(symbol, country, source, market, limit, offset)
 
     ep_key = f"announcements-{market}"
     if ep_key not in ENDPOINTS:
@@ -878,6 +897,10 @@ async def get_announcements(
                     "has_xbrl": a.get("hasXbrl", False),
                 }
             )
+        if offset > 0:
+            cleaned = cleaned[offset:]
+        if limit is not None:
+            cleaned = cleaned[:limit]
         return {
             "symbol": symbol,
             "source": source,
@@ -962,8 +985,8 @@ async def get_shareholdings(
                     pg_insert(Shareholding)
                     .values(**row)
                     .on_conflict_do_update(
-                        index_elements=["symbol", "period_end_date", "consolidated", "source_endpoint"],
-                        set_={k: v for k, v in row.items() if k not in ("id", "symbol", "period_end_date", "consolidated", "source_endpoint")},
+                        index_elements=["symbol", "period_end_date", "consolidated", "source_endpoint", "source"],
+                        set_={k: v for k, v in row.items() if k not in ("id", "symbol", "period_end_date", "consolidated", "source_endpoint", "source")},
                     )
                 )
                 await session.execute(stmt)

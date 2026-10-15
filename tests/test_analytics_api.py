@@ -120,16 +120,16 @@ class TestSearch:
                               "results": [{"symbol": "RELIANCE", "has_data": True}]}
             ),
         ):
-            resp = client.get("/search?q=relian")
+            resp = client.get("/search-symbol?q=relian")
         assert resp.status_code == 200
         assert resp.json()["results"][0]["symbol"] == "RELIANCE"
 
     def test_search_requires_q(self):
-        resp = client.get("/search")
+        resp = client.get("/search-symbol")
         assert resp.status_code == 422
 
     def test_search_min_length(self):
-        resp = client.get("/search?q=a")
+        resp = client.get("/search-symbol?q=a")
         assert resp.status_code == 422
 
 
@@ -171,7 +171,7 @@ class TestCachingAndPagination:
             "api.search_symbols",
             new=AsyncMock(return_value={"query": "x", "results": [], "count": 0}),
         ):
-            resp = client.get("/search?q=xx")
+            resp = client.get("/search-symbol?q=xx")
         assert resp.status_code == 200
         assert "Cache-Control" not in resp.headers or "max-age" not in (
             resp.headers.get("Cache-Control") or ""
@@ -260,28 +260,4 @@ class TestFieldFilterAndBatch:
         assert resp.status_code == 400
 
 
-class TestJobCancel:
-    def test_cancel_unknown_job_404(self):
-        with patch("api.cancel_job", new=AsyncMock(side_effect=ValueError("not found"))):
-            resp = client.request("DELETE", "/pull/jobs/nope")
-        assert resp.status_code == 404
 
-    def test_cancel_finished_job_409(self):
-        from src.jobs import JobNotCancellable
-
-        with patch("api.cancel_job", new=AsyncMock(side_effect=JobNotCancellable("already done"))):
-            resp = client.request("DELETE", "/pull/jobs/j1")
-        assert resp.status_code == 409
-
-    def test_cancel_other_keys_job_403(self):
-        with patch("api.cancel_job", new=AsyncMock(side_effect=PermissionError("other key"))):
-            resp = client.request("DELETE", "/pull/jobs/j1")
-        assert resp.status_code == 403
-
-    def test_cancel_ok(self):
-        job = MagicMock()
-        job.to_public_dict.return_value = {"job_id": "j1", "status": "failed"}
-        with patch("api.cancel_job", new=AsyncMock(return_value=job)):
-            resp = client.request("DELETE", "/pull/jobs/j1")
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "failed"

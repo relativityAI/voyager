@@ -109,6 +109,7 @@ class TestFinancialMetrics:
             mock_scalars = MagicMock()
             mock_scalars.all.return_value = [self._make_mock_model(d) for d in items]
             mock_result.scalars.return_value = mock_scalars
+            mock_result.scalar_one_or_none.return_value = None
             return mock_result
 
         mock_session = AsyncMock()
@@ -408,6 +409,7 @@ class TestFinancialMetrics:
             mock_scalars = MagicMock()
             mock_scalars.all.return_value = [self._make_mock_model(d) for d in items]
             mock_result.scalars.return_value = mock_scalars
+            mock_result.scalar_one_or_none.return_value = None
             return mock_result
 
         mock_session = AsyncMock()
@@ -470,6 +472,7 @@ class TestFinancialMetrics:
             mock_scalars = MagicMock()
             mock_scalars.all.return_value = [self._make_mock_model(d) for d in items]
             mock_result.scalars.return_value = mock_scalars
+            mock_result.scalar_one_or_none.return_value = None
             return mock_result
 
         mock_session = AsyncMock()
@@ -704,6 +707,7 @@ class TestFinancialMetrics:
             mock_scalars = MagicMock()
             mock_scalars.all.return_value = [self._make_mock_model(d) for d in items]
             mock_result.scalars.return_value = mock_scalars
+            mock_result.scalar_one_or_none.return_value = None
             return mock_result
 
         mock_session = AsyncMock()
@@ -1015,6 +1019,6 @@ class TestNewRatioCoverage:
         assert d["capex_per_share"] == pytest.approx(16.0, rel=1e-2)
         assert d["cash_per_share"] == pytest.approx(4.0, rel=1e-2)
 
-        # EV = 100*100 + 600 - 400 = 10200, over house EBIT = PBT + finance
-        # costs (300*4 here, since no finance_costs in the fixture).
-        assert d["enterprise_value_to_ebit_ratio"] == pytest.approx(8.5)
+        # EV = 100*100 + 600 - 400 = 10200, over house EBIT = operating_income
+        # summed over the TTM window (250*4 here).
+        assert d["enterprise_value_to_ebit_ratio"] == pytest.approx(10.2)

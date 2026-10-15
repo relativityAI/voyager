@@ -9,6 +9,17 @@ from rich.text import Text
 _logs_dir = os.path.join(os.path.dirname(__file__), "..", "logs")
 
 _console = Console(stderr=True, soft_wrap=True)
+_sink_console = None
+
+
+def set_sink_console(target):
+    """Route log output to a Live-managed console (e.g. an active Progress bar).
+
+    Pass the Progress console while it is running so logs render above the bar;
+    pass None to restore the default stderr console.
+    """
+    global _sink_console
+    _sink_console = target
 
 _LEVEL_STYLES = {
     "TRACE": "dim",
@@ -22,9 +33,10 @@ _LEVEL_STYLES = {
 
 
 def _rich_sink(message):
+    con = _sink_console or _console
     record = message.record
     if record["exception"] is not None:
-        _console.print(Text(str(message)))
+        con.print(Text(str(message)))
         return
 
     time_str = record["time"].strftime("%H:%M:%S")
@@ -34,7 +46,7 @@ def _rich_sink(message):
 
     msg = Text(str(message).rstrip("\n"), style="log.message")
     fixed = len(time_str) + 1 + len(level_str) + 1 + len(source) + 3
-    msg.truncate(max(_console.width - fixed, 0))
+    msg.truncate(max(con.width - fixed, 0))
 
     line = Text()
     line.append(Text(time_str, style="log.time"))
@@ -43,7 +55,7 @@ def _rich_sink(message):
     line.append(" ")
     line.append(msg)
     line.append(Text("  " + source, style="dim"))
-    _console.print(line)
+    con.print(line)
 
 
 class InterceptHandler(logging.Handler):

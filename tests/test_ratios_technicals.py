@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from src.tools.nse.technicals import (
     _generate_yf_symbol,
@@ -47,89 +48,52 @@ class TestToValidFloat:
 
 
 class TestFetchPriceInfo:
-    def test_success(self):
-        dates = [datetime.now() - timedelta(days=i) for i in range(5)]
-        mock_hist = pd.DataFrame(
-            {"Close": [100.0, 101.0, 102.0, 103.0, 104.0]},
-            index=dates,
-        )
+    """fetch_price_info is a DB-only read of the latest PriceOHLCV.close.
 
-        mock_ticker = MagicMock()
-        mock_ticker.info = {"sharesOutstanding": 50000000}
-        mock_ticker.history.return_value = mock_hist
+    It used to scrape yfinance (ticker.info/history plus a chart-endpoint
+    fallback); those tests were removed with that code path.
+    """
 
+    @staticmethod
+    def _factory(row):
+        # production does `async with get_session_factory()()`, so the patch
+        # must return a session-maker, not a session.
+        class _FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def execute(self, *a, **k):
+                return MagicMock(first=lambda: row)
+
+        maker = lambda: _FakeSession()  # noqa: E731
+        return lambda: maker
+
+    @pytest.mark.asyncio
+    async def test_success_returns_last_close(self):
         with patch(
-            "src.tools.nse.technicals._get_yf_raw",
-            return_value=(mock_ticker, mock_hist),
+            "src.db.engine.get_session_factory", self._factory((104.0,))
         ):
-            result = fetch_price_info("TEST", "NSE")
+            result = await fetch_price_info("TEST", "NSE")
             assert result["current_price"] == 104.0
-            assert result["shares_outstanding"] == 50000000.0
+            assert result["shares_outstanding"] is None
 
-    def test_empty_history(self):
-        mock_ticker = MagicMock()
-        mock_ticker.info = {}
-        mock_ticker.history.return_value = pd.DataFrame()
-
-        with patch(
-            "src.tools.nse.technicals._get_yf_raw",
-            return_value=(mock_ticker, pd.DataFrame()),
-        ), patch("src.tools.nse.technicals._chart_price", return_value=None):
-            result = fetch_price_info("TEST", "NSE")
+    @pytest.mark.asyncio
+    async def test_no_row_returns_none(self):
+        with patch("src.db.engine.get_session_factory", self._factory(None)):
+            result = await fetch_price_info("TEST", "NSE")
             assert result["current_price"] is None
             assert result["shares_outstanding"] is None
 
-    def test_chart_fallback_when_yfinance_blocked(self):
-        """Yahoo blocks yfinance's crumb handshake on Render's IP; the
-        crumbless /v8/chart endpoint still answers and must supply the price."""
-        mock_ticker = MagicMock()
-        mock_ticker.info = {}
-        mock_ticker.history.return_value = pd.DataFrame()
-
+    @pytest.mark.asyncio
+    async def test_nan_close_returns_none(self):
         with patch(
-            "src.tools.nse.technicals._get_yf_raw",
-            return_value=(mock_ticker, pd.DataFrame()),
-        ), patch(
-            "src.tools.nse.technicals._chart_price", return_value=225.51
-        ) as chart:
-            result = fetch_price_info("IBM", "NYSE")
-            assert result["current_price"] == 225.51
-            chart.assert_called_once_with("IBM")
-
-    def test_nan_price_falls_back_to_last_valid(self):
-        dates = [datetime.now() - timedelta(days=i) for i in range(5)]
-        mock_hist = pd.DataFrame(
-            {"Close": [100.0, 101.0, float("nan"), 103.0, float("nan")]},
-            index=dates,
-        )
-
-        mock_ticker = MagicMock()
-        mock_ticker.info = {}
-        mock_ticker.history.return_value = mock_hist
-
-        with patch(
-            "src.tools.nse.technicals._get_yf_raw",
-            return_value=(mock_ticker, mock_hist),
+            "src.db.engine.get_session_factory",
+            self._factory((float("nan"),)),
         ):
-            result = fetch_price_info("TEST", "NSE")
-            assert result["current_price"] == 103.0  # last valid non-NaN close
-
-    def test_all_nan_price_returns_none(self):
-        dates = [datetime.now() - timedelta(days=i) for i in range(5)]
-        mock_hist = pd.DataFrame(
-            {"Close": [float("nan"), float("nan"), float("nan")]},
-            index=dates[:3],
-        )
-
-        mock_ticker = MagicMock()
-        mock_ticker.info = {}
-        mock_ticker.history.return_value = mock_hist
-
-        with patch(
-            "src.tools.nse.technicals._get_yf_raw",
-            return_value=(mock_ticker, mock_hist),
-        ):
-            result = fetch_price_info("TEST", "NSE")
+            result = await fetch_price_info("TEST", "NSE")
             assert result["current_price"] is None
 
 

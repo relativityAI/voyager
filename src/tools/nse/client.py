@@ -590,7 +590,7 @@ class NSEIndia:
                         # consolidation split (board/CompBOD filings, etc). Forcing
                         # "Consolidated" here would fabricate a consolidated record
                         # that can collide with (and overwrite) the real one in the
-                        # upsert key (symbol, period_end, consolidated, source_endpoint).
+                        # upsert key (symbol, period_end, consolidated, source_endpoint, source).
                         default_consolidated = (
                             "Shareholding"
                             if category == "shareholding-pattern"

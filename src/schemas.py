@@ -51,22 +51,7 @@ class StatementPage(Doc):
     pagination: Pagination
 
 
-class JobAccepted(Doc):
-    job_id: str
-    status: str
-    status_url: str
 
-
-class JobPublic(Doc):
-    job_id: str
-    symbol: Optional[str] = None
-    task: Optional[str] = None
-    status: str
-    created_at: Optional[str] = None
-    started_at: Optional[str] = None
-    finished_at: Optional[str] = None
-    result: Optional[dict] = None
-    error: Optional[str] = None
 
 
 class Bar(Doc):

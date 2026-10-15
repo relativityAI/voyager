@@ -157,3 +157,73 @@ def _validate_source(country: Optional[str], source: str) -> Tuple[str, str]:
                 f"Source '{source}' does not serve country '{country}'"
             )
     return country, source
+
+
+async def record_pull(symbol: str, exchange: str, country: str) -> None:
+    from datetime import datetime
+    from sqlalchemy import func, select
+    from src.db.engine import get_session_factory
+    from src.db.models import (
+        BalanceSheet,
+        CashFlow,
+        IncomeStatement,
+        NSEAnnouncement,
+        PriceOHLCV,
+        Shareholding,
+        StockDataLedger,
+    )
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    source = "SEC" if country == "US" else "NSE"
+    factory = get_session_factory()
+    async with factory() as session:
+        price_count = await session.scalar(
+            select(func.count(PriceOHLCV.id)).where(
+                PriceOHLCV.symbol == symbol,
+                PriceOHLCV.exchange == exchange,
+            )
+        ) or 0
+        filing_count = 0
+        for model in (IncomeStatement, BalanceSheet, CashFlow, Shareholding):
+            filing_count += await session.scalar(
+                select(func.count(model.id)).where(
+                    model.symbol == symbol,
+                    model.source == source,
+                )
+            ) or 0
+        announcement_count = await session.scalar(
+            select(func.count(NSEAnnouncement.id)).where(
+                NSEAnnouncement.symbol == symbol,
+            )
+        ) or 0
+    total = price_count + filing_count + announcement_count
+    now = datetime.utcnow()
+    async with factory() as session:
+        stmt = pg_insert(StockDataLedger).values(
+            symbol=symbol,
+            exchange=exchange,
+            country=country,
+            price_records=price_count,
+            price_last_updated=now if price_count > 0 else None,
+            filing_records=filing_count,
+            filing_last_updated=now if filing_count > 0 else None,
+            announcement_records=announcement_count,
+            announcement_last_updated=now if announcement_count > 0 else None,
+            total_records=total,
+            last_updated=now,
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["symbol", "exchange", "country"],
+            set_={
+                "price_records": stmt.excluded.price_records,
+                "price_last_updated": stmt.excluded.price_last_updated,
+                "filing_records": stmt.excluded.filing_records,
+                "filing_last_updated": stmt.excluded.filing_last_updated,
+                "announcement_records": stmt.excluded.announcement_records,
+                "announcement_last_updated": stmt.excluded.announcement_last_updated,
+                "total_records": stmt.excluded.total_records,
+                "last_updated": stmt.excluded.last_updated,
+            },
+        )
+        await session.execute(stmt)
+        await session.commit()

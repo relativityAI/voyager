@@ -168,11 +168,15 @@ def test_service_error_501_is_problem_shaped(client):
     assert body["retry"] is False
 
 
-def test_404_job_is_problem_shaped(client, monkeypatch):
+def test_404_is_problem_shaped(client, monkeypatch):
     from unittest.mock import AsyncMock
 
-    monkeypatch.setattr("api.get_job", AsyncMock(return_value=None))
-    resp = client.get("/pull/jobs/does-not-exist")
+    from src.services._common import NotFoundError
+
+    monkeypatch.setattr(
+        "api.financial_metrics", AsyncMock(side_effect=NotFoundError("no data for NOPE"))
+    )
+    resp = client.get("/financial-metrics", params={"symbol": "NOPE"})
     assert resp.status_code == 404
     body = resp.json()
     assert body["code"] == "not_found"

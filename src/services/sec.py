@@ -27,10 +27,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from src.db.engine import get_session_factory
-from src.db.models import NSEStockMetadata
+from src.db.models import IncomeStatement, NSEStockMetadata
 from src.utils.helpers import utcnow
 
 from ._common import NotFoundError, UpstreamError
@@ -132,6 +132,9 @@ _INCOME_MAP = {
     "finance_costs": [
         "us-gaap_InterestExpense",
         "us-gaap_InterestExpenseNonoperating",
+        "us-gaap_InterestExpenseDebt",
+        "us-gaap_InterestIncomeExpenseNet",
+        "us-gaap_InterestIncomeExpenseOperatingNet",
     ],
     "depreciation_depletion_and_amortisation_expense": [
         "us-gaap_DepreciationDepletionAndAmortization",
@@ -259,15 +262,33 @@ def _period_to_date(period: Any) -> Optional[date]:
         return None
 
 
-def _fiscal_period(period_end: date) -> Optional[str]:
-    month = period_end.month
-    if 1 <= month <= 3:
+def _fiscal_period(period_end: date, fye_month: Optional[int] = None) -> Optional[str]:
+    """Fiscal quarter of ``period_end`` relative to the fiscal-year-end month.
+
+    For non-calendar filers (e.g. Apple, FYE September) a calendar mapping
+    mislabels quarters: the month ending the fiscal year is Q4, and each
+    following quarter steps by three months. Without a known ``fye_month``
+    fall back to the calendar mapping (correct only for Dec-FYE filers).
+    """
+    if fye_month is None:
+        month = period_end.month
+        if 1 <= month <= 3:
+            return "Q4"
+        if 4 <= month <= 6:
+            return "Q1"
+        if 7 <= month <= 9:
+            return "Q2"
+        if 10 <= month <= 12:
+            return "Q3"
+        return None
+    offset = (period_end.month - fye_month) % 12
+    if offset == 0:
         return "Q4"
-    if 4 <= month <= 6:
+    if offset == 3:
         return "Q1"
-    if 7 <= month <= 9:
+    if offset == 6:
         return "Q2"
-    if 10 <= month <= 12:
+    if offset == 9:
         return "Q3"
     return None
 
@@ -332,8 +353,18 @@ def _diff_cumulative(df: pd.DataFrame, periods: List[str]) -> pd.DataFrame:
     return result
 
 
-def _base_row(symbol: str, period: str, source_endpoint: str, is_annual: bool) -> Dict[str, Any]:
+def _base_row(
+    symbol: str,
+    period: str,
+    source_endpoint: str,
+    is_annual: bool,
+    fye_month: Optional[int] = None,
+) -> Dict[str, Any]:
     period_end = _period_to_date(period)
+    if is_annual:
+        fiscal_period = "Q4"
+    else:
+        fiscal_period = _fiscal_period(period_end, fye_month) if period_end else None
     return {
         "symbol": symbol,
         "period_end_date": period_end,
@@ -342,7 +373,7 @@ def _base_row(symbol: str, period: str, source_endpoint: str, is_annual: bool) -
         "filing_type": "annual" if is_annual else "quarterly",
         "measure": "USD",
         "entity_identifier": None,
-        "fiscal_period": _fiscal_period(period_end) if period_end else None,
+        "fiscal_period": fiscal_period,
         "source_endpoint": source_endpoint,
         "source": "SEC",
     }
@@ -355,12 +386,13 @@ def _income_rows(
     source_endpoint: str,
     is_annual: bool,
     cash_df: Optional[pd.DataFrame] = None,
+    fye_month: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for period in periods:
         if period not in df.columns:
             continue
-        row = _base_row(symbol, period, source_endpoint, is_annual)
+        row = _base_row(symbol, period, source_endpoint, is_annual, fye_month)
         row["revenue_from_operations"] = _lookup_value(df, _INCOME_MAP, "revenue_from_operations", period)
         row["profit_before_tax"] = _lookup_value(df, _INCOME_MAP, "profit_before_tax", period)
         row["tax_expense"] = _lookup_value(df, _INCOME_MAP, "tax_expense", period)
@@ -420,13 +452,18 @@ def _income_rows(
 
 
 def _balance_rows(
-    symbol: str, df: pd.DataFrame, periods: List[str], source_endpoint: str, is_annual: bool
+    symbol: str,
+    df: pd.DataFrame,
+    periods: List[str],
+    source_endpoint: str,
+    is_annual: bool,
+    fye_month: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for period in periods:
         if period not in df.columns:
             continue
-        row = _base_row(symbol, period, source_endpoint, is_annual)
+        row = _base_row(symbol, period, source_endpoint, is_annual, fye_month)
         row["assets"] = _lookup_value(df, _BALANCE_MAP, "assets", period)
         row["noncurrent_assets"] = _lookup_value(df, _BALANCE_MAP, "noncurrent_assets", period)
         row["assets_current"] = _lookup_value(df, _BALANCE_MAP, "assets_current", period)
@@ -473,13 +510,18 @@ def _balance_rows(
 
 
 def _cashflow_rows(
-    symbol: str, df: pd.DataFrame, periods: List[str], source_endpoint: str, is_annual: bool
+    symbol: str,
+    df: pd.DataFrame,
+    periods: List[str],
+    source_endpoint: str,
+    is_annual: bool,
+    fye_month: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for period in periods:
         if period not in df.columns:
             continue
-        row = _base_row(symbol, period, source_endpoint, is_annual)
+        row = _base_row(symbol, period, source_endpoint, is_annual, fye_month)
         ocf = _lookup_value(df, _CASHFLOW_MAP, "cash_flows_from_used_in_operating_activities", period)
         row["cash_flows_from_used_in_operations"] = ocf
         row["cash_flows_from_used_in_operating_activities"] = ocf
@@ -535,6 +577,7 @@ def _q4_rows(
     ytd_period: str,
     cash_annual_df: Optional[pd.DataFrame] = None,
     cash_ytd_df: Optional[pd.DataFrame] = None,
+    fye_month: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Fiscal-year-end quarter: 10-K FY total minus the Q3 10-Q's 9-month YTD."""
     annual_df = annual_df.reset_index(drop=True)
@@ -555,7 +598,7 @@ def _q4_rows(
     source_endpoint = "10-Q"
     if kind == "income":
         cash_q4 = _q4_cash_frame(cash_annual_df, cash_ytd_df, annual_period, ytd_period)
-        rows = _income_rows(symbol, frame, [annual_period], source_endpoint, False, cash_q4)
+        rows = _income_rows(symbol, frame, [annual_period], source_endpoint, False, cash_q4, fye_month)
         ni = _tag_value(frame, "us-gaap_NetIncomeLoss", annual_period)
         if ni is not None:
             shares = _tag_value(annual_df, "us-gaap_WeightedAverageNumberOfSharesOutstandingBasic", annual_period)
@@ -576,7 +619,7 @@ def _q4_rows(
             ]
         return rows
     if kind == "cashflow":
-        return _cashflow_rows(symbol, frame, [annual_period], source_endpoint, False)
+        return _cashflow_rows(symbol, frame, [annual_period], source_endpoint, False, fye_month)
     return []
 
 
@@ -691,6 +734,26 @@ async def pull_sec_data(
     company = await asyncio.to_thread(_one_company, symbol)
     _tick("company")
 
+    if not refresh:
+        factory = get_session_factory()
+        async with factory() as session:
+            existing = await session.scalar(
+                select(func.count(IncomeStatement.id)).where(
+                    IncomeStatement.symbol == symbol,
+                    IncomeStatement.source == "SEC",
+                )
+            )
+            if existing and existing > 0:
+                from ._common import record_pull
+                await record_pull(symbol, _SEC_DEFAULT_EXCHANGE, "US")
+                logger.info(f"SEC {symbol}: {existing} income rows already in DB — skipping")
+                return {
+                    "symbol": symbol,
+                    "source": "SEC",
+                    "status": "skipped",
+                    "reason": f"{existing} rows already in DB",
+                }
+
     want_annual = filing_type in ("annual", None)
     want_quarterly = filing_type in ("quarterly", None)
 
@@ -772,6 +835,17 @@ async def pull_sec_data(
         else:
             parse_errors += 1
 
+    # Fiscal-year-end month, taken from the 10-K's most recent period end.
+    # Needed so 10-Q rows for non-calendar filers (e.g. Apple, FYE September)
+    # get the right fiscal quarter instead of a calendar-month guess.
+    fye_month = None
+    if annual is not None:
+        ref = annual[1] if "concept" in annual[1].columns else annual[0]
+        if "concept" in ref.columns:
+            ends = [d for d in (_period_to_date(p) for p in _period_columns(ref)) if d]
+            if ends:
+                fye_month = max(ends).month
+
     if want_annual and annual is not None:
         income_k, balance_k, cashflow_k = annual
         if "concept" in income_k.columns:
@@ -798,10 +872,10 @@ async def pull_sec_data(
             q_periods = _period_columns(income_q)
             income_q = _diff_cumulative(income_q, q_periods)
             cashflow_q = _diff_cumulative(cashflow_q, _period_columns(cashflow_q))
-            rows_by_coll["income_statements"].extend(_income_rows(symbol, income_q, q_periods, "10-Q", False, cashflow_q))
-            rows_by_coll["cash_flows"].extend(_cashflow_rows(symbol, cashflow_q, _period_columns(cashflow_q), "10-Q", False))
+            rows_by_coll["income_statements"].extend(_income_rows(symbol, income_q, q_periods, "10-Q", False, cashflow_q, fye_month))
+            rows_by_coll["cash_flows"].extend(_cashflow_rows(symbol, cashflow_q, _period_columns(cashflow_q), "10-Q", False, fye_month))
             if "concept" in balance_q.columns:
-                rows_by_coll["balance_sheets"].extend(_balance_rows(symbol, balance_q, _period_columns(balance_q), "10-Q", False))
+                rows_by_coll["balance_sheets"].extend(_balance_rows(symbol, balance_q, _period_columns(balance_q), "10-Q", False, fye_month))
             del balance_q
 
             if annual is not None:
@@ -822,10 +896,11 @@ async def pull_sec_data(
                             continue
                         rows_by_coll["income_statements"].extend(
                             _q4_rows(symbol, "income", income_k, income_raw_q, P, pick[0],
-                                     cashflow_k, cashflow_raw_q)
+                                     cashflow_k, cashflow_raw_q, fye_month)
                         )
                         rows_by_coll["cash_flows"].extend(
-                            _q4_rows(symbol, "cashflow", cashflow_k, cashflow_raw_q, P, pick[0])
+                            _q4_rows(symbol, "cashflow", cashflow_k, cashflow_raw_q, P, pick[0],
+                                     fye_month=fye_month)
                         )
     _tick("parse")
 
@@ -853,7 +928,7 @@ async def pull_sec_data(
                 session,
                 STATEMENT_MODELS[coll],
                 rows,
-                on_conflict_cols=["symbol", "period_end_date", "consolidated", "source_endpoint"],
+                on_conflict_cols=["symbol", "period_end_date", "consolidated", "source_endpoint", "source"],
             )
             upserted += len(rows)
 
@@ -913,11 +988,16 @@ async def pull_sec_data(
         result["frames_diag"] = "; ".join(frames_diag)
     if parse_failures:
         result["parse_error_detail"] = " | ".join(parse_failures)
+
+    from ._common import record_pull
+    await record_pull(symbol, _SEC_DEFAULT_EXCHANGE, "US")
+
     return result
 
 
 async def get_announcements_us(
-    symbol: str, country: str = "us", source: str = "sec", market: str = "equities"
+    symbol: str, country: str = "us", source: str = "sec", market: str = "equities",
+    limit: Optional[int] = None, offset: int = 0,
 ) -> Dict[str, Any]:
     company = _one_company(symbol.upper())
     try:
@@ -945,6 +1025,10 @@ async def get_announcements_us(
                 "has_xbrl": False,
             }
         )
+    if offset > 0:
+        items = items[offset:]
+    if limit is not None:
+        items = items[:limit]
     return {"symbol": symbol.upper(), "source": "SEC", "market": market, "announcements": items}
 
 
