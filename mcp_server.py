@@ -6,6 +6,7 @@ Read-only: data ingestion lives in ``src.ingest`` and runs via the CLI.
 """
 import os
 from contextlib import asynccontextmanager
+from typing import Optional
 
 from dotenv import load_dotenv
 from fastmcp import FastMCP
@@ -43,10 +44,20 @@ from src.services import (
     macro_turnover,
     search_symbols,
 )
+from src.services._common import _validate_source
 from src.services.documents import read_document
 from src.services.technical_report import build_technical_report
 
 setup_logging()
+
+# Every tool is read-only: it queries the DB or public upstream APIs and never
+# mutates data. Ingestion (writes) lives in ``src.ingest`` and runs via the CLI.
+READ_ONLY_ANNOTATIONS = {
+    "readOnlyHint": True,
+    "destructiveHint": False,
+    "idempotentHint": True,
+    "openWorldHint": False,
+}
 
 
 @asynccontextmanager
@@ -58,7 +69,7 @@ async def _lifespan(mcp):
 mcp = FastMCP("voyager", lifespan=_lifespan)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def search_symbols(
     q: str, source: str = "nse", limit: int = 20
 ) -> dict:
@@ -72,7 +83,7 @@ async def search_symbols(
     return await search_symbols(q, None, source, limit)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 def list_category(
     category: str = "sources", source: str = "nse"
 ) -> dict:
@@ -85,7 +96,7 @@ def list_category(
     return list_category(category, source=source)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def get_financials(
     symbol: str,
     source: str = "nse",
@@ -114,7 +125,7 @@ async def get_financials(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def get_income_statements(
     symbol: str,
     source: str = "nse",
@@ -145,7 +156,7 @@ async def get_income_statements(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def get_balance_sheets(
     symbol: str,
     source: str = "nse",
@@ -176,7 +187,7 @@ async def get_balance_sheets(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def get_cash_flows(
     symbol: str,
     source: str = "nse",
@@ -207,7 +218,7 @@ async def get_cash_flows(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def financial_metrics(
     symbol: str,
     source: str = "nse",
@@ -234,7 +245,60 @@ async def financial_metrics(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
+async def financial_metrics_batch(
+    symbols: str,
+    source: str = "nse",
+    consolidated: bool = True,
+    filing_type: str = "ttm",
+    fields: str | None = None,
+) -> dict:
+    """Computed financial metrics for several symbols in one call.
+
+    Mirrors ``GET /financial-metrics/batch``. Returns per-symbol metrics keyed by
+    symbol; symbols that fail individually report an ``error`` entry instead of
+    failing the whole request.
+
+    Args:
+        symbols: Comma-separated symbols, e.g. 'RELIANCE,TCS' (max 10).
+        source: 'nse' (default) or 'sec'.
+        consolidated: Consolidated (default).
+        filing_type: 'quarterly', 'annual', or 'ttm' (trailing twelve months).
+        fields: Comma-separated metric names to keep (e.g.
+            'price_to_earnings_ratio,return_on_equity'). Unknown names are ignored;
+            price/identifier meta is always kept.
+    """
+    wanted = [s.strip().upper() for s in (symbols or "").split(",") if s.strip()]
+    if not wanted:
+        raise ValueError("Provide at least one symbol")
+    if len(wanted) > 10:
+        raise ValueError("Max 10 symbols per batch call")
+    meta = {"symbol", "exchange", "country", "source", "consolidated", "filing_type"}
+    results = {}
+    for sym in wanted:
+        try:
+            data = await financial_metrics(
+                sym, None, source, consolidated, filing_type,
+            )
+            if fields and isinstance(data, dict):
+                wanted_fields = {f.strip() for f in fields.split(",") if f.strip()}
+                data = {
+                    k: v for k, v in data.items()
+                    if k in meta or k in wanted_fields
+                }
+            results[sym] = data
+        except Exception as exc:  # noqa: BLE001 — isolate per-symbol failures
+            results[sym] = {"error": str(exc)}
+    return {
+        "source": source.lower(),
+        "consolidated": consolidated,
+        "filing_type": filing_type,
+        "count": len(results),
+        "metrics": results,
+    }
+
+
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def get_announcements(
     symbol: str, source: str = "nse", market: str = "equities"
 ) -> dict:
@@ -248,7 +312,7 @@ async def get_announcements(
     return await get_announcements(symbol, None, source, market)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def get_shareholdings(
     symbol: str, source: str = "nse"
 ) -> dict:
@@ -261,7 +325,7 @@ async def get_shareholdings(
     return await get_shareholdings(symbol, None, source)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def macro_overview(country: str = "in") -> dict:
     """One-shot India macro dashboard: top indices, FII/DII flows, cash turnover, repo rate.
 
@@ -271,7 +335,7 @@ async def macro_overview(country: str = "in") -> dict:
     return await macro_overview(country)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def macro_indices(
     country: str = "in", limit: int | None = None
 ) -> dict:
@@ -284,7 +348,7 @@ async def macro_indices(
     return await macro_indices(country, limit)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def macro_index_quote(country: str, symbol: str) -> dict:
     """Live snapshot for one index (e.g. 'NIFTY 50').
 
@@ -295,7 +359,7 @@ async def macro_index_quote(country: str, symbol: str) -> dict:
     return await macro_index_quote(country, symbol)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def macro_index_history(
     country: str,
     symbol: str,
@@ -313,7 +377,7 @@ async def macro_index_history(
     return await macro_index_history(country, symbol, start_date, end_date)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def macro_index_valuation(
     country: str,
     symbol: str,
@@ -331,7 +395,7 @@ async def macro_index_valuation(
     return await macro_index_valuation(country, symbol, start_date, end_date)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def macro_index_returns(
     country: str,
     symbol: str,
@@ -349,7 +413,7 @@ async def macro_index_returns(
     return await macro_index_returns(country, symbol, start_date, end_date)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def macro_index_constituents(
     country: str, symbol: str
 ) -> dict:
@@ -362,7 +426,7 @@ async def macro_index_constituents(
     return await macro_index_constituents(country, symbol)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def macro_market_valuation(
     country: str, date_str: str | None = None
 ) -> dict:
@@ -375,7 +439,7 @@ async def macro_market_valuation(
     return await macro_market_valuation(country, date_str)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def macro_breadth(country: str, limit: int = 10) -> dict:
     """Advances/declines plus top gainers and losers.
 
@@ -386,7 +450,7 @@ async def macro_breadth(country: str, limit: int = 10) -> dict:
     return await macro_breadth(country, limit)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def macro_flows(country: str) -> dict:
     """FII/DII daily cash-market net flows.
 
@@ -396,7 +460,7 @@ async def macro_flows(country: str) -> dict:
     return await macro_flows(country)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def macro_flows_fpi(country: str) -> dict:
     """NSDL FPI flows (requires headless Chromium upstream).
 
@@ -406,7 +470,7 @@ async def macro_flows_fpi(country: str) -> dict:
     return await macro_flows_fpi(country)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def macro_turnover(country: str) -> dict:
     """Cash-market turnover by segment.
 
@@ -416,7 +480,7 @@ async def macro_turnover(country: str) -> dict:
     return await macro_turnover(country)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def macro_derivatives(country: str, symbol: str) -> dict:
     """F&O option-chain summary: OI, PCR, max-pain.
 
@@ -427,7 +491,7 @@ async def macro_derivatives(country: str, symbol: str) -> dict:
     return await macro_derivatives(country, symbol)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def macro_rates(country: str) -> dict:
     """RBI current policy rates and reference FX.
 
@@ -437,7 +501,7 @@ async def macro_rates(country: str) -> dict:
     return await macro_rates(country)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def get_news_stories(
     country: str = "in",
     days: int = 7,
@@ -455,7 +519,7 @@ async def get_news_stories(
     return await get_news_stories(country, days, limit, query)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def get_ticker_mentions(
     symbol: str, country: str = "in", days: int = 7
 ) -> dict:
@@ -469,7 +533,7 @@ async def get_ticker_mentions(
     return await get_ticker_mentions(symbol, country, days)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def get_reddit(query: str, limit: int = 10) -> dict:
     """Search Reddit for mentions.
 
@@ -480,7 +544,7 @@ async def get_reddit(query: str, limit: int = 10) -> dict:
     return await get_reddit(query, limit)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def get_youtube_search(query: str, limit: int = 15) -> dict:
     """Search YouTube for videos.
 
@@ -491,7 +555,7 @@ async def get_youtube_search(query: str, limit: int = 15) -> dict:
     return await get_youtube_search(query, limit)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def get_youtube_transcript(video_id: str) -> dict:
     """Get YouTube video captions.
 
@@ -501,7 +565,7 @@ async def get_youtube_transcript(video_id: str) -> dict:
     return await get_youtube_transcript(video_id)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def build_technical_report(
     symbol: str,
     source: str = "NSE",
@@ -517,7 +581,7 @@ async def build_technical_report(
     return await build_technical_report(symbol, source, timeframes)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def read_document(
     url: str, symbol: str | None = None, source: str = "nse"
 ) -> dict:
@@ -532,7 +596,7 @@ async def read_document(
     return await read_document(url, symbol=symbol, source=source)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def get_price_history(
     symbol: str,
     exchange: str,
