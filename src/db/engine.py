@@ -119,8 +119,16 @@ async def init_db():
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_nse_announcements_raw ON nse_announcements (symbol, md5(raw_data::text))",
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_price_ohlcv ON price_ohlcv (symbol, exchange, date)",
             "CREATE INDEX IF NOT EXISTS idx_price_ohlcv_lookup ON price_ohlcv (symbol, exchange, date)",
-            "ALTER TABLE stock_data_ledger DROP CONSTRAINT IF EXISTS uq_stock_data_ledger",
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_stock_data_ledger ON stock_data_ledger (symbol, exchange, country)",
+            """DO $$ BEGIN
+                IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'stock_data_ledger')
+                  AND NOT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'data_catalog') THEN
+                    ALTER TABLE stock_data_ledger RENAME TO data_catalog;
+                END IF;
+            END $$""",
+            "ALTER TABLE data_catalog DROP CONSTRAINT IF EXISTS uq_stock_data_ledger",
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_data_catalog ON data_catalog (symbol, exchange, country)",
+            "CREATE TABLE IF NOT EXISTS macro_data (id SERIAL PRIMARY KEY, category TEXT NOT NULL, symbol TEXT, source TEXT NOT NULL DEFAULT 'nse', data JSONB NOT NULL, fetched_at TIMESTAMP NOT NULL DEFAULT now())",
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_macro_data ON macro_data (category, symbol, source)",
             "ALTER TABLE price_ohlcv DROP CONSTRAINT IF EXISTS uq_price_ohlcv",
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_price_ohlcv ON price_ohlcv (symbol, exchange, date)",
             "ALTER TABLE price_ohlcv DROP COLUMN IF EXISTS interval",

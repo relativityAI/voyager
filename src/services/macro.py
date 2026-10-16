@@ -19,6 +19,26 @@ from ._common import (
     UnsupportedCountryError,
     UpstreamError,
 )
+from src.db.models import MacroData
+
+
+async def _cached_macro(category: str, symbol: str | None = None, max_age_s: int = 3600):
+    """Return cached macro_data row if fresh, else None. ponytail: fixed 1h TTL; add per-category tuning when a staleness complaint lands."""
+    from datetime import datetime, timedelta
+    from sqlalchemy import select
+    from src.db.engine import get_session_factory
+
+    factory = get_session_factory()
+    async with factory() as session:
+        row = await session.scalar(
+            select(MacroData).where(
+                MacroData.category == category,
+                MacroData.symbol == symbol,
+            ).order_by(MacroData.fetched_at.desc())
+        )
+        if row and (datetime.utcnow() - row.fetched_at) < timedelta(seconds=max_age_s):
+            return row.data
+    return None
 from ._vendored import (
     RBI,
     NSELive,
@@ -173,6 +193,8 @@ async def _turnover_segments() -> List[Dict[str, Any]]:
 
 async def macro_overview(country: str) -> Dict[str, Any]:
     _require_country(country)
+    if cached := await _cached_macro("overview"):
+        return cached
     tops = {"NIFTY 50", "NIFTY NEXT 50", "NIFTY MIDCAP 100", "NIFTY SMALLCAP 100", "NIFTY BANK", "NIFTY IT"}
     rows = await _all_indices()
     indices = [
@@ -220,6 +242,8 @@ async def macro_overview(country: str) -> Dict[str, Any]:
 
 async def macro_indices(country: str, limit: Optional[int] = None) -> Dict[str, Any]:
     _require_country(country)
+    if cached := await _cached_macro("indices"):
+        return cached
     rows = await _all_indices()
     indices = [_row_to_index(r) for r in rows if r.get("indexSymbol")]
     if limit is not None:
@@ -378,6 +402,8 @@ async def macro_index_constituents(country: str, symbol: str) -> Dict[str, Any]:
 
 async def macro_market_valuation(country: str, date_str: Optional[str]) -> Dict[str, Any]:
     _require_country(country)
+    if cached := await _cached_macro("market_valuation"):
+        return cached
 
     def _fetch():
         import requests
@@ -404,6 +430,8 @@ async def macro_market_valuation(country: str, date_str: Optional[str]) -> Dict[
 
 async def macro_breadth(country: str, limit: int) -> Dict[str, Any]:
     _require_country(country)
+    if cached := await _cached_macro("breadth"):
+        return cached
     rows = await _all_indices()
     index_breadth = []
     for r in rows:
@@ -448,6 +476,8 @@ async def macro_breadth(country: str, limit: int) -> Dict[str, Any]:
 
 async def macro_flows(country: str) -> Dict[str, Any]:
     _require_country(country)
+    if cached := await _cached_macro("flows"):
+        return cached
     out = []
     for row in await _flows_json():
         cat = (row.get("category") or "").upper()
@@ -474,6 +504,8 @@ async def macro_flows_fpi(country: str) -> Dict[str, Any]:
 
 async def macro_turnover(country: str) -> Dict[str, Any]:
     _require_country(country)
+    if cached := await _cached_macro("turnover"):
+        return cached
     segments = []
     for seg in await _turnover_segments():
         day = seg.get("today") or seg.get("yesterday") or {}
@@ -538,6 +570,8 @@ async def macro_derivatives(country: str, symbol: str) -> Dict[str, Any]:
 
 async def macro_rates(country: str) -> Dict[str, Any]:
     _require_country(country)
+    if cached := await _cached_macro("rates"):
+        return cached
 
     def _fetch():
         return RBI().current_rates()

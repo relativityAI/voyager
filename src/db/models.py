@@ -408,8 +408,8 @@ class PriceOHLCV(Base):
         return {c.key: getattr(self, c.key) for c in self.__table__.columns}
 
 
-class StockDataLedger(Base):
-    __tablename__ = "stock_data_ledger"
+class DataCatalog(Base):
+    __tablename__ = "data_catalog"
 
     id = Column(Integer, primary_key=True)
     symbol = Column(Text, nullable=False)
@@ -425,7 +425,25 @@ class StockDataLedger(Base):
     last_updated = Column(DateTime, nullable=False, default=_utcnow)
 
     __table_args__ = (
-        UniqueConstraint("symbol", "exchange", "country", name="uq_stock_data_ledger"),
+        UniqueConstraint("symbol", "exchange", "country", name="uq_data_catalog"),
+    )
+
+    def to_dict(self) -> dict:
+        return {c.key: getattr(self, c.key) for c in self.__table__.columns}
+
+
+class MacroData(Base):
+    __tablename__ = "macro_data"
+
+    id = Column(Integer, primary_key=True)
+    category = Column(Text, nullable=False)
+    symbol = Column(Text, nullable=True)
+    source = Column(Text, nullable=False, default="nse")
+    data = Column(JSONB, nullable=False)
+    fetched_at = Column(DateTime, nullable=False, default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("category", "symbol", "source", name="uq_macro_data"),
     )
 
     def to_dict(self) -> dict:
