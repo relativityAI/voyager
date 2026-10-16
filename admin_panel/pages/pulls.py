@@ -1,4 +1,7 @@
 import streamlit as st
 
-st.title("Pull Manager")
-st.info("The async job subsystem has been removed. Use `POST /download-financials` directly.")
+st.title("Data Ingestion")
+st.info(
+    "Ingestion runs from the CLI (cron), not the API: "
+    "Ingest via the `src.ingest` package (see README → Data ingestion)."
+)

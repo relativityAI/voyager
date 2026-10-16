@@ -1,32 +1,44 @@
-"""API Keys: create, list, revoke and re-enable service keys.
+"""API Keys: create, list, revoke and re-enable service keys (direct DB).
 
-The raw key is shown exactly once by the server, so it is held in
-session_state until it is explicitly dismissed — rendering it out of the
-button branch loses it on the next interaction, which is unrecoverable.
-Revoke is destructive and irreversible, so it goes through a confirm dialog.
+The HTTP admin router is gone; this page talks to PostgreSQL through
+admin_panel.keys_db (same key rules as the auth package).
+
+The raw key is shown exactly once by create, so it renders in the button
+branch — anything persisted in session_state can be lost on the next
+interaction, which is unrecoverable. Revoke is destructive and
+irreversible, so it goes through a confirm dialog.
 """
 
 import pandas as pd
 import streamlit as st
 
-from admin_panel.state import (
-    banner_for_error,
-    build_client,
-    current_cfg,
-    sidebar,
-    submit,
-)
+from admin_panel import keys_db
+from admin_panel.db_stats import DBError
+from admin_panel.state import current_cfg, sidebar
 
 SCOPES = ["data:read", "data:write", "admin"]
 RPM_MAX = 10000
 
 
+def _engine():
+    engine = st.session_state.get("keys_engine")
+    if engine is None:
+        engine = keys_db.connect(current_cfg().database_url)
+        st.session_state.keys_engine = engine
+    return engine
+
+
 @st.dialog("Revoke this key?")
-def _confirm_revoke(client, prefix: str) -> None:
+def _confirm_revoke(prefix: str) -> None:
     st.write(f"`{prefix}` stops working immediately. There is no undo.")
     c1, c2 = st.columns(2)
     if c1.button("Revoke", type="primary", width="stretch"):
-        submit("key_action", "DELETE", f"/admin/keys/{prefix}", client=client, admin=True, timeout=30)
+        try:
+            keys_db.revoke_key(_engine(), prefix)
+            st.success(f"revoked {prefix}")
+        except DBError as e:
+            st.error(str(e))
+        st.session_state.key_list = None
         st.rerun()
     if c2.button("Cancel", width="stretch"):
         st.rerun()
@@ -34,18 +46,17 @@ def _confirm_revoke(client, prefix: str) -> None:
 
 def keys() -> None:
     sidebar()
-    client = build_client()
     st.subheader("API Keys")
-    if not current_cfg().admin_key:
-        st.warning("Set the admin key (VOYAGER_ADMIN_KEY) in the sidebar to manage keys.")
+    if not current_cfg().database_url:
+        st.warning("Set the database URL (DATABASE_URL) in the sidebar to manage keys.")
         return
 
-    _new_key(client)
+    _new_key()
     st.divider()
-    _list(client)
+    _list()
 
 
-def _new_key(client) -> None:
+def _new_key() -> None:
     st.markdown("**Create key**")
     with st.form("key_create", border=False):
         c1, c2 = st.columns(2)
@@ -63,57 +74,41 @@ def _new_key(client) -> None:
         if not name.strip():
             st.warning("Name is required.")
         else:
-            body = {
-                "name": name,
-                "owner": owner,
-                "scopes": scopes or ["data:read"],
-                "rpm": int(rpm),
-            }
-            if int(expires) > 0:
-                body["expires_in_days"] = int(expires)
-            submit("new_key", "POST", "/admin/keys", client=client, body=body, admin=True, timeout=30)
-
-    pending = st.session_state.get("new_key")
-    if not pending:
-        return
-    if pending["err"] is not None:
-        st.error(f"HTTP {pending['err'].status_code}: {pending['err'].detail}")
-        return
-    raw = (pending["resp"].json or {}).get("key")
-    if not raw:
-        st.error("The server did not return a key.")
-        return
-    st.success("Key created — copy it now, the server won't show it again.")
-    st.code(raw, language="text")
-    c1, c2 = st.columns([1, 1])
-    c1.download_button(
-        "⬇️ Download key", raw.encode(), file_name=f"{name}-key.txt",
-        mime="text/plain", key="key_download", width="stretch",
-    )
-    if c2.button("✓ I've copied it", key="key_dismiss", width="stretch"):
-        st.session_state.new_key = None
-        st.session_state.key_list = None  # force a reload so the new key appears
-        st.rerun()
+            try:
+                _, raw = keys_db.create_key(
+                    _engine(),
+                    name=name,
+                    owner=owner,
+                    label=None,
+                    scopes=scopes or ["data:read"],
+                    rpm=int(rpm),
+                    expires_in_days=int(expires),
+                )
+            except DBError as e:
+                st.error(str(e))
+                return
+            st.success("Key created — copy it now, it won't be shown again.")
+            st.code(raw, language="text")
+            c1, c2 = st.columns([1, 1])
+            c1.download_button(
+                "⬇️ Download key", raw.encode(), file_name=f"{name}-key.txt",
+                mime="text/plain", key="key_download", width="stretch",
+            )
 
 
-def _list(client) -> None:
+def _list() -> None:
     st.markdown("**List & manage**")
-    # Load on demand rather than on every render: this is an admin-authenticated
-    # call, and the old code issued one per widget interaction app-wide.
-    refresh = st.button("🔄 Refresh list")
-    if st.session_state.get("key_list") is None or refresh:
-        submit("key_list", "GET", "/admin/keys", client=client, admin=True, timeout=30)
+    if st.button("🔄 Refresh list"):
+        st.session_state.key_list = None
 
-    result = st.session_state.get("key_list")
-    if not result:
-        return
-    if result["err"] is not None:
-        banner_for_error(result["err"], True)
-        return
+    if st.session_state.get("key_list") is None:
+        try:
+            st.session_state.key_list = keys_db.list_keys(_engine())
+        except DBError as e:
+            st.error(str(e))
+            return
 
-    keys = result["resp"].json or []
-    stamp = st.session_state.key_list.get("at")
-    st.caption(f"{len(keys)} key(s) · loaded {stamp}")
+    keys = st.session_state.key_list
     if not keys:
         st.caption("No keys yet.")
         return
@@ -138,18 +133,12 @@ def _list(client) -> None:
     action = a2.selectbox("Action", ["revoke", "enable"], key="key_act_type")
     if st.button("Apply"):
         if action == "revoke":
-            _confirm_revoke(client, prefix)
+            _confirm_revoke(prefix)
         else:
-            submit(
-                "key_action", "POST", f"/admin/keys/{prefix}/enable",
-                client=client, admin=True, timeout=30,
-            )
+            try:
+                keys_db.enable_key(_engine(), prefix)
+                st.success(f"enabled {prefix}")
+            except DBError as e:
+                st.error(str(e))
+            st.session_state.key_list = None
             st.rerun()
-
-    action_result = st.session_state.get("key_action")
-    if action_result and action_result["err"] is not None:
-        st.error(f"HTTP {action_result['err'].status_code}: {action_result['err'].detail}")
-    elif action_result:
-        st.success(f"{action} {prefix}: {(action_result['resp'].json or {}).get('status')}")
-        st.session_state.key_list = None  # the list is stale now; refetch next render
-        st.rerun()

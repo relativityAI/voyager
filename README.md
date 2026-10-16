@@ -110,9 +110,7 @@ Configure via `.env` (copy from `.env.example`):
 
 | Variable | Default | Notes |
 |---|---|---|
-| `MONGODB_URL` | *(required)* | e.g. `mongodb://root:example@localhost:27017/` or your Atlas URI |
-| `MONGODB_DB_NAME` | `voyager` | |
-| `VOYAGER_ADMIN_KEY` | *(unset)* | Required to use `/admin/keys`. Generate with `openssl rand -hex 32`. |
+| `DATABASE_URL` | *(required)* | PostgreSQL, e.g. `postgresql+asyncpg://postgres:example@localhost:5432/voyager` |
 | `SENTRY_DSN` | *(unset)* | Enables Sentry error tracking when set |
 | `CORS_ORIGINS` | *(unset)* | Comma-separated list; CORS middleware only added when set |
 | `LOG_FILE_SINK` | *(unset)* | When set, logs also go to this file path |
@@ -124,7 +122,7 @@ Configure via `.env` (copy from `.env.example`):
 
 ### Endpoints
 
-Data endpoints require an API key via the `X-API-Key` (or `Authorization: Bearer`) header. Auth: 🔓 public · 🔑 any valid key · ✍️ `data:write` scope · 🛡️ `VOYAGER_ADMIN_KEY`. For AI agents: `/llms.txt` is the short guide, `/openapi.json` the full contract (auth schemes, enums, response schemas); errors are RFC 9457 `application/problem+json` with a stable `code`.
+Data endpoints require an API key via the `X-API-Key` (or `Authorization: Bearer`) header. Auth: 🔓 public · 🔑 any valid key (scope `data:read`). For AI agents: `/llms.txt` is the short guide, `/openapi.json` the full contract (auth schemes, enums, response schemas); errors are RFC 9457 `application/problem+json` with a stable `code`.
 
 | Endpoint | Auth | Description |
 |---|---|---|
@@ -132,74 +130,54 @@ Data endpoints require an API key via the `X-API-Key` (or `Authorization: Bearer
 | `GET /healthz` | 🔓 | Liveness probe |
 | `GET /readyz` | 🔓 | Readiness probe — 503 when the DB is unreachable |
 | `GET /metrics` | 🔓 | Prometheus metrics (default on; disable with `METRICS_ENABLED=false`) |
-| `GET /list?category=sources` | 🔑 | Available categories: `sources`, `countries`, `industries`, `sectors`, `indices` |
+| `GET /search-categories?category=sources` | 🔑 | Available categories: `sources`, `countries` |
 | `GET /search?q=relian` | 🔑 | Case-insensitive symbol search over the DB, ranked by data coverage |
 | `GET /financials?symbol=VBL` | 🔑 | Latest income + balance + cash-flow merged into one doc |
 | `GET /financials/income-statements` | 🔑 | Raw statement rows (also `balance-sheets`, `cash-flows`) |
-| `POST /pull?symbol=VBL&filing_type=quarterly` | ✍️ | Submit async pull job → `202` with `job_id` (see [Async pulls](#async-pulls)) |
-| `GET /pull?symbol=VBL` | 🔑 | Pull history, record counts, date coverage per collection |
-| `GET /pull/jobs/{job_id}` | ✍️ | Poll status of a pull job |
-| `DELETE /pull/jobs/{job_id}` | ✍️ | Cancel a queued/running job (frees its concurrency slot) |
-| `GET /pull/jobs?limit=20` | ✍️ | Recent pull jobs |
 | `GET /financial-metrics?symbol=VBL` | 🔑 | Computed metrics (this repo's core). `&fields=pe_field,roe_field` keeps only those metrics (+ identifier meta) |
 | `GET /financial-metrics/batch?symbols=VBL,TCS` | 🔑 | Same, for up to 10 symbols in one call; per-symbol errors don't fail the batch |
-| `GET /history?symbol=VBL&period=1y&interval=1d` | 🔑 | Raw OHLCV price history (daily, or intraday via `interval=5m`/`15m`/`1h`) |
+| `GET /history?symbol=VBL&period=1y&interval=1d` | 🔑 | Raw OHLCV price history (daily bars) |
+| `GET /prices/ohlcv?symbol=VBL&exchange=NSE` | 🔑 | Stored OHLCV (daily/weekly/monthly via `interval`) |
 | `GET /technicals?symbol=VBL&timeframes=daily,weekly,monthly` | 🔑 | End-to-end technical analysis report: multi-timeframe indicators, structure, patterns, levels, scenarios. Sections degrade to `unsupported` with a reason instead of failing |
 | `GET /announcements?symbol=VBL&market=equities` | 🔑 | Corporate announcements (`equities` or `sme`) |
 | `GET /shareholdings?symbol=VBL` | 🔑 | Latest promoter / FII / DII / public holding pattern |
-| `GET /admin/keys` | 🛡️ | List API keys (prefixes only — hashes never returned) |
-| `POST /admin/keys` | 🛡️ | Create a key; body `{name, owner?, scopes?, rpm?, expires_in_days?}` |
-| `DELETE /admin/keys/{prefix}` | 🛡️ | Revoke a key |
-| `POST /admin/keys/{prefix}/enable` | 🛡️ | Re-enable a revoked key |
 | `GET /news/stories?country=in` | 🔑 | Latest news stories for a market (`us`/`in`, RSS, cached) |
 | `GET /news/ticker?symbol=VBL` | 🔑 | News stories mentioning a symbol |
 | `GET /social/reddit?query=` | 🔑 | Reddit mentions for a ticker/company |
 | `GET /social/youtube/search?query=` | 🔑 | YouTube search (e.g. earnings calls) |
 | `GET /social/youtube/transcript?video_id=` | 🔑 | Captions/transcript for a video |
-| `GET /documents/index?url=` | 🔑 | PDF → PageIndex tree (parsed once, cached by URL+hash) |
 | `GET /documents/pages?url=&pages=` | 🔑 | Per-page text for selected pages of an indexed PDF (`pages=3,5-9`) |
 | `GET /llms.txt` | 🔓 | llms.txt guide for AI agents (auth, conventions, quick start) |
 
-> The advanced suite also serves `GET /technicals` (61-section technical analysis report), `GET /technicals/chart` (price chart PNG) and `GET /history` (raw OHLCV) — see the [Advanced Data Suite](#advanced-data-suite-1) tag in `/docs`.
+> The advanced suite also serves `GET /technicals` (61-section technical analysis report) and `GET /technicals/chart` (price chart PNG) — see the [Advanced Data Suite](#advanced-data-suite-1) tag in `/docs`.
 
 Financial endpoints take a single `source` query param (`source=sec` for US/EDGAR, `source=nse` for India/NSE, the default); the country is derived from the source. An unknown source returns `501`.
 
-**Not-found convention**: a symbol with no pulled data returns `200` with `"data_available": false` from metrics endpoints (so batch calls never break), while endpoints that address a single known resource (`/pull?symbol=`, `/pull/jobs/{id}`, documents) return `404`.
+**Not-found convention**: a symbol with no pulled data returns `200` with `"data_available": false` from metrics endpoints (so batch calls never break), while endpoints that address a single known resource (documents) return `404`.
 
 ```bash
 curl -H "X-API-Key: $VOYAGER_API_KEY" \
   "http://localhost:8001/financial-metrics?symbol=AAPL&source=sec"
 ```
 
-SEC pulls require `SEC_IDENTITY` (see [ENV](#environment)) and are documented in [docs/sec_integration.md](docs/sec_integration.md).
+SEC ingestion requires `SEC_IDENTITY` (see [ENV](#environment)) and is documented in [docs/sec_integration.md](docs/sec_integration.md).
 
 ### API keys
 
-Service keys are created with `/admin/keys` (guarded by `VOYAGER_ADMIN_KEY`). The raw key is returned **once**; only its SHA-256 hash and 12-char prefix are stored.
+Service keys are managed from the Streamlit admin panel (**API Keys** tab talks to the database directly). The raw key is shown **once** at creation; only its SHA-256 hash and 12-char prefix are stored.
+
+Scopes: `data:read` (all reads). Optional `rpm` rate cap (default 60 req/min, enforced with a fixed-window counter) and expiry via the panel.
+
+### Data ingestion
+
+The API is **read-only** — every DB write lives in the `src.ingest` package. Run ingests from the interactive CLI's **Ingest** section (pick it from the home menu, or jump straight in):
 
 ```bash
-# create a read-only key for your main app
-curl -X POST http://localhost:8001/admin/keys \
-  -H "X-Voyager-Admin-Key: $VOYAGER_ADMIN_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "main-app", "owner": "your-service", "scopes": ["data:read"], "rpm": 60}'
+python cli.py           # home menu → Ingest
+python cli.py --ingest  # skip the menu
 ```
 
-Scopes: `data:read` (all reads) and `data:write` (submit/list pull jobs). Optional `rpm` rate cap (default 60 req/min, enforced with a fixed-window counter in Mongo) and `expires_in_days`.
-
-### Async pulls
-
-`POST /pull` returns `202 Accepted` with a `job_id` — the XBRL download/parse runs in the background (avoids Render's 60s proxy timeout). Poll `GET /pull/jobs/{job_id}` until `status` is `done` or `failed`.
-
-```bash
-curl -X POST -H "X-API-Key: $VOYAGER_API_KEY" \
-  "http://localhost:8001/pull?symbol=VBL&filing_type=quarterly"
-# {"job_id": "...", "status": "queued", "status_url": "/pull/jobs/..."}
-
-curl -H "X-API-Key: $VOYAGER_API_KEY" "http://localhost:8001/pull/jobs/$JOB_ID"
-```
-
-Concurrency is capped (default `MAX_CONCURRENT_PULLS=2`, **per task kind**: symbol pulls and document parses each get their own slots) and stale jobs are reaped on a timer. A job that outstays `JOB_TIMEOUT_SECONDS` fails itself; a stuck job can also be cancelled explicitly with `DELETE /pull/jobs/{job_id}`. Pulls mutate the database — that's why they need `data:write`.
+Pick an item — financials / prices / news / shareholdings / documents — then choose **single symbol** or **index file** to pull in bulk from the lists in `data/indices/` (`nifty`, `midcap`, `smallcap`, `nasdaq`, `snp`). Every prompt is a numbered menu (filing type, source, exchange, refresh, and a symbol picker that lists the index files' tickers), so you never type a path or flag by hand. Rows are upserted on their natural keys, so re-running an ingest is cheap and idempotent. Unless you answer **Yes** to *refresh stored data*, a symbol pulled within the last 7 days is skipped instantly (`skipped (fresh)`) instead of re-downloaded — both the NSE and SEC paths gate before any network call. A pull reports its breakdown on one line — e.g. `957 records · 7 income 7 balance 4 cashflow`.
 
 ### Remote client CLI
 
@@ -209,7 +187,7 @@ Concurrency is capped (default `MAX_CONCURRENT_PULLS=2`, **per task kind**: symb
 pip install -r client/requirements.txt
 
 export VOYAGER_BASE_URL=https://voyager-1hpq.onrender.com
-export VOYAGER_API_KEY=vgr_...          # created via `keys create`
+export VOYAGER_API_KEY=vgr_...          # minted via the admin panel
 
 python -m client ping
 python -m client metrics VBL --filing-type ttm
@@ -218,35 +196,21 @@ python -m client statements VBL income --limit 4
 python -m client announcements VBL
 python -m client shareholdings VBL
 python -m client list-categories
-python -m client pull VBL --watch        # submit + poll until done (needs data:write)
-python -m client pull-jobs
-python -m client pull-job <job_id>      # status + endpoint breakdown
-python -m client pull-status VBL
 python -m client technicals VBL --out report.json   # end-to-end technical analysis
-```
-
-Key management needs `VOYAGER_ADMIN_KEY`:
-
-```bash
-python -m client keys create "main-app" --scopes data:read --rpm 120
-python -m client keys list-keys
-python -m client keys revoke vgr_abCdEfGh
-python -m client keys enable vgr_abCdEfGh
 ```
 
 ### Deployment (Render)
 
-This repo ships a `render.yaml` blueprint for Render. The API runs on **Read Replicas** pattern: **Render serves reads**; **pulls run locally** (`scripts/cli.py --profile atlas pull ...` or the MCP/CLI tooling) and write into the same Atlas database. This keeps the Render instance cheap and stateless.
+This repo ships a `render.yaml` blueprint for Render. The API is **read-only**: **Render serves reads**; **ingestion runs locally** via `python cli.py` → *Ingest* (see [Data ingestion](#data-ingestion)) and writes into the same Postgres database. This keeps the Render instance cheap and stateless.
 
-1. **MongoDB Atlas** — create a free M0 cluster, add a DB user, get the connection string (Driver: Python). Add the app's server IP (or `0.0.0.0/0`) to Network Access.
+1. **PostgreSQL** — Supabase (free tier) or any Postgres. Create a DB user and copy the connection string (asyncpg driver: `postgresql+asyncpg://...`). Allow the ingester's IP.
 2. **Render** — New + → Blueprint, select this repo (it auto-detects `render.yaml`), or create a Web Service manually (Docker, `./Dockerfile`, plan: free, region near your users).
 3. **Secrets** — on the Render Dashboard set:
-   - `MONGODB_URL` = your Atlas URI (e.g. `mongodb+srv://user:pass@cluster.mongodb.net/`)
-   - `VOYAGER_ADMIN_KEY` = `openssl rand -hex 32`
-   - optionally `SENTRY_DSN`, `CORS_ORIGINS`
+   - `DATABASE_URL` = your Postgres URI
+   - optionally `SENTRY_DSN`, `CORS_ORIGINS`, `SEC_IDENTITY`
 4. **Deploy** — Render builds and starts gunicorn; the health check hits `/healthz`. Verify with `curl https://<service>.onrender.com/readyz` (should return `{"ok": true}`).
 5. **Create a key for your main app** (see [API keys](#api-keys)), then put `VOYAGER_BASE_URL` + `VOYAGER_API_KEY` in your app's config.
-6. **Load data** — run pulls locally: `python scripts/cli.py --profile atlas pull VBL --filing-type quarterly` (writes into the Atlas DB that Render serves; the default `--profile local` targets a local MongoDB).
+6. **Load data** — run ingestion locally via `python cli.py` → *Ingest* (writes into the Postgres DB that Render serves).
 
 #### Monitoring
 
@@ -257,7 +221,7 @@ This repo ships a `render.yaml` blueprint for Render. The API runs on **Read Rep
 
 - `consolidated` — `true` (default) for consolidated statements, `false` for standalone, `null` for both. Periods where the issuer only filed standalone still appear under `true` — they fall back to the standalone filing, which is the whole-company picture at that time.
 - `filing_type` — `quarterly`, `annual`, or `ttm`.
-- `refresh` — on `POST /pull`, re-downloads and re-parses XBRL already in the DB.
+- `refresh` — on ingest, forces a re-download and re-parse of XBRL already in the DB.
 - `limit` — on statement endpoints, number of rows to return (0 = all).
 - `all_fields` — return every stored field instead of only priority metrics.
 

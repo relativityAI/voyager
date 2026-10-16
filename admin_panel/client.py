@@ -79,10 +79,9 @@ class VoyagerClient:
         if not self.base_url:
             raise PanelHTTPError(0, "No API endpoint configured.")
         if retries is None:
-            # Only idempotent methods may be replayed. A cold-start 502 after
-            # POST /pull or POST /admin/keys was already processed server-side,
-            # so retrying it queued a duplicate job and burned the key-creation
-            # rate limit instead of helping.
+            # Only idempotent methods may be replayed. A cold-start 502 after a
+            # POST was already processed server-side, so retrying it would
+            # duplicate work instead of helping.
             retries = 3 if method.upper() in SAFE_METHODS else 0
         headers = self._headers(admin)
         attempt = 0

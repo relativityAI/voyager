@@ -16,30 +16,6 @@ except ImportError:
     pytest.skip("Skipping API tests: import issue", allow_module_level=True)
 
 class TestDocuments:
-    def test_index_returns_tree(self):
-        tree = {
-            "url": "https://x.com/a.pdf",
-            "page_index": {"structure": []},
-            "cached": False,
-        }
-        with patch("api.index_document", new=AsyncMock(return_value=tree)):
-            resp = client.get("/documents/index?url=https://x.com/a.pdf")
-        assert resp.status_code == 200
-        assert resp.json()["page_index"] == {"structure": []}
-
-    def test_index_requires_url(self):
-        with patch("api.index_document", new=AsyncMock()) as m:
-            resp = client.get("/documents/index")
-        assert resp.status_code == 422
-        m.assert_not_awaited()
-
-    def test_index_passes_symbol_and_source(self):
-        with patch(
-            "api.index_document", new=AsyncMock(return_value={"cached": True})
-        ) as m:
-            client.get("/documents/index?url=https://x.com/a.pdf&symbol=X&source=sec")
-        m.assert_awaited_once_with("https://x.com/a.pdf", symbol="X", source="sec")
-
     def test_pages_fetches_only_requested(self):
         out = {"pages": [5, 6, 7], "text": [{"page": 5, "text": "x"}]}
         with patch(

@@ -39,7 +39,7 @@ def test_security_schemes_declared():
     assert schemes["ApiKeyHeader"]["name"] == "X-API-Key"
     assert schemes["ApiKeyHeader"]["in"] == "header"
     assert schemes["BearerAuth"]["scheme"] == "bearer"
-    assert schemes["AdminHeader"]["name"] == "X-Voyager-Admin-Key"
+    assert "AdminHeader" not in schemes
 
 
 def test_every_operation_declares_security():
@@ -100,12 +100,9 @@ def test_enums_are_in_the_spec():
         "annual",
         "ttm",
     ]
-    assert param("/list", "get", "category")["schema"]["enum"] == [
+    assert param("/search-categories", "get", "category")["schema"]["enum"] == [
         "sources",
         "countries",
-        "industries",
-        "sectors",
-        "indices",
     ]
     assert param("/history", "get", "period")["schema"]["enum"] == [
         "3mo",
@@ -159,7 +156,7 @@ def test_422_lists_bad_fields(client):
 
 
 def test_service_error_501_is_problem_shaped(client):
-    resp = client.get("/list", params={"category": "sources", "source": "bogus"})
+    resp = client.get("/search-categories", params={"category": "sources", "source": "bogus"})
     assert resp.status_code == 501
     body = resp.json()
     assert body["code"] == "unsupported_source"

@@ -24,7 +24,7 @@ def _doc(model, period_end_date, **fields):
 
 
 def test_list_sources_endpoint(client):
-    resp = client.get("/list", params={"category": "sources", "source": "nse"})
+    resp = client.get("/search-categories", params={"category": "sources", "source": "nse"})
     assert resp.status_code == 200
     body = resp.json()
     assert body["source"] == "NSE"
@@ -33,20 +33,20 @@ def test_list_sources_endpoint(client):
 
 
 def test_list_countries_endpoint(client):
-    resp = client.get("/list", params={"category": "countries", "source": "nse"})
+    resp = client.get("/search-categories", params={"category": "countries", "source": "nse"})
     assert resp.status_code == 200
     assert resp.json()["category"] == "countries"
 
 
 def test_list_unsupported_category(client):
-    resp = client.get("/list", params={"category": "bogus", "source": "nse"})
+    resp = client.get("/search-categories", params={"category": "bogus", "source": "nse"})
     # category is a spec enum now: FastAPI validates it -> 422 problem+json
     assert resp.status_code == 422
     assert resp.json()["code"] == "validation_error"
 
 
 def test_list_wrong_source_for_country(client):
-    resp = client.get("/list", params={"category": "sources", "source": "bogus"})
+    resp = client.get("/search-categories", params={"category": "sources", "source": "bogus"})
     assert resp.status_code == 501
 
 

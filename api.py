@@ -21,8 +21,7 @@ from loguru import logger
 from starlette.middleware.gzip import GZipMiddleware
 
 from __version__ import __version__
-from src.auth import APIKey, require_api_key, require_scope
-from src.auth.routes import router as admin_router
+from src.auth import APIKey, require_api_key
 from src.db.engine import init_db, ping_database
 from src.logging_config import setup_logging
 from src.observability import (
@@ -36,7 +35,6 @@ from src.schemas import (
     Announcements,
     Doc,
     HistoryResponse,
-    KeyPublic,
     ListResponse,
     MacroConstituents,
     MacroDerivatives,
@@ -57,16 +55,12 @@ from src.schemas import (
 from src.services import (
     InvalidRequestError,
     ServiceError,
-    download_and_store,
     financial_metrics,
     get_announcements,
     get_financials,
     get_news_stories,
     get_price_history,
-    get_pull_status,
     get_reddit,
-    pull_nse_data,
-    pull_sec_data,
     get_shareholdings,
     get_statement_data,
     get_ticker_mentions,
@@ -90,7 +84,7 @@ from src.services import (
     search_symbols,
 )
 from src.services._common import _validate_source
-from src.services.documents import index_document, read_document_pages
+from src.services.documents import read_document_pages
 from src.services.technical_report import build_technical_report
 
 # Shared query-copy so every route describes the same parameter the same way
@@ -120,9 +114,8 @@ openapi_tags = [
     {"name": "Financials", "description": "Financial statements and computed financial metrics."},
     {"name": "Macro", "description": "India macro market endpoints: index universe, valuations, flows, turnover, F&O and rates."},
     {"name": "Corporate Actions", "description": "Corporate announcements and shareholding patterns."},
-    {"name": "Download Data", "description": "Download raw data from the exchange and track async download jobs."},
+    {"name": "Price", "description": "OHLCV price history and technical analysis."},
     {"name": "Advanced Data Suite", "description": "News, social signals and document structuring."},
-    {"name": "Admin", "description": "API key management (guarded by VOYAGER_ADMIN_KEY)."},
 ]
 
 def _encode_cursor(offset: int) -> str:
@@ -164,7 +157,7 @@ def _apply_openapi_overrides():
 
 
 agent_guide = """\
-**Auth:** `X-API-Key: <key>` or `Authorization: Bearer <key>` (scopes `data:read`, `data:write`). Admin routes use `X-Voyager-Admin-Key`.
+**Auth:** `X-API-Key: <key>` or `Authorization: Bearer <key>` (scope `data:read`).
 
 **Errors:** RFC 9457 `application/problem+json` — `detail` (human-readable string), `code` (stable machine token), `retry` + `retry_after_seconds` when waiting may help. Validation failures (422) list each bad field in `errors`.
 
@@ -172,7 +165,7 @@ agent_guide = """\
 
 **Consolidation fallback:** `consolidated=true` returns consolidated statements, except for periods where the issuer only filed standalone — those fall back to the standalone filing, the whole-company picture at that time. Charts from this data are therefore continuous even when an issuer's reporting basis changes mid-history.
 
-**Async downloads:** `POST /pull` returns `202 {job_id, status_url}`; poll `status_url` until `status` is `done` or `failed`.\
+**Ingestion:** the API is read-only. Data gets into the DB via the `voyager ingest` CLI (financials / prices / news / shareholdings / documents), meant for cron.\
 """
 
 app = FastAPI(
@@ -273,8 +266,6 @@ app.add_middleware(_EnvelopeMiddleware)
 app.add_middleware(PrometheusMiddleware)
 app.add_middleware(HttpCacheMiddleware)
 app.add_middleware(GZipMiddleware)
-
-app.include_router(admin_router)
 
 
 # --- RFC 9457 problem responses ---------------------------------------------
@@ -426,9 +417,7 @@ _PROBLEM_SCHEMA = {
 
 def _walk_auth(dependant, found: list) -> None:
     qn = getattr(dependant.call, "__qualname__", "") or ""
-    if qn == "require_admin_key":
-        req = [{"AdminHeader": []}]
-    elif qn.startswith(("require_api_key", "get_current_api_key", "require_scope")):
+    if qn.startswith(("require_api_key", "get_current_api_key")):
         req = [{"ApiKeyHeader": []}, {"BearerAuth": []}]
     else:
         req = None
@@ -452,7 +441,7 @@ _RESPONSE_MODELS = {
     ("GET", "/readyz"): OkResponse,
     ("GET", "/metrics"): OkResponse,
     ("GET", "/llms.txt"): {"type": "string", "description": "llms.txt agent guide"},
-    ("GET", "/list"): ListResponse,
+    ("GET", "/search-categories"): ListResponse,
     ("GET", "/search-symbol"): SearchResponse,
     ("GET", "/financials"): Snapshot,
     ("GET", "/financials/income-statements"): StatementPage,
@@ -461,9 +450,6 @@ _RESPONSE_MODELS = {
 
     ("GET", "/history"): HistoryResponse,
     ("GET", "/prices/ohlcv"): Snapshot,
-    ("GET", "/download-financials"): Snapshot,
-    ("POST", "/download-financials"): Snapshot,
-    ("POST", "/download-prices"): Snapshot,
     ("GET", "/technicals"): Snapshot,
     ("GET", "/technicals/chart"): {
         "type": "string",
@@ -490,18 +476,10 @@ _RESPONSE_MODELS = {
     ("GET", "/shareholdings"): Snapshot,
     ("GET", "/news/stories"): Doc,
     ("GET", "/news/ticker"): Doc,
-    ("GET", "/documents/index"): Doc,
     ("GET", "/documents/pages"): Doc,
     ("GET", "/social/reddit"): Doc,
     ("GET", "/social/youtube/search"): Doc,
     ("GET", "/social/youtube/transcript"): Doc,
-    ("GET", "/admin/keys"): {
-        "type": "array",
-        "items": {"$ref": "#/components/schemas/KeyPublic"},
-    },
-    ("GET", "/admin/keys/{key_id}"): KeyPublic,
-    ("DELETE", "/admin/keys/{key_id}"): KeyPublic,
-    ("POST", "/admin/keys/{key_id}/enable"): KeyPublic,
 }
 
 _openapi_base = app.openapi
@@ -520,12 +498,6 @@ def _custom_openapi():
             "description": "Service API key (the same key is also accepted as Bearer).",
         },
         "BearerAuth": {"type": "http", "scheme": "bearer"},
-        "AdminHeader": {
-            "type": "apiKey",
-            "in": "header",
-            "name": "X-Voyager-Admin-Key",
-            "description": "Server-side VOYAGER_ADMIN_KEY; admin key management only.",
-        },
     }
     schemas = comps.setdefault("schemas", {})
 
@@ -650,8 +622,7 @@ OpenAPI spec, then this page for conventions.
 
 ## Auth
 
-- Data endpoints: `X-API-Key: <key>` or `Authorization: Bearer <key>` (scopes `data:read`, `data:write`).
-- Admin key management: `X-Voyager-Admin-Key` (not covered here; see OpenAPI).
+- Data endpoints: `X-API-Key: <key>` or `Authorization: Bearer <key>` (scope `data:read`).
 
 ## Conventions
 
@@ -667,11 +638,11 @@ OpenAPI spec, then this page for conventions.
 ## Endpoints
 
 Data endpoints require an API key (see Auth). Grouped by OpenAPI tag. The
-`Data Pulls` and `Admin` groups are intentionally omitted here.
+The `Price` group is intentionally omitted here.
 
 ### Lists
 
-- `GET /list?category=sources|countries|industries|sectors|indices&source=nse` — enumerate available categories.
+- `GET /search-categories?category=sources|countries&source=nse` — enumerate available categories.
 - `GET /search?q=relian&source=nse&limit=20` — case-insensitive symbol search against the stored universe.
 
 ### Financials
@@ -719,7 +690,7 @@ window is always returned in full.
 - `GET /news/ticker?symbol=X` — news stories mentioning a stock.
 - `GET /social/reddit?symbol=X` · `GET /social/youtube/search?symbol=X` — mention search.
 - `GET /social/youtube/transcript?video_id=Y` — YouTube captions.
-- `GET /documents/index?url=` — PDF → PageIndex tree + per-page `text` (parsed once, cached by URL+hash).
+- `GET /documents/pages?url=&pages=3,5-9` — per-page text of a PDF previously cached by `voyager ingest documents <url>`.
 
 ### System
 
@@ -744,13 +715,13 @@ def llms_txt():
 
 
 @app.get(
-    "/list",
+    "/search-categories",
     summary="List available categories",
     tags=["Explore"],
     dependencies=[Depends(require_api_key)],
 )
-def list_category_endpoint(
-    category: Literal["sources", "countries", "industries", "sectors", "indices"] = Query(
+def search_categories_endpoint(
+    category: Literal["sources", "countries"] = Query(
         "sources",
         description="Category to enumerate",
     ),
@@ -761,7 +732,7 @@ def list_category_endpoint(
 
 @app.get(
     "/search-symbol",
-    summary="Search symbols stored in the DB (case-insensitive substring match)",
+    summary="Search symbols stored in the DB (case-insensitive substring match, scoped to source market)",
     tags=["Explore"],
     dependencies=[Depends(require_api_key)],
 )
@@ -941,46 +912,10 @@ async def financials_cash_flows(
     )
 
 
-@app.post(
-    "/download-financials",
-    summary="Download raw stock data from exchange into DB",
-    tags=["Download Data"],
-)
-async def financials_pull(
-    symbol: str = Query(..., description=_SYM),
-    key: APIKey = Depends(require_scope("data:write")),
-    source: str = Query("nse", description=_SRC),
-    filing_type: Literal["quarterly", "annual"] = Query(
-        "quarterly", description=_QA
-    ),
-    refresh: bool = Query(
-        False, description="Re-download and re-parse XBRL already present in the DB"
-    ),
-):
-    symbol = symbol.upper()
-    country, source = _validate_source(None, source)
-    if source == "SEC":
-        return await pull_sec_data(symbol, filing_type, refresh)
-    return await pull_nse_data(symbol, filing_type, refresh)
-
-
-@app.get(
-    "/download-financials",
-    summary="Get download status and data availability for a stock",
-    tags=["Download Data"],
-    dependencies=[Depends(require_api_key)],
-)
-async def financials_pull_status(
-    symbol: str = Query(..., description=_SYM),
-    source: str = Query("nse", description=_SRC),
-):
-    return await get_pull_status(symbol, None, source)
-
-
 @app.get(
     "/history",
     summary="Raw OHLCV price history (daily, or intraday via interval)",
-    tags=["Advanced Data Suite"],
+    tags=["Price"],
     dependencies=[Depends(require_api_key)],
 )
 async def price_history(
@@ -1031,7 +966,7 @@ async def price_history(
         "multi-timeframe indicators, raw OHLCV, structure, patterns, "
         "levels and scenarios"
     ),
-    tags=["Advanced Data Suite"],
+    tags=["Price"],
     dependencies=[Depends(require_api_key)],
 )
 async def technicals_report(
@@ -1058,7 +993,7 @@ async def technicals_report(
 @app.get(
     "/technicals/chart",
     summary="Weekly/daily price chart PNG (close + SMA20/50/200 + volume)",
-    tags=["Advanced Data Suite"],
+    tags=["Price"],
     dependencies=[Depends(require_api_key)],
 )
 async def technicals_chart(
@@ -1237,27 +1172,13 @@ async def news_ticker(
 
 
 @app.get(
-    "/documents/index",
-    summary="Index a PDF (URL or local path): parse once, cache, return the PageIndex tree",
-    tags=["Advanced Data Suite"],
-    dependencies=[Depends(require_api_key)],
-)
-async def documents_index(
-    url: str = Query(..., description="PDF URL or local path"),
-    symbol: str = Query(None),
-    source: str = Query("nse"),
-):
-    return await index_document(url, symbol=symbol, source=source)
-
-
-@app.get(
     "/documents/pages",
     summary="Per-page text for selected pages of an indexed PDF (e.g. pages=3,5-9)",
     tags=["Advanced Data Suite"],
     dependencies=[Depends(require_api_key)],
 )
 async def documents_pages(
-    url: str = Query(..., description="PDF URL or local path (same as /documents/index)"),
+    url: str = Query(..., description="PDF URL or local path"),
     pages: str = Query(..., description='1-based page spec, e.g. "3,5-9" or "1-3,7"'),
     symbol: str = Query(None),
     source: str = Query("nse"),
@@ -1478,7 +1399,7 @@ async def macro_rates_endpoint(country: str = _COUNTRY):
 @app.get(
     "/prices/ohlcv",
     summary="OHLCV price history from DB (stored via yfinance)",
-    tags=["Advanced Data Suite"],
+    tags=["Price"],
     dependencies=[Depends(require_api_key)],
 )
 async def prices_ohlcv(
@@ -1492,22 +1413,6 @@ async def prices_ohlcv(
     offset: int = Query(0, ge=0),
 ):
     return await get_price_history(symbol.upper(), exchange.upper(), country, start_date, end_date, interval, limit, offset)
-
-
-@app.post(
-    "/download-prices",
-    summary="Download OHLCV from yfinance and store in DB",
-    tags=["Download Data"],
-    dependencies=[Depends(require_scope("data:write"))],
-)
-async def prices_ohlcv_download(
-    symbol: str = Query(..., description=_SYM),
-    exchange: str = Query(..., description="Real exchange name: 'NSE', 'BSE', 'NYSE', 'NASDAQ'"),
-    country: str = Query(..., description="ISO-3166 alpha-2: 'IN' or 'US'"),
-    period: Literal["3mo", "6mo", "1y", "2y", "5y", "10y", "max"] = Query("max"),
-    interval: Literal["1d", "1wk", "1mo"] = Query("1d"),
-):
-    return await download_and_store(symbol.upper(), exchange.upper(), country.upper(), period, interval)
 
 
 _apply_openapi_overrides()

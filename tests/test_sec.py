@@ -1,4 +1,4 @@
-"""Unit tests for the SEC service's pure data-shaping helpers.
+"""Unit tests for the SEC ingestion pipeline's pure data-shaping helpers.
 
 These avoid EDGAR/network and the DB entirely.
 """
@@ -6,13 +6,13 @@ These avoid EDGAR/network and the DB entirely.
 import pandas as pd
 import pytest
 
-from src.services.sec import (
-    _DEFAULT_IDENTITY,
+from src.ingest.sec import (
     _diff_cumulative,
     _fiscal_period,
     _period_to_date,
     _q4_rows,
 )
+from src.services.sec import _DEFAULT_IDENTITY
 
 _INCOME = ["us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax"]
 _OCF = ["us-gaap_NetCashProvidedByUsedInOperatingActivities"]

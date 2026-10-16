@@ -4,27 +4,36 @@ Voyager ships two command-line tools. Each has its own tutorial:
 
 | Tool | What it does | Run it with | Tutorial |
 | --- | --- | --- | --- |
-| Local CLI | Reads/writes MongoDB directly (dev + data pulling) | `python scripts/cli.py ...` | [01-local-cli.md](01-local-cli.md) |
-| Remote client | Talks to a deployed Voyager API over HTTPS | `python -m client ...` | [02-client-cli.md](02-client-cli.md) |
+| API CLI | Interactive explorer for a deployed Voyager API | `python cli.py ...` | below |
+| Remote client | Python client library + Typer CLI for the deployed API | `python -m client ...` | [02-client-cli.md](02-client-cli.md) |
+
+## API CLI
+
+`cli.py` at the repo root reads your API key from `.env`, fetches the OpenAPI
+spec, and lets you pick endpoints interactively, fill in args, and render
+results with rich. Read-only — the API has no write endpoints.
+
+```bash
+python cli.py                              # interactive mode
+python cli.py --url http://localhost:8001
+```
 
 ## Which one should I use?
 
-- **You want to pull data into a database** (local MongoDB or Atlas) → **Local CLI**. It runs the scrapers/parsers against the DB you point it at.
-- **You want to query a deployed, read-only API** → **Remote client**. It only makes authenticated HTTP calls.
+- **You want to query a deployed, read-only API** → either tool. The API CLI is
+  the quick interactive explorer; the remote client is the programmatic one.
+- **You want to ingest data** → ingestion runs via `src.ingest` (package) and
+  the admin panel; the HTTP API is read-only.
 
 ## Quick cheat sheet
 
 ```bash
-# Local CLI — pull + inspect data (needs a MongoDB)
-python scripts/cli.py pull VBL --filing-type quarterly
-python scripts/cli.py pull-status VBL
-python scripts/cli.py metrics VBL --filing-type ttm
-python scripts/cli.py financials merged VBL
+# API CLI — interactive exploration (needs VOYAGER_API_KEY in .env)
+python cli.py
 
 # Remote client — query the deployed API (needs base URL + API key)
 export VOYAGER_BASE_URL=https://voyager-1hpq.onrender.com
 export VOYAGER_API_KEY="vgr_..."
 python -m client ping
 python -m client metrics VBL --filing-type ttm
-python -m client pull VBL --no-watch        # needs data:write scope
 ```

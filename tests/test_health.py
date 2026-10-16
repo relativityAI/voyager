@@ -65,17 +65,13 @@ def test_protected_endpoint_requires_key(plain_client, no_auth_override):
     assert resp.status_code == 401
 
 
-def test_admin_keys_requires_admin_header(plain_client, no_auth_override):
-    resp = plain_client.get("/admin/keys")
-    assert resp.status_code == 401
-
-
-def test_admin_keys_wrong_admin_header(plain_client, no_auth_override):
-    resp = plain_client.get("/admin/keys", headers={"X-Voyager-Admin-Key": "wrong"})
-    assert resp.status_code == 401
+def test_admin_routes_removed(plain_client, no_auth_override):
+    # Key management is CLI-only; the HTTP admin router is gone.
+    assert plain_client.get("/admin/keys").status_code == 404
+    assert plain_client.get("/admin/keys", headers={"X-Voyager-Admin-Key": "wrong"}).status_code == 404
 
 
 def test_keyed_endpoint_works_with_valid_key(client):
-    resp = client.get("/list", params={"category": "sources"})
+    resp = client.get("/search-categories", params={"category": "sources"})
     assert resp.status_code == 200
     assert resp.json()["category"] == "sources"

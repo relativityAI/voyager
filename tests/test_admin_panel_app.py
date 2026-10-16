@@ -106,46 +106,62 @@ def test_playground_history_records_the_request(tmp_path, monkeypatch):
 # --- the lost-API-key bug ----------------------------------------------------
 
 
-def test_created_key_stays_until_dismissed(tmp_path, monkeypatch):
-    _with_admin_key(monkeypatch)
-    at, calls = _app(
-        tmp_path, "keys", monkeypatch,
-        [_ok({"key": "vgr_secretvalue", "label": None, "created_at": "2026-01-01"})],
-    )
+class _FakeKeysDB:
+    """Stands in for admin_panel.pages.keys.keys_db (the page never opens HTTP)."""
+
+    calls = {"list": 0}
+    created = None
+
+    @staticmethod
+    def connect(url):
+        return object()
+
+    @staticmethod
+    def list_keys(engine):
+        _FakeKeysDB.calls["list"] += 1
+        return [{
+            "name": "a", "prefix": "vgr_aaaaaaaaaaaa", "scopes": ["data:read"],
+            "rpm": 60, "enabled": True, "expires_at": None, "last_used_at": None,
+            "created_at": "2026-01-01", "owner": "", "revoked_at": None,
+        }]
+
+    @staticmethod
+    def create_key(engine, *, name, owner, label, scopes, rpm, expires_in_days):
+        _FakeKeysDB.created = {"name": name, "scopes": scopes, "rpm": rpm}
+        return {"id": 1, "prefix": "vgr_secretval"}, "vgr_secretvalue"
+
+
+@pytest.fixture
+def _keys_db(monkeypatch):
+    _FakeKeysDB.calls["list"] = 0
+    _FakeKeysDB.created = None
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg2://fake")
+    monkeypatch.setattr("admin_panel.pages.keys.keys_db", _FakeKeysDB)
+
+
+def test_created_key_shown_once_after_create(_keys_db, tmp_path, monkeypatch):
+    at, _ = _app(tmp_path, "keys", monkeypatch, [])
     at.run()
     at.text_input(key="key_name").set_value("my-app").run()
     at.button[0].click().run()  # ➕ Create key
     assert not at.exception
     assert any("vgr_secretvalue" in c.value for c in at.code), "raw key not shown"
+    assert _FakeKeysDB.created is not None, "create_key was never called"
+    assert _FakeKeysDB.created["scopes"] == ["data:read"]
 
-    # Any other interaction must not lose it.
+    # No HTTP involved: the create went to the DB adapter, not the API client.
     at.text_input(key="key_owner").set_value("team").run()
-    assert any("vgr_secretvalue" in c.value for c in at.code), (
-        "raw API key was destroyed before it could be copied"
-    )
-
-    # POST /admin/keys must never be retried: the server already created it.
-    # None is fine — it means the page didn't ask, so the client's
-    # method-aware default (0 for writes) applies.
-    posts = [c for c in calls if c[0] == "POST"]
-    assert len(posts) == 1, f"expected exactly one create, got {len(posts)}"
-    assert posts[0][5] in (None, 0), "key creation was sent with retries enabled"
+    assert not at.exception
 
 
-def test_revoked_key_list_reloads_only_on_demand(tmp_path, monkeypatch):
-    _with_admin_key(monkeypatch)
-    at, calls = _app(
-        tmp_path, "keys", monkeypatch,
-        [_ok([{"name": "a", "prefix": "vgr_aaaaaaaaaaaa", "scopes": ["data:read"],
-               "rpm": 60, "enabled": True, "expires_at": None, "last_used_at": None,
-               "created_at": "2026-01-01", "owner": "", "revoked_at": None}])],
-    )
+def test_key_list_reloads_only_on_demand(_keys_db, tmp_path, monkeypatch):
+    at, _ = _app(tmp_path, "keys", monkeypatch, [])
     at.run()
-    assert len(calls) == 1, "expected a single admin call on first render"
+    assert _FakeKeysDB.calls["list"] == 1, "expected a single list call on first render"
 
-    # Rerunning with no interaction must not re-issue the admin call.
+    # Rerunning with no interaction must not re-issue the list call.
     at.run()
-    assert len(calls) == 1, "GET /admin/keys fired again on a bare rerun"
+    assert _FakeKeysDB.calls["list"] == 1, "list_keys fired again on a bare rerun"
 
 
 # --- retries ----------------------------------------------------------------

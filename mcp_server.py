@@ -2,17 +2,19 @@
 
 Single source of truth: src/services/. FastAPI routes and MCP tools both
 call the same functions — edit services once, both interfaces update.
+Read-only: data ingestion lives in ``src.ingest`` and runs via the CLI.
 """
 import os
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 
 load_dotenv()
 
+from src.db.engine import init_db
 from src.logging_config import setup_logging
 from src.services import (
-    download_and_store,
     financial_metrics,
     get_announcements,
     get_financials,
@@ -39,8 +41,6 @@ from src.services import (
     macro_overview,
     macro_rates,
     macro_turnover,
-    pull_nse_data,
-    pull_sec_data,
     search_symbols,
 )
 from src.services.documents import read_document
@@ -48,7 +48,14 @@ from src.services.technical_report import build_technical_report
 
 setup_logging()
 
-mcp = FastMCP("voyager")
+
+@asynccontextmanager
+async def _lifespan(mcp):
+    await init_db()
+    yield
+
+
+mcp = FastMCP("voyager", lifespan=_lifespan)
 
 
 @mcp.tool()
@@ -526,34 +533,6 @@ async def read_document(
 
 
 @mcp.tool()
-async def pull_nse_data(
-    symbol: str, filing_type: str | None = None, refresh: bool = False
-) -> dict:
-    """Pull raw data from NSE into the DB (async job).
-
-    Args:
-        symbol: Exchange ticker in UPPER CASE.
-        filing_type: 'integrated-filing', 'quarterly-results', 'annual-results', 'shareholding-pattern', or None for all.
-        refresh: Re-pull even if data exists.
-    """
-    return await pull_nse_data(symbol, filing_type, refresh)
-
-
-@mcp.tool()
-async def pull_sec_data(
-    symbol: str, filing_type: str | None = None, refresh: bool = False
-) -> dict:
-    """Pull 10-K/10-Q XBRL from SEC into the DB (async job).
-
-    Args:
-        symbol: Exchange ticker in UPPER CASE.
-        filing_type: Specific form type, or None for all.
-        refresh: Re-pull even if data exists.
-    """
-    return await pull_sec_data(symbol, filing_type, refresh)
-
-
-@mcp.tool()
 async def get_price_history(
     symbol: str,
     exchange: str,
@@ -577,27 +556,6 @@ async def get_price_history(
         offset: Rows to skip (pagination).
     """
     return await get_price_history(symbol, exchange, country, start_date, end_date, interval, limit, offset)
-
-
-@mcp.tool()
-async def download_price_history(
-    symbol: str,
-    exchange: str,
-    country: str,
-    period: str = "max",
-    interval: str = "1d",
-) -> dict:
-    """Download OHLCV from yfinance and store in DB.
-
-    Args:
-        symbol: Exchange ticker in UPPER CASE.
-        exchange: Real exchange name: 'NSE', 'BSE', 'NYSE', 'NASDAQ'.
-        country: ISO-3166 alpha-2: 'IN' or 'US'.
-        period: '3mo', '6mo', '1y', '2y', '5y', '10y', or 'max' (default).
-        interval: '1d' (default), '1wk', or '1mo'.
-    """
-    import asyncio
-    return await asyncio.to_thread(download_and_store, symbol, exchange, country, period, interval)
 
 
 if __name__ == "__main__":

@@ -107,9 +107,9 @@ LIST: List[Endpoint] = [
         "name": "List categories",
         "group": "Explore",
         "method": "GET",
-        "path": "/list",
+        "path": "/search-categories",
         "auth": "key",
-        "description": "Available sources / countries / industries / sectors / indices.",
+        "description": "Available sources / countries.",
         "params": [
             {
                 "name": "category",
@@ -289,54 +289,12 @@ DATA: List[Endpoint] = [
         "description": "All shareholding periods, newest first (promoter / FII / DII / public, NSE); US insider-ownership schema (SEC).",
         "params": _symbol_params(),
     },
-    {
-        "name": "Download status",
-        "group": "Download Data",
-        "method": "GET",
-        "path": "/download-financials",
-        "auth": "key",
-        "description": "Download status and data availability for a stock.",
-        "params": _symbol_params(),
-    },
-    {
-        "name": "Download financials",
-        "group": "Download Data",
-        "method": "POST",
-        "path": "/download-financials",
-        "auth": "write",
-        "description": "Fetch raw statements from the exchange (NSE) or EDGAR (SEC) into the DB.",
-        "params": _symbol_params()
-        + [
-            {
-                "name": "filing_type",
-                "type": "select",
-                "default": "quarterly",
-                "options": ["quarterly", "annual"],
-            },
-            {"name": "refresh", "type": "bool", "default": False},
-        ],
-    },
-    {
-        "name": "Download prices",
-        "group": "Download Data",
-        "method": "POST",
-        "path": "/download-prices",
-        "auth": "write",
-        "description": "Download OHLCV from yfinance and store in the DB.",
-        "params": [
-            {"name": "symbol", "type": "symbol", "required": True},
-            {"name": "exchange", "type": "text", "required": True, "help": "Real exchange name: NSE, BSE, NYSE, NASDAQ"},
-            {"name": "country", "type": "select", "default": "in", "options": ["in", "us"]},
-            {"name": "period", "type": "select", "default": "max", "options": ["3mo", "6mo", "1y", "2y", "5y", "10y", "max"]},
-            {"name": "interval", "type": "select", "default": "1d", "options": ["1d", "1wk", "1mo"]},
-        ],
-    },
 ]
 
 ADVANCED: List[Endpoint] = [
     {
         "name": "Technicals report",
-        "group": "Advanced Data Suite",
+        "group": "Price",
         "method": "GET",
         "path": "/technicals",
         "auth": "key",
@@ -353,7 +311,7 @@ ADVANCED: List[Endpoint] = [
     },
     {
         "name": "Technicals chart (PNG)",
-        "group": "Advanced Data Suite",
+        "group": "Price",
         "method": "GET",
         "path": "/technicals/chart",
         "auth": "key",
@@ -366,7 +324,7 @@ ADVANCED: List[Endpoint] = [
     },
     {
         "name": "Price history (OHLCV)",
-        "group": "Advanced Data Suite",
+        "group": "Price",
         "method": "GET",
         "path": "/history",
         "auth": "key",
@@ -389,7 +347,7 @@ ADVANCED: List[Endpoint] = [
     },
     {
         "name": "Stored prices (OHLCV)",
-        "group": "Advanced Data Suite",
+        "group": "Price",
         "method": "GET",
         "path": "/prices/ohlcv",
         "auth": "key",
@@ -442,41 +400,18 @@ ADVANCED: List[Endpoint] = [
         ],
     },
     {
-        "name": "Read document",
+        "name": "Document pages",
         "group": "Advanced Data Suite",
         "method": "GET",
-        "path": "/documents/index",
+        "path": "/documents/pages",
         "auth": "key",
-        "description": "Index a PDF (URL or local path): parse once, cache, return the PageIndex tree.",
+        "description": "Per-page text for selected pages of a PDF previously cached via the ingest tooling.",
         "params": [
             {
                 "name": "url",
                 "type": "text",
                 "required": True,
                 "help": "PDF URL or local path.",
-            },
-            {"name": "symbol", "type": "symbol", "default": ""},
-            {
-                "name": "source",
-                "type": "select",
-                "default": "nse",
-                "options": ["nse", "sec"],
-            },
-        ],
-    },
-    {
-        "name": "Document pages",
-        "group": "Advanced Data Suite",
-        "method": "GET",
-        "path": "/documents/pages",
-        "auth": "key",
-        "description": "Per-page text for selected pages of an indexed PDF.",
-        "params": [
-            {
-                "name": "url",
-                "type": "text",
-                "required": True,
-                "help": "PDF URL or local path (same as /documents/index).",
             },
             {
                 "name": "pages",
@@ -708,80 +643,12 @@ MACRO: List[Endpoint] = [
     },
 ]
 
-ADMIN: List[Endpoint] = [
-    {
-        "name": "Create API key",
-        "group": "API keys",
-        "method": "POST",
-        "path": "/admin/keys",
-        "auth": "admin",
-        "description": "Create a service key. Raw key is returned once only.",
-        "body": {
-            "name": "my-app",
-            "owner": "service",
-            "scopes": ["data:read"],
-            "rpm": 60,
-            "expires_in_days": None,
-        },
-    },
-    {
-        "name": "List API keys",
-        "group": "API keys",
-        "method": "GET",
-        "path": "/admin/keys",
-        "auth": "admin",
-        "description": "List keys (prefixes only — hashes never returned).",
-    },
-    {
-        "name": "Get API key",
-        "group": "API keys",
-        "method": "GET",
-        "path": "/admin/keys/{key_id}",
-        "auth": "admin",
-        "description": "One key by prefix (hash never returned).",
-        "params": [
-            {
-                "name": "key_id",
-                "type": "text",
-                "required": True,
-                "in_path": True,
-                "help": "The vgr_… prefix shown in the keys table.",
-            }
-        ],
-    },
-    {
-        "name": "Revoke API key",
-        "group": "API keys",
-        "method": "DELETE",
-        "path": "/admin/keys/{prefix}",
-        "auth": "admin",
-        "params": [
-            {
-                "name": "prefix",
-                "type": "text",
-                "required": True,
-                "in_path": True,
-                "help": "The vgr_… prefix shown in the keys table.",
-            }
-        ],
-    },
-    {
-        "name": "Enable API key",
-        "group": "API keys",
-        "method": "POST",
-        "path": "/admin/keys/{prefix}/enable",
-        "auth": "admin",
-        "params": [
-            {"name": "prefix", "type": "text", "required": True, "in_path": True}
-        ],
-    },
-]
+# API-key management has no HTTP routes; the panel's API Keys tab
+# talks to the DB directly.
 
-ALL_ENDPOINTS: List[Endpoint] = PUBLIC + LIST + DATA + ADVANCED + MACRO + ADMIN
+ALL_ENDPOINTS: List[Endpoint] = PUBLIC + LIST + DATA + ADVANCED + MACRO
 
 AUTH_LABELS = {
     "public": "public",
     "key": "key",
-    "write": "data:write",
-    "admin": "admin key",
 }

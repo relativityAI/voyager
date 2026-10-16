@@ -23,16 +23,7 @@ class VoyagerClient:
     def __init__(self, config: Config):
         self.base_url = config.base_url
         self.api_key = config.api_key
-        self.admin_key = config.admin_key
         self.session = requests.Session()
-
-    def _headers(self, admin: bool) -> dict:
-        headers = {"Accept": "application/json"}
-        if admin:
-            headers["X-Voyager-Admin-Key"] = self.admin_key
-        elif self.api_key:
-            headers["X-API-Key"] = self.api_key
-        return headers
 
     def request(
         self,
@@ -40,14 +31,11 @@ class VoyagerClient:
         path: str,
         params: Optional[dict] = None,
         json: Optional[dict] = None,
-        admin: bool = False,
         ok_status: tuple = (200, 201, 202),
     ) -> Any:
         if not self.base_url:
             raise VoyagerError(0, "No base URL configured. Set VOYAGER_BASE_URL.")
-        if admin and not self.admin_key:
-            raise VoyagerError(0, "No admin key configured. Set VOYAGER_ADMIN_KEY.")
-        if not admin and not self.api_key:
+        if not self.api_key:
             raise VoyagerError(0, "No API key configured. Set VOYAGER_API_KEY.")
 
         resp = self.session.request(
@@ -55,7 +43,7 @@ class VoyagerClient:
             f"{self.base_url}{path}",
             params=params,
             json=json,
-            headers=self._headers(admin),
+            headers={"Accept": "application/json", "X-API-Key": self.api_key},
             timeout=DEFAULT_TIMEOUT,
         )
         if resp.status_code not in ok_status:

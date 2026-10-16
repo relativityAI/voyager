@@ -230,7 +230,6 @@ def metrics_field_coverage(engine) -> List[dict]:
 @safe
 def job_stats(engine) -> dict:
     return {"error": "Job subsystem removed"}
-    }
 
 
 @safe

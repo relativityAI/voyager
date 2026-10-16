@@ -8,7 +8,7 @@ came back null.
 
 import pandas as pd
 
-from src.services import sec
+from src.ingest import sec
 
 DA = "us-gaap_Depreciation"
 DA_INTANGIBLES = "us-gaap_AmortizationOfIntangibleAssets"

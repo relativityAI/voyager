@@ -36,7 +36,7 @@ def test_agent_action_on_404():
 
 
 def test_agent_action_on_422(plain_client):
-    resp = plain_client.get("/list", params={"category": "bogus", "source": "nse"})
+    resp = plain_client.get("/search-categories", params={"category": "bogus", "source": "nse"})
     assert resp.status_code == 422
     assert resp.json()["agent_action"] == "reduce_scope"
 

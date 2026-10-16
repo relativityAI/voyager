@@ -3,11 +3,9 @@
 Configuration (env vars or root flags):
     VOYAGER_BASE_URL   e.g. https://voyager-api.onrender.com
     VOYAGER_API_KEY    the service API key (data:read)
-    VOYAGER_ADMIN_KEY  the admin key (only for `keys` commands)
 
 Example:
     python -m client --base-url https://voyager-api.onrender.com metrics VBL
-    python -m client keys create --name "main-app" --scopes data:read
 """
 
 import json
@@ -29,10 +27,6 @@ app = typer.Typer(
     add_completion=False,
     invoke_without_command=True,
 )
-keys_app = typer.Typer(
-    help="Manage API keys (requires VOYAGER_ADMIN_KEY).", no_args_is_help=True
-)
-app.add_typer(keys_app, name="keys")
 
 _shared: dict = {}
 
@@ -49,14 +43,8 @@ def _root(
     api_key: Optional[str] = typer.Option(
         None, "--api-key", envvar="VOYAGER_API_KEY", help="Service API key (data:read)."
     ),
-    admin_key: Optional[str] = typer.Option(
-        None,
-        "--admin-key",
-        envvar="VOYAGER_ADMIN_KEY",
-        help="Admin key (keys commands).",
-    ),
 ):
-    _shared["config"] = load_config(base_url, api_key, admin_key)
+    _shared["config"] = load_config(base_url, api_key)
 
 
 def _config() -> Config:
@@ -283,129 +271,10 @@ def list_categories(
     try:
         _print(
             _client().get(
-                "/list",
+                "/search-categories",
                 params={"category": category, "country": country, "source": source},
             )
         )
-    except VoyagerError as exc:
-        _fatal(exc)
-
-
-@app.command()
-def pull_status(
-    symbol: str,
-    source: str = typer.Option("nse"),
-):
-    """Download status and data availability (GET /download-financials)."""
-    try:
-        _print(
-            _client().get(
-                "/download-financials", params={"symbol": symbol, "source": source}
-            )
-        )
-    except VoyagerError as exc:
-        _fatal(exc)
-
-
-# ---------------------------------------------------------------------------
-# Write commands (need data:write scope)
-# ---------------------------------------------------------------------------
-
-
-@app.command()
-def pull(
-    symbol: str,
-    filing_type: str = typer.Option("quarterly"),
-    refresh: bool = typer.Option(False, "--refresh"),
-):
-    """Download financials (POST /download-financials, needs data:write scope)."""
-    try:
-        result = _client().post(
-            "/download-financials",
-            params={
-                "symbol": symbol,
-                "filing_type": filing_type,
-                "refresh": str(refresh).lower(),
-            },
-        )
-    except VoyagerError as exc:
-        _fatal(exc)
-    _print(result, f"Download {symbol}")
-
-
-# ---------------------------------------------------------------------------
-# Admin: API key management
-# ---------------------------------------------------------------------------
-# Admin: API key management
-# ---------------------------------------------------------------------------
-
-
-@keys_app.command()
-def create(
-    name: str,
-    owner: str = typer.Option(""),
-    scopes: str = typer.Option("data:read", help="Comma-separated scopes"),
-    rpm: int = typer.Option(60),
-    expires_in_days: Optional[int] = typer.Option(None, "--expires-in-days"),
-):
-    """Create an API key. Shows the raw key once."""
-    body = {
-        "name": name,
-        "owner": owner,
-        "scopes": [s.strip() for s in scopes.split(",") if s.strip()],
-        "rpm": rpm,
-        "expires_in_days": expires_in_days,
-    }
-    try:
-        result = _client().post("/admin/keys", json=body, admin=True)
-    except VoyagerError as exc:
-        _fatal(exc)
-    console.print(
-        "[bold green]API key created. Store it now — it is shown only once:[/bold green]"
-    )
-    console.print(f"[bold]{result['key']}[/bold]")
-    _print(result["api_key"], "Key details")
-
-
-@keys_app.command()
-def list_keys():
-    """List API keys (raw keys/hashes never shown)."""
-    try:
-        keys = _client().get("/admin/keys", admin=True)
-    except VoyagerError as exc:
-        _fatal(exc)
-    rows = [
-        (
-            k["prefix"],
-            k["name"],
-            k["owner"],
-            ",".join(k["scopes"]),
-            k["rpm"],
-            "yes" if k["enabled"] else "no",
-        )
-        for k in keys
-    ]
-    _table(["prefix", "name", "owner", "scopes", "rpm", "enabled"], rows)
-
-
-@keys_app.command()
-def revoke(
-    prefix: str,
-):
-    """Revoke an API key by prefix."""
-    try:
-        _print(_client().delete(f"/admin/keys/{prefix}", admin=True))
-    except VoyagerError as exc:
-        _fatal(exc)
-
-
-@keys_app.command()
-def enable(
-    prefix: str,
-):
-    """Re-enable a revoked API key."""
-    try:
-        _print(_client().post(f"/admin/keys/{prefix}/enable", admin=True))
     except VoyagerError as exc:
         _fatal(exc)
 

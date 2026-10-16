@@ -1,492 +1,471 @@
-from __future__ import annotations
+#!/usr/bin/env python3
+"""Interactive CLI for the Voyager API.
 
-import asyncio
-import functools
-from typing import Optional
+Home menu splits into two sections: the API explorer (reads the OpenAPI spec,
+lets you pick endpoints, fills in args, renders results with rich) and Ingest
+(writes the data-ingestion pipeline against the same Postgres the API reads).
 
-import typer
-from loguru import logger
-from rich.text import Text
+Usage:
+    python cli.py                          # home menu: API or Ingest
+    python cli.py --api                     # straight to the API explorer
+    python cli.py --ingest                  # straight to the ingest pipeline
+    python cli.py --url http://localhost:8001
 
-from src.logging_config import setup_logging
+The API is read-only; ingestion runs through this CLI's Ingest mode.
+"""
 
-setup_logging()
+import argparse
+import json
+import os
 
-from __version__ import __version__
-from src.cli.render import (
-    console,
-    render_announcements,
-    render_error,
-    render_financials,
-    render_json,
-    render_list,
-    render_metrics,
-    render_panel_text,
-    render_ping,
-    render_pull,
-    render_pull_status,
-    render_shareholdings,
-    render_statements,
-)
-from sqlalchemy import select, text
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+import requests
+from dotenv import load_dotenv
+from rich import box
+from rich.table import Table
 
-from src.core import (
-    extract_pdf_content,
-    fetch_nse_announcements,
-    fetch_nse_annual_reports,
-    fetch_nse_financials,
-    fetch_nse_shareholdings,
-)
-from src.db.engine import init_db
-from src.db.engine import get_session_factory
-from src.db.models import NSEAnnouncement, NSEAnnualReport
-from src.models import SOURCE_MODELS
-from src.services import (
-    ServiceError,
-    financial_metrics,
-    get_announcements,
-    get_financials,
-    get_pull_status,
-    get_shareholdings,
-    get_statement_data,
-    list_category,
-    pull_nse_data,
-)
+from cli_ui import BACK, QUIT, console, header, select
+
+DEFAULT_API_URL = "http://localhost:8001"
+
+ASCII_LOGO = r"""
+[bold cyan]
+ ╦  ╦╔═╗╦ ╦╔═╗╔═╗╔═╗╦═╗
+ ╚╗╔╝║ ║╚╦╝║ ╦║ ╦║╣ ╠╦╝
+  ╚╝ ╚═╝╩ ╚═╝╚═╝╚═╝╚═╝╩╚═
+[/bold cyan]
+[dim]  Financial Data API — Interactive CLI[/dim]
+"""
 
 
-def _show_help(ctx: typer.Context) -> None:
-    """Print a group's help when it is invoked without a subcommand."""
-    if ctx.invoked_subcommand is None:
-        console.print(ctx.get_help())
-        raise typer.Exit()
+def load_api_key() -> str:
+    load_dotenv()
+    key = os.getenv("VOYAGER_API_KEY", "") or os.getenv("API_KEY", "")
+    if not key:
+        console.print("[yellow]No API key set (VOYAGER_API_KEY) — API calls will fail; ingest still works.[/yellow]")
+    return key
 
 
-app = typer.Typer(
-    help="Voyager — financial data CLI mirroring the Voyager API endpoints.",
-    invoke_without_command=True,
-    callback=_show_help,
-)
-
-
-def _parse_consolidated(value: str) -> Optional[bool]:
-    v = value.strip().lower()
-    if v in ("true", "1", "yes", "consolidated"):
-        return True
-    if v in ("false", "0", "no", "standalone"):
-        return False
-    if v in ("both", "all", "any", "none"):
+def fetch_openapi(base_url: str):
+    try:
+        resp = requests.get(f"{base_url}/openapi.json", timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        console.print(f"[yellow]API unreachable at {base_url} ({exc}) — returning to menu.[/yellow]")
         return None
-    raise ValueError("--consolidated must be 'true', 'false', or 'both'")
 
 
-def coro(needs_db: bool = False):
-    """Run an async typer command, optionally initialising the DB first."""
+def flatten_endpoints(spec: dict) -> list[dict]:
+    endpoints = []
+    for path, methods in spec.get("paths", {}).items():
+        for method, detail in methods.items():
+            if method.upper() in ("GET", "POST", "PUT", "DELETE", "PATCH"):
+                endpoints.append({
+                    "method": method.upper(),
+                    "path": path,
+                    "summary": detail.get("summary", ""),
+                    "description": detail.get("description", ""),
+                    "parameters": detail.get("parameters", []),
+                    "tags": detail.get("tags", []),
+                })
+    return endpoints
 
-    def decorator(f):
-        @functools.wraps(f)
-        def wrapper(*args, **kwargs):
-            async def run_all():
-                if needs_db:
-                    await init_db()
-                return await f(*args, **kwargs)
 
+def pick_endpoint(endpoints: list[dict]):
+    tag_groups: dict[str, list[tuple[int, dict]]] = {}
+    for i, ep in enumerate(endpoints):
+        tag = ep["tags"][0] if ep["tags"] else "Other"
+        tag_groups.setdefault(tag, []).append((i, ep))
+
+    while True:
+        header("Endpoint groups")
+        tags = sorted(tag_groups.keys())
+        for i, tag in enumerate(tags, 1):
+            count = len(tag_groups[tag])
+            console.print(f"  [cyan]{i}[/cyan]. {tag} [dim]({count} endpoints)[/dim]")
+        console.print(f"  [cyan]a[/cyan]. [bold]All endpoints[/bold] [dim]({len(endpoints)})[/dim]")
+        console.print(f"  [cyan]s[/cyan]. [bold]Search[/bold]")
+        console.print("  [red]q[/red]. Quit")
+
+        choice = console.input("\n[bold]Select group[/bold]: ").strip().lower()
+
+        if choice == "q":
+            return QUIT
+        if choice == "s":
+            query = console.input("[bold]Search[/bold] [dim](b to cancel)[/dim]: ").strip().lower()
+            if query == "b":
+                continue
+            if query:
+                filtered = [(i, ep) for i, ep in enumerate(endpoints)
+                            if query in ep["path"].lower() or query in ep["summary"].lower()]
+                if filtered:
+                    picked = _pick_from_list(filtered)
+                    if picked in (BACK, QUIT):
+                        return picked
+                    if picked is not None:
+                        return picked
+                console.print("[yellow]No matches found[/yellow]")
+            continue
+        if choice == "a":
+            picked = _pick_from_list(list(enumerate(endpoints)))
+            if picked in (BACK, QUIT):
+                return picked
+            if picked is not None:
+                return picked
+
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(tags):
+                picked = _pick_from_list(tag_groups[tags[idx]])
+                if picked in (BACK, QUIT):
+                    return picked
+                if picked is not None:
+                    return picked
+        except ValueError:
+            pass
+        console.print("[red]Invalid selection[/red]")
+
+
+def _pick_from_list(items: list[tuple[int, dict]]):
+    console.print()
+    table = Table(box=box.SIMPLE_HEAD, show_header=True, header_style="bold cyan")
+    table.add_column("#", style="dim", width=4)
+    table.add_column("Method", width=8)
+    table.add_column("Path", style="green")
+    table.add_column("Summary", style="white")
+
+    for display_num, (original_idx, ep) in enumerate(items, 1):
+        method_color = {
+            "GET": "blue", "POST": "green", "PUT": "yellow",
+            "DELETE": "red", "PATCH": "magenta",
+        }.get(ep["method"], "white")
+        table.add_row(
+            str(display_num),
+            f"[{method_color}]{ep['method']}[/{method_color}]",
+            ep["path"],
+            ep["summary"][:60],
+        )
+
+    console.print(table)
+
+    while True:
+        try:
+            choice = console.input("\n[bold]Select endpoint #[/bold] ([red]b[/red] back, [red]q[/red] quit): ")
+            if choice.lower() == "b":
+                return None
+            if choice.lower() == "q":
+                return QUIT
+            idx = int(choice) - 1
+            if 0 <= idx < len(items):
+                return items[idx][1]
+            console.print("[red]Invalid selection[/red]")
+        except ValueError:
+            console.print("[red]Invalid input[/red]")
+        except (KeyboardInterrupt, EOFError):
+            return QUIT
+
+
+def collect_params(endpoint: dict) -> dict:
+    params = {}
+
+    console.print(f"\n[bold]{endpoint['method']} {endpoint['path']}[/bold]")
+    if endpoint["summary"]:
+        console.print(f"[dim]{endpoint['summary']}[/dim]")
+    console.print()
+
+    for param in endpoint.get("parameters", []):
+        name = param.get("name", "")
+        if name.lower() in ("x-api-key", "authorization", "x-voyager-admin-key"):
+            continue
+        required = param.get("required", False)
+        schema = param.get("schema", {})
+        param_type = schema.get("type", "string")
+        default = schema.get("default", None)
+        description = param.get("description", "")
+        enum = schema.get("enum", None)
+
+        is_path_param = f"{{{name}}}" in endpoint["path"]
+
+        req_marker = "[red]*[/red]" if required else "[dim](optional)[/dim]"
+        desc = f" — {description[:80]}" if description else ""
+        default_str = f" [dim](default: {default})[/dim]" if default is not None else ""
+
+        if enum:
+            console.print(f"  [bold]{name}[/bold] {req_marker}{default_str}{desc}")
+            for j, val in enumerate(enum, 1):
+                console.print(f"    [cyan]{j}[/cyan]. {val}")
+            while True:
+                choice = console.input(f"  Select [dim](Enter for {'default: ' + str(default) if default else 'none'})[/dim]: ")
+                if not choice and default is not None:
+                    params[name] = default
+                    break
+                if not choice and not required:
+                    break
+                try:
+                    idx = int(choice) - 1
+                    if 0 <= idx < len(enum):
+                        params[name] = enum[idx]
+                        break
+                except ValueError:
+                    pass
+                console.print("  [red]Invalid choice[/red]")
+        else:
+            prompt = f"  [bold]{name}[/bold] {req_marker}{default_str}{desc}: "
+            val = console.input(prompt)
+            if val.strip().lower() == "b" and not params:
+                return None
+            if not val and default is not None:
+                val = str(default)
+            if not val and required and is_path_param:
+                console.print(f"  [red]{name} is required[/red]")
+                continue
+            if val:
+                if param_type == "integer":
+                    try:
+                        params[name] = int(val)
+                    except ValueError:
+                        params[name] = val
+                elif param_type == "boolean":
+                    params[name] = val.lower() in ("true", "1", "yes", "y")
+                elif "symbol" in name.lower() or "ticker" in name.lower():
+                    params[name] = val.upper()
+                else:
+                    params[name] = val
+
+    return params
+
+
+def call_api(base_url: str, api_key: str, endpoint: dict, params: dict) -> dict:
+    url = f"{base_url}{endpoint['path']}"
+    headers = {"X-API-Key": api_key}
+
+    path_params = {}
+    query_params = {}
+    for key, val in params.items():
+        if f"{{{key}}}" in endpoint["path"]:
+            path_params[key] = val
+        else:
+            query_params[key] = val
+
+    for key, val in path_params.items():
+        url = url.replace(f"{{{key}}}", str(val))
+
+    try:
+        if endpoint["method"] == "GET":
+            resp = requests.get(url, headers=headers, params=query_params, timeout=30)
+        elif endpoint["method"] == "POST":
+            resp = requests.post(url, headers=headers, params=query_params, timeout=30)
+        elif endpoint["method"] == "DELETE":
+            resp = requests.delete(url, headers=headers, params=query_params, timeout=30)
+        else:
+            resp = requests.request(endpoint["method"], url, headers=headers, params=query_params, timeout=30)
+
+        if resp.status_code == 200:
+            return {"ok": True, "data": resp.json()}
+        else:
             try:
-                return asyncio.run(run_all())
-            except ServiceError as e:
-                render_error("Voyager error", e.message)
-                raise typer.Exit(code=1)
-            except Exception as e:
-                logger.exception("Unexpected error")
-                render_error("Unexpected error", str(e))
-                raise typer.Exit(code=1)
-
-        return wrapper
-
-    return decorator
+                err = resp.json()
+            except Exception:
+                err = {"detail": resp.text}
+            return {"ok": False, "status": resp.status_code, "error": err}
+    except Exception as exc:
+        return {"ok": False, "status": 0, "error": {"detail": str(exc)}}
 
 
-# ---------------------------------------------------------------------------
-# Root commands (mirror API endpoints)
-# ---------------------------------------------------------------------------
+def _human_size(n: int) -> str:
+    if n < 1024:
+        return f"{n} B"
+    n /= 1024
+    if n < 1024:
+        return f"{n:.1f} KB"
+    n /= 1024
+    if n < 1024:
+        return f"{n:.1f} MB"
+    return f"{n / 1024:.1f} GB"
 
 
-@app.command()
-def ping():
-    """Health check (GET /)."""
-    render_ping({"ok": 1}, __version__)
-
-
-@app.command("list")
-@coro()
-async def list_items(
-    category: str = typer.Option(
-        "sources",
-        help="Category: sources, countries, industries, sectors, indices",
-    ),
-    country: str = typer.Option("in", help="Country code"),
-    source: str = typer.Option("nse", help="Data source"),
-):
-    """List available categories (GET /list)."""
-    render_list(list_category(category, country, source))
-
-
-@app.command()
-def version():
-    """Show the Voyager version."""
-    line = Text()
-    line.append("Voyager", style="bold white")
-    line.append(f" v{__version__}", style="cyan")
-    console.print(line)
-
-
-# ---------------------------------------------------------------------------
-# financials — GET /financials, /financials/income-statements, ...
-# ---------------------------------------------------------------------------
-
-financials_app = typer.Typer(
-    help="Financial statements from the DB.",
-    invoke_without_command=True,
-    callback=_show_help,
-)
-app.add_typer(financials_app, name="financials")
-
-
-@financials_app.command("merged")
-@coro(needs_db=True)
-async def financials_merged(
-    symbol: str,
-    country: str = typer.Option("in"),
-    source: str = typer.Option("nse"),
-    consolidated: bool = typer.Option(
-        True, help="Consolidated (True) or standalone (False)"
-    ),
-    filing_type: str = typer.Option("quarterly", help="quarterly or annual"),
-    all_fields: bool = typer.Option(
-        False, help="Return all stored fields instead of only priority metrics"
-    ),
-):
-    """Merged income + balance + cash-flow for the latest period (GET /financials)."""
-    data = await get_financials(
-        symbol, country, source, consolidated, filing_type, all_fields
-    )
-    render_financials(data)
-
-
-@financials_app.command("income")
-@coro(needs_db=True)
-async def financials_income(
-    symbol: str,
-    country: str = typer.Option("in"),
-    source: str = typer.Option("nse"),
-    consolidated: str = typer.Option("true", help="true, false, or both"),
-    filing_type: str = typer.Option("quarterly", help="quarterly or annual"),
-    limit: int = typer.Option(4, min=0, help="Max periods to show (0 = all)"),
-    all_fields: bool = typer.Option(False, help="Return all stored fields"),
-):
-    """Income statements (GET /financials/income-statements)."""
-    data = await get_statement_data(
-        "income-statements",
-        symbol,
-        country,
-        source,
-        _parse_consolidated(consolidated),
-        filing_type,
-        limit,
-        all_fields,
-    )
-    render_statements("income-statements", data)
-
-
-@financials_app.command("balance-sheet")
-@coro(needs_db=True)
-async def financials_balance_sheet(
-    symbol: str,
-    country: str = typer.Option("in"),
-    source: str = typer.Option("nse"),
-    consolidated: str = typer.Option("true", help="true, false, or both"),
-    filing_type: str = typer.Option("quarterly", help="quarterly or annual"),
-    limit: int = typer.Option(4, min=0, help="Max periods to show (0 = all)"),
-    all_fields: bool = typer.Option(False, help="Return all stored fields"),
-):
-    """Balance sheets (GET /financials/balance-sheets)."""
-    data = await get_statement_data(
-        "balance-sheets",
-        symbol,
-        country,
-        source,
-        _parse_consolidated(consolidated),
-        filing_type,
-        limit,
-        all_fields,
-    )
-    render_statements("balance-sheets", data)
-
-
-@financials_app.command("cash-flow")
-@coro(needs_db=True)
-async def financials_cash_flow(
-    symbol: str,
-    country: str = typer.Option("in"),
-    source: str = typer.Option("nse"),
-    consolidated: str = typer.Option("true", help="true, false, or both"),
-    filing_type: str = typer.Option("quarterly", help="quarterly or annual"),
-    limit: int = typer.Option(4, min=0, help="Max periods to show (0 = all)"),
-    all_fields: bool = typer.Option(False, help="Return all stored fields"),
-):
-    """Cash flow statements (GET /financials/cash-flows)."""
-    data = await get_statement_data(
-        "cash-flows",
-        symbol,
-        country,
-        source,
-        _parse_consolidated(consolidated),
-        filing_type,
-        limit,
-        all_fields,
-    )
-    render_statements("cash-flows", data)
-
-
-# ---------------------------------------------------------------------------
-# pull / pull-status
-# ---------------------------------------------------------------------------
-
-
-@app.command()
-@coro(needs_db=True)
-async def pull(
-    symbol: str,
-    country: str = typer.Option("in"),
-    source: str = typer.Option("nse"),
-    filing_type: str = typer.Option("quarterly", help="quarterly or annual"),
-    refresh: bool = typer.Option(
-        False, help="Re-download and re-parse XBRL already in the DB"
-    ),
-):
-    """Pull & parse raw NSE XBRL filings into the DB (POST /pull)."""
-    data = await pull_nse_data(symbol, filing_type, refresh)
-    render_pull(data)
-
-
-@app.command("pull-status")
-@coro(needs_db=True)
-async def pull_status(
-    symbol: str,
-    country: str = typer.Option("in"),
-    source: str = typer.Option("nse"),
-):
-    """Pull history and data availability for a stock (GET /pull)."""
-    render_pull_status(await get_pull_status(symbol, country, source))
-
-
-# ---------------------------------------------------------------------------
-# metrics — GET /financial-metrics
-# ---------------------------------------------------------------------------
-
-
-@app.command()
-@coro(needs_db=True)
-async def metrics(
-    symbol: str,
-    country: str = typer.Option("in"),
-    source: str = typer.Option("nse"),
-    consolidated: bool = typer.Option(
-        True, help="Consolidated (True) or standalone (False)"
-    ),
-    filing_type: str = typer.Option("quarterly", help="quarterly, annual, or ttm"),
-):
-    """Computed financial metrics for a stock (GET /financial-metrics)."""
-    data = await financial_metrics(symbol, country, source, consolidated, filing_type)
-    render_metrics(data)
-
-
-# ---------------------------------------------------------------------------
-# announcements / shareholdings
-# ---------------------------------------------------------------------------
-
-
-@app.command()
-@coro()
-async def announcements(
-    symbol: str,
-    country: str = typer.Option("in"),
-    source: str = typer.Option("nse"),
-    market: str = typer.Option("equities", help="Market segment: equities or sme"),
-):
-    """Corporate announcements for a stock (GET /announcements)."""
-    data = await get_announcements(symbol, country, source, market)
-    render_announcements(data)
-
-
-@app.command()
-@coro(needs_db=True)
-async def shareholdings(
-    symbol: str,
-    country: str = typer.Option("in"),
-    source: str = typer.Option("nse"),
-):
-    """Shareholding pattern for a stock (GET /shareholdings)."""
-    data = await get_shareholdings(symbol, country, source)
-    render_shareholdings(data)
-
-
-# ---------------------------------------------------------------------------
-# tools — legacy NSE / PDF utilities without API counterparts
-# ---------------------------------------------------------------------------
-
-tools_app = typer.Typer(
-    help="Legacy NSE / PDF utilities.",
-    invoke_without_command=True,
-    callback=_show_help,
-)
-app.add_typer(tools_app, name="tools")
-
-
-@tools_app.command("schema")
-def tools_schema(source: str):
-    """Show the response model schema for a data source."""
-    model = SOURCE_MODELS.get(source.lower())
-    if not model:
-        render_error("Schema", f"No model found for source '{source}'")
-        raise typer.Exit(code=1)
-    render_json(model.model_json_schema())
-
-
-@tools_app.command("nse-financials")
-def tools_nse_financials(symbol: str):
-    """Fetch and parse raw NSE financial XBRL filings."""
-    render_json(fetch_nse_financials(symbol))
-
-
-@tools_app.command("nse-announcements")
-def tools_nse_announcements(
-    symbol: str,
-    save: bool = typer.Option(False, "--save", help="Save to DB"),
-):
-    """Fetch raw NSE announcements."""
-    results = fetch_nse_announcements(symbol)
-    if not save:
-        render_json(results)
+def render_response(result: dict):
+    if not result["ok"]:
+        err = result.get("error", {})
+        if isinstance(err, dict):
+            detail = err.get("detail", str(err))
+            code = err.get("code", "")
+            msg = f"{code}: {detail}" if code else str(detail)
+        else:
+            msg = str(err)
+        console.print(f"\n[red]Error {result['status']}:[/red] {msg}")
         return
 
-    async def _save():
-        factory = get_session_factory()
-        async with factory() as session:
-            for x in results:
-                ann = NSEAnnouncement(
-                    symbol=symbol,
-                    an_dt=x.get("an_dt"),
-                    attchmnt_text=x.get("attchmntText"),
-                    desc=x.get("desc"),
-                    attchmnt_file=x.get("attchmntFile"),
-                    att_file_size=x.get("attFileSize"),
-                    has_xbrl=x.get("hasXbrl", False),
-                    sort_date=x.get("sort_date"),
-                    raw_data=x,
-                )
-                session.add(ann)
-            await session.commit()
+    data = result["data"]
+    size = len(json.dumps(data).encode())
 
-    asyncio.run(_save())
-    logger.info("Scrape and save complete")
+    console.print(f"[dim]Response size: {_human_size(size)}[/dim]\n")
 
-
-@tools_app.command("nse-announcements-search")
-def tools_nse_announcements_search(
-    symbol: str,
-    keywords: str = typer.Option("transcript", help="Keyword to match"),
-    cutoff_date: str = typer.Option("2026-01-01", help="Max sort_date (YYYY-MM-DD)"),
-):
-    """Search announcements stored in the DB."""
-    import re as re_mod
-
-    async def _search():
-        factory = get_session_factory()
-        async with factory() as session:
-            result = await session.execute(
-                select(NSEAnnouncement).where(
-                    NSEAnnouncement.symbol == symbol,
-                    NSEAnnouncement.attchmnt_text.ilike(f"%{keywords}%"),
-                    NSEAnnouncement.sort_date <= cutoff_date,
-                )
-            )
-            return [dict(r._mapping) for r in result]
-
-    docs = asyncio.run(_search())
-    render_json(docs)
+    if isinstance(data, list):
+        if not data:
+            console.print("[dim]Empty result[/dim]")
+            return
+        if isinstance(data[0], dict):
+            render_table(data)
+        else:
+            for item in data:
+                console.print(f"  • {item}")
+    elif isinstance(data, dict):
+        if "data" in data and isinstance(data["data"], list):
+            meta_keys = [k for k in data if k != "data"]
+            for k in meta_keys:
+                console.print(f"[bold cyan]{k}:[/bold cyan] {data[k]}")
+            console.print()
+            render_table(data["data"])
+        elif "data" in data and isinstance(data["data"], dict):
+            for k, v in data.items():
+                if k == "data":
+                    console.print()
+                    render_dict_pretty(v)
+                else:
+                    console.print(f"[bold cyan]{k}:[/bold cyan] {v}")
+        else:
+            render_dict_pretty(data)
+    else:
+        console.print(str(data))
 
 
-@tools_app.command("nse-announcements-extract")
-def tools_nse_announcements_extract(path_or_url: str):
-    """Extract text content of a stored announcement PDF."""
-    async def _check():
-        factory = get_session_factory()
-        async with factory() as session:
-            result = await session.execute(
-                select(NSEAnnouncement).where(NSEAnnouncement.attchmnt_file == path_or_url)
-            )
-            return result.scalars().first()
+def render_table(items: list[dict]):
+    if not items:
+        return
+    all_keys = []
+    seen = set()
+    for item in items:
+        for k in item:
+            if k not in seen:
+                all_keys.append(k)
+                seen.add(k)
 
-    data = asyncio.run(_check())
-    if data is None:
-        render_error("Extract", "No document found in DB")
-        raise typer.Exit(code=1)
-    text = extract_pdf_content(path_or_url)
-    render_panel_text("Extracted PDF content", text)
+    priority = ["date", "symbol", "exchange", "close", "open", "high", "low", "volume",
+                "period", "interval", "total", "limit", "offset", "name", "value"]
+    ordered = [k for k in priority if k in all_keys]
+    ordered += [k for k in all_keys if k not in ordered]
+
+    max_cols = 8
+    if len(ordered) > max_cols:
+        ordered = ordered[:max_cols]
+
+    table = Table(box=box.ROUNDED, show_header=True, header_style="bold cyan", expand=False)
+    for key in ordered:
+        table.add_column(key, overflow="fold", max_width=30)
+
+    for item in items[:100]:
+        row = []
+        for key in ordered:
+            val = item.get(key, "")
+            if isinstance(val, float):
+                val = f"{val:.2f}"
+            row.append(str(val) if val is not None else "")
+        table.add_row(*row)
+
+    console.print(table)
+    if len(items) > 100:
+        console.print(f"[dim]... and {len(items) - 100} more rows[/dim]")
 
 
-@tools_app.command("nse-list-annual-reports")
-def tools_nse_list_annual_reports(symbol: str):
-    """List annual reports for a symbol stored in the DB."""
-    async def _list():
-        factory = get_session_factory()
-        async with factory() as session:
-            result = await session.execute(
-                select(NSEAnnualReport).where(NSEAnnualReport.symbol == symbol)
-            )
-            return [dict(r._mapping) for r in result]
+def render_dict_pretty(data: dict, indent: int = 0):
+    for key, val in data.items():
+        if isinstance(val, dict):
+            console.print(f"{'  ' * indent}[bold cyan]{key}:[/bold cyan]")
+            render_dict_pretty(val, indent + 1)
+        elif isinstance(val, list):
+            console.print(f"{'  ' * indent}[bold cyan]{key}:[/bold cyan] [{len(val)} items]")
+            if val and not isinstance(val[0], (dict, list)):
+                preview = ", ".join(str(v) for v in val[:5])
+                console.print(f"{'  ' * (indent + 1)}[dim]{preview}{'...' if len(val) > 5 else ''}[/dim]")
+            elif val:
+                for item in val[:3]:
+                    if isinstance(item, dict):
+                        render_dict_pretty(item, indent + 1)
+                    else:
+                        console.print(f"{'  ' * (indent + 1)}- {item}")
+                if len(val) > 3:
+                    console.print(f"{'  ' * (indent + 1)}[dim]... +{len(val) - 3} more[/dim]")
+        else:
+            console.print(f"{'  ' * indent}[bold cyan]{key}:[/bold cyan] {val}")
 
-    render_json(asyncio.run(_list()))
+
+def api_section(api_url: str, api_key: str):
+    spec = fetch_openapi(api_url)
+    if spec is None:
+        return
+    endpoints = flatten_endpoints(spec)
+
+    while True:
+        try:
+            console.clear()
+            console.print(ASCII_LOGO)
+            endpoint = pick_endpoint(endpoints)
+            if endpoint in (BACK, QUIT):
+                return
+            if endpoint is None:
+                continue
+            params = collect_params(endpoint)
+            if params is None:
+                continue
+            console.print(f"\n[dim]Calling {endpoint['method']} {endpoint['path']}...[/dim]")
+            result = call_api(api_url, api_key, endpoint, params)
+            console.print()
+            render_response(result)
+            console.print()
+            console.input("[dim]Press Enter to continue...[dim]")
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[dim]Goodbye![/dim]")
+            return
 
 
-@tools_app.command("nse-annual-reports")
-def tools_nse_annual_reports(
-    symbol: str,
-    save: bool = typer.Option(False, "--save", help="Save to DB"),
-):
-    """Fetch annual report metadata from NSE."""
-    results = fetch_nse_annual_reports(symbol)
-    if not save:
-        render_json(results)
+def home(api_url: str, api_key: str):
+    while True:
+        console.clear()
+        console.print(ASCII_LOGO)
+        choice = select(
+            "Voyager",
+            [
+                ("api", "API", "explore the read API"),
+                ("ingest", "Ingest", "pull data into Postgres"),
+            ],
+            subtitle="Financial data — read API and ingestion",
+            multiline=True,
+        )
+        if choice in (BACK, QUIT):
+            console.print("[dim]Goodbye![/dim]")
+            return
+        if choice == "api":
+            api_section(api_url, api_key)
+        else:
+            from ingest_cli import ingest_mode
+
+            ingest_mode()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Interactive Voyager CLI (API explorer + local ingest)")
+    parser.add_argument("--url", "-u", default=DEFAULT_API_URL, help="API base URL")
+    parser.add_argument("--ingest", "-i", action="store_true", help="Go straight to the local ingest pipeline")
+    parser.add_argument("--api", "-a", action="store_true", help="Go straight to the API explorer")
+    args = parser.parse_args()
+
+    if args.ingest:
+        from ingest_cli import ingest_mode
+
+        ingest_mode()
         return
 
-    async def _save():
-        factory = get_session_factory()
-        async with factory() as session:
-            for x in results:
-                report = NSEAnnualReport(
-                    symbol=symbol,
-                    file_name=x.get("fileName"),
-                    raw_data=x,
-                )
-                session.add(report)
-            await session.commit()
-
-    asyncio.run(_save())
-    logger.info("Scrape and save complete")
-
-
-@tools_app.command("nse-shareholdings")
-@tools_app.command("nse-full-download")
-def tools_nse_full_download(symbol: str):
-    """Run the full legacy NSE scrape (financials, announcements, shareholdings, annual reports)."""
-    tools_nse_financials(symbol)
-    tools_nse_announcements(symbol)
-    tools_nse_shareholdings(symbol)
-    tools_nse_annual_reports(symbol)
-    logger.info("Full data scrape complete")
+    api_key = load_api_key()
+    try:
+        if args.api:
+            api_section(args.url, api_key)
+            return
+        home(args.url, api_key)
+    except (KeyboardInterrupt, EOFError):
+        # Ctrl+C / Ctrl+D at any prompt — exit cleanly instead of a traceback.
+        console.print("\n[dim]Goodbye![/dim]")
 
 
 if __name__ == "__main__":
-    app()
+    main()

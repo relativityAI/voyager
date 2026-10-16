@@ -647,7 +647,7 @@ def test_sec_operating_income_is_never_revenue_minus_expenses():
     against a reported 35,695,000,000 — 2.53x wrong. SEC must read the
     us-gaap:OperatingIncomeLoss tag instead.
     """
-    from src.services.sec import _INCOME_MAP, _income_rows
+    from src.ingest.sec import _INCOME_MAP, _income_rows
 
     assert _INCOME_MAP["operating_income"] == ["us-gaap_OperatingIncomeLoss"]
     assert "expenses" not in _INCOME_MAP["operating_income"]
@@ -669,7 +669,7 @@ def test_nse_operating_income_is_revenue_minus_expenses():
     operating profit before other income. Holds for every NSE row stored.
     """
     from src.db.models import IncomeStatement
-    from src.services.nse import _doc_to_row
+    from src.ingest._common import _doc_to_row
 
     row = _doc_to_row(
         {

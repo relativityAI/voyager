@@ -80,15 +80,21 @@ def _scrub(record):
     record["message"] = message
 
 
-def setup_logging(file_sink: bool | None = None):
-    """Configure loguru. `file_sink=None` derives from LOG_FILE_SINK env (default on)."""
+def setup_logging(file_sink: bool | None = None, console: bool = True):
+    """Configure loguru. `file_sink=None` derives from LOG_FILE_SINK env (default on).
+
+    `console=False` (the interactive CLI) sends nothing to the terminal — not
+    even WARNING — so per-request NSE/SEC retry logs don't bury the progress
+    output. Everything still lands in the file sink at INFO+.
+    """
     logger.remove()
 
     level = os.getenv("LOG_LEVEL", "INFO").upper()
 
     logger.configure(patcher=_scrub)
 
-    logger.add(_rich_sink, format="{message}", level=level)
+    if console:
+        logger.add(_rich_sink, format="{message}", level=level)
 
     if file_sink is None:
         file_sink = os.getenv("LOG_FILE_SINK", "true").lower() in ("1", "true", "yes")

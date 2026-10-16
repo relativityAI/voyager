@@ -7,7 +7,7 @@ from sqlalchemy import func, or_, select
 from src.db.engine import get_session_factory
 from src.db.models import StockDataLedger
 
-from ._common import InvalidRequestError, _validate_source
+from ._common import SOURCE_COUNTRY, InvalidRequestError, _validate_source
 
 ASSETS_DIR = os.path.join(os.path.dirname(__file__), "..", "assets")
 SOURCES_CSV = os.path.join(ASSETS_DIR, "sources.csv")
@@ -22,12 +22,15 @@ def _load_csv(path: str) -> list[dict]:
     return rows
 
 
+# Only categories with real backing data. Each provider takes the resolved
+# source so the response is scoped to it (source=nse must not list SEC).
 LIST_PROVIDERS: Dict[str, Any] = {
-    "sources": lambda: _load_csv(SOURCES_CSV),
-    "countries": lambda: _load_csv(COUNTRIES_CSV),
-    "industries": lambda: [],
-    "sectors": lambda: [],
-    "indices": lambda: [],
+    "sources": lambda source: [r for r in _load_csv(SOURCES_CSV) if r["id"] == source],
+    "countries": lambda source: [
+        r
+        for r in _load_csv(COUNTRIES_CSV)
+        if r["id"] == SOURCE_COUNTRY.get(source, source).lower()
+    ],
 }
 
 
@@ -44,7 +47,7 @@ def list_category(
         "category": category,
         "country": country,
         "source": source,
-        "data": LIST_PROVIDERS[category](),
+        "data": LIST_PROVIDERS[category](source),
     }
 
 
@@ -66,6 +69,7 @@ async def search_symbols(
     limit = max(1, min(limit, 50))
 
     _, source = _validate_source(country, source)
+    country = _validate_source(country, source)[0].upper()
     pattern = f"%{query.upper()}%"
 
     factory = get_session_factory()
@@ -73,6 +77,7 @@ async def search_symbols(
         stmt = (
             select(StockDataLedger)
             .where(StockDataLedger.symbol.ilike(pattern))
+            .where(StockDataLedger.country == country)
             .order_by(StockDataLedger.total_records.desc(), StockDataLedger.symbol)
             .limit(limit)
         )

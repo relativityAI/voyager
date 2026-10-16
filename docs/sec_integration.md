@@ -13,9 +13,10 @@ statement tables and API shapes via a `source` column.
   - `income_statements` / `balance_sheets` / `cash_flows` — one row per period.
   - `nse_stock_metadata` — symbol + `exchange` (e.g. `NASDAQ`) so Yahoo quotes
     resolve; keyed on `(symbol, source)`.
-- A pull (`POST /pull?symbol=AAPL&source=sec`) fetches, in
-  background, the last `EDGAR_MAX_QUARTERLY_FILINGS` 10-Qs and
-  `EDGAR_MAX_ANNUAL_FILINGS` 10-Ks.
+- Ingestion runs out-of-band via the CLI
+  (`voyager ingest financials AAPL --source sec`), which fetches the last
+  `EDGAR_MAX_QUARTERLY_FILINGS` 10-Qs and `EDGAR_MAX_ANNUAL_FILINGS` 10-Ks.
+  The API itself only reads the stored rows.
 
 ### Period semantics (why the differencing)
 
@@ -45,7 +46,7 @@ sums correct.
 ## Mapped fields
 
 Each statement table field maps to US GAAP tags (see `_INCOME_MAP`,
-`_BALANCE_MAP`, `_CASHFLOW_MAP` in `src/services/sec.py`). High-level fields
+`_BALANCE_MAP`, `_CASHFLOW_MAP` in `src/ingest/sec.py`). High-level fields
 `revenue_from_operations`, `profit_loss_for_period`, `assets`, OCF, etc. are
 populated; the granular NSE fields that have no US GAAP equivalent
 (depreciation detail, current assets, dividends) stay `null`.

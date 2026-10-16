@@ -113,7 +113,10 @@ async def init_db():
                 END IF;
             END $$""",
             "ALTER TABLE nse_announcements DROP COLUMN IF EXISTS sort_date",
-            "CREATE UNIQUE INDEX IF NOT EXISTS ux_nse_announcements_raw ON nse_announcements (symbol, raw_data)",
+            # raw_data JSONB can exceed the btree index limit (~2704 bytes), so
+            # dedup on md5(raw_data::text) instead of the full document.
+            "DROP INDEX IF EXISTS ux_nse_announcements_raw",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_nse_announcements_raw ON nse_announcements (symbol, md5(raw_data::text))",
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_price_ohlcv ON price_ohlcv (symbol, exchange, date)",
             "CREATE INDEX IF NOT EXISTS idx_price_ohlcv_lookup ON price_ohlcv (symbol, exchange, date)",
             "ALTER TABLE stock_data_ledger DROP CONSTRAINT IF EXISTS uq_stock_data_ledger",
