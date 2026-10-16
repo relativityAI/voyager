@@ -391,11 +391,11 @@ async def pull_announcements(symbol: str) -> Dict[str, Any]:
 
     Announcements are high-frequency, so there is no freshness gate — the
     unique index on md5(raw_data) dedups, and re-running only re-fetches the
-    two announcement lists.
+    two announcement lists. Already-stored announcements are skipped (nothing
+    fetched again); the StockDataLedger is refreshed with the new count.
     """
     symbol = symbol.upper()
     endpoint_breakdown: Dict[str, Any] = {}
-    total = 0
 
     factory = get_session_factory()
     async with factory() as session:
@@ -414,7 +414,6 @@ async def pull_announcements(symbol: str) -> Dict[str, Any]:
                 continue
             records = data if isinstance(data, list) else []
             endpoint_breakdown[ep_key] = len(records)
-            total += len(records)
             for rec in records:
                 if not isinstance(rec, dict):
                     continue
@@ -431,19 +430,53 @@ async def pull_announcements(symbol: str) -> Dict[str, Any]:
                     row["an_dt"] = _parse_datetime(row["an_dt"])
                 ann_rows.append(row)
 
+        existing_count = await session.scalar(
+            select(func.count(NSEAnnouncement.id)).where(
+                NSEAnnouncement.symbol == symbol
+            )
+        ) or 0
+
         if ann_rows:
             await _upsert_rows(
                 session, NSEAnnouncement, ann_rows,
                 on_conflict_cols=["symbol", text("md5(raw_data::text)")],
             )
-            logger.info(f"Upserted {len(ann_rows)} announcements for {symbol}")
         await session.commit()
+
+        total_count = await session.scalar(
+            select(func.count(NSEAnnouncement.id)).where(
+                NSEAnnouncement.symbol == symbol
+            )
+        ) or 0
+
+    total = len(ann_rows)
+    new_count = max(0, total_count - existing_count)
+    skipped = total - new_count
+
+    from src.services._common import record_pull
+    factory = get_session_factory()
+    async with factory() as session:
+        ex_row = await session.execute(
+            select(NSEStockMetadata.exchange).where(NSEStockMetadata.symbol == symbol).limit(1)
+        )
+        ex = ex_row.scalar_one_or_none() or "NSE"
+    await record_pull(symbol, ex, "IN")
+
+    if total == 0:
+        status = "no data"
+    elif new_count:
+        status = "completed"
+        logger.info(f"Stored {new_count} new announcements for {symbol} ({skipped} already stored)")
+    else:
+        status = "skipped"
+        logger.info(f"All {skipped} announcements for {symbol} already stored — nothing fetched again")
 
     return {
         "symbol": symbol,
         "source": "NSE",
-        "status": "completed" if total else "no data",
-        "records_pulled": total,
+        "status": status,
+        "records_pulled": new_count,
+        "skipped": skipped,
         "endpoint_breakdown": endpoint_breakdown,
     }
 
