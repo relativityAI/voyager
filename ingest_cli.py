@@ -10,26 +10,12 @@ import contextlib
 from pathlib import Path
 
 from cli_ui import BACK, QUIT, console, pick_index, select
-
 from src.db import engine as db_engine
 from src.db.engine import init_db
 from src.ingest import (
     download_and_store,
     ingest_document,
     pull_announcements,
-    pull_macro_breadth,
-    pull_macro_derivatives,
-    pull_macro_flows,
-    pull_macro_indices,
-    pull_macro_index_constituents,
-    pull_macro_index_history,
-    pull_macro_index_quote,
-    pull_macro_index_returns,
-    pull_macro_index_valuation,
-    pull_macro_market_valuation,
-    pull_macro_overview,
-    pull_macro_rates,
-    pull_macro_turnover,
     pull_nse_data,
     pull_sec_data,
     refresh_news,
@@ -361,61 +347,6 @@ async def _announcements() -> None:
         await _run_batch(rows, lambda s, e, c: pull_announcements(s))
 
 
-async def _macro() -> None:
-    choice = select(
-        "Macro",
-        [
-            ("overview", "Overview", "top indices + flows + rates"),
-            ("indices", "All indices", "full NSE index universe"),
-            ("breadth", "Breadth", "advances/declines + gainers/losers"),
-            ("flows", "FII/DII flows", "daily cash-market flows"),
-            ("turnover", "Turnover", "cash turnover by segment"),
-            ("rates", "RBI rates", "policy rates + FX"),
-            ("derivatives", "Derivatives", "option chain — pick an index"),
-            ("index_history", "Index history", "daily OHLC — pick an index"),
-            ("index_valuation", "Index valuation", "PE/PB/DY — pick an index"),
-            ("index_returns", "Index returns", "total return — pick an index"),
-            ("index_constituents", "Constituents", "member stocks — pick an index"),
-            ("market_valuation", "Market P/E", "whole-market PE snapshot"),
-        ],
-        subtitle="Macro data — NSE/RBI upstream",
-        multiline=True,
-    )
-    if choice in (BACK, QUIT):
-        return
-    try:
-        with console.status(f"[cyan]pulling {choice}[/cyan]"):
-            if choice == "overview":
-                r = await pull_macro_overview()
-            elif choice == "indices":
-                r = await pull_macro_indices()
-            elif choice == "breadth":
-                r = await pull_macro_breadth()
-            elif choice == "flows":
-                r = await pull_macro_flows()
-            elif choice == "turnover":
-                r = await pull_macro_turnover()
-            elif choice == "rates":
-                r = await pull_macro_rates()
-            elif choice == "market_valuation":
-                r = await pull_macro_market_valuation()
-            elif choice == "derivatives":
-                r = await pull_macro_derivatives(_ask("Index symbol (e.g. NIFTY)").upper())
-            elif choice == "index_history":
-                r = await pull_macro_index_history(_ask("Index symbol").upper())
-            elif choice == "index_valuation":
-                r = await pull_macro_index_valuation(_ask("Index symbol").upper())
-            elif choice == "index_returns":
-                r = await pull_macro_index_returns(_ask("Index symbol").upper())
-            elif choice == "index_constituents":
-                r = await pull_macro_index_constituents(_ask("Index symbol").upper())
-            else:
-                return
-        _line(choice, _describe(r))
-    except Exception as exc:
-        console.print(f"[red]{exc}[/red]")
-
-
 _HANDLERS = {
     "financials": _financials,
     "prices": _prices,
@@ -423,7 +354,6 @@ _HANDLERS = {
     "shareholdings": _shareholdings,
     "announcements": _announcements,
     "documents": _documents,
-    "macro": _macro,
 }
 
 
@@ -438,7 +368,6 @@ async def _ingest_loop() -> None:
                 ("shareholdings", "Shareholdings", "NSE shareholding pattern"),
                 ("announcements", "Announcements", "NSE announcements — equities + SME"),
                 ("documents", "Documents", "index a PDF by URL or path"),
-                ("macro", "Macro", "NSE/RBI macro data — indices, flows, rates"),
             ],
             subtitle="Pull data into Postgres — pick an item, then single-symbol or bulk",
             multiline=True,

@@ -70,20 +70,23 @@ class APIKey(Base):
         return {c.key: getattr(self, c.key) for c in self.__table__.columns}
 
 
-class NSEStockMetadata(Base):
-    __tablename__ = "nse_stock_metadata"
+class StockMetadata(Base):
+    """Per-symbol pull metadata, market-agnostic (NSE, NASDAQ, ...)."""
+
+    __tablename__ = "stock_metadata"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     symbol = Column(Text, nullable=False)
-    source = Column(Text, default="NSE")
-    exchange = Column(Text, nullable=True)
+    exchange = Column(Text, nullable=False)
+    country = Column(Text, nullable=False)
     last_pull = Column(DateTime, nullable=True)
     previous_pulls = Column(ARRAY(DateTime), default=[])
     created_at = Column(DateTime, nullable=False, default=_utcnow)
     updated_at = Column(DateTime, nullable=False, default=_utcnow)
 
     __table_args__ = (
-        UniqueConstraint("symbol", "source", name="uq_stock_meta_symbol_source"),
+        UniqueConstraint("symbol", "exchange", "country",
+                         name="uq_stock_meta_symbol_exchange_country"),
     )
 
 
@@ -281,6 +284,8 @@ class Shareholding(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     symbol = Column(Text, nullable=False)
+    exchange = Column(Text, nullable=False, default="NSE")
+    country = Column(Text, nullable=False, default="IN")
     period_end_date = Column(Date, nullable=False)
     period_start_date = Column(Date, nullable=True)
     xbrl_url = Column(Text, nullable=True)
@@ -304,7 +309,7 @@ class Shareholding(Base):
     non_promoter_non_public_shareholding = Column(Numeric, nullable=True)
 
     __table_args__ = (
-        UniqueConstraint("symbol", "period_end_date", "consolidated", "source_endpoint", "source",
+        UniqueConstraint("symbol", "exchange", "country", "period_end_date", "consolidated", "source_endpoint", "source",
                          name="uq_shareholding"),
     )
 
@@ -320,55 +325,38 @@ class Shareholding(Base):
         return result
 
 
-class NSEAnnouncement(Base):
-    __tablename__ = "nse_announcements"
+class FilingDisclosure(Base):
+    """Corporate filings and disclosures across markets (NSE, SEC, ...).
+
+    One row per filing. ``pdf_index`` holds the PageIndex tree plus per-page
+    text for a filing whose URL is a PDF, so a document is indexed once and
+    read back from here instead of a separate ``document_indices`` table.
+    """
+
+    __tablename__ = "filings_disclosures"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    symbol = Column(Text, nullable=False)
-    an_dt = Column(DateTime, nullable=True)
-    attchmnt_text = Column(Text, nullable=True)
-    desc = Column(Text, nullable=True)
-    attchmnt_file = Column(Text, nullable=True)
-    att_file_size = Column(BigInteger, nullable=True)
-    has_xbrl = Column(Boolean, default=False)
-    raw_data = Column(JSONB, nullable=True)
-
-
-class NSEAnnualReport(Base):
-    __tablename__ = "nse_annual_reports"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    symbol = Column(Text, nullable=False)
-    file_name = Column(Text, nullable=True)
-    raw_data = Column(JSONB, nullable=True)
-
-
-class DocumentIndex(Base):
-    """PageIndex Flash tree map for a PDF, cached so one URL is parsed once."""
-
-    __tablename__ = "document_indices"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    url = Column(Text, nullable=False)
-    pdf_hash = Column(Text, nullable=True)
     symbol = Column(Text, nullable=True)
-    source = Column(Text, default="nse")
-    doc_title = Column(Text, nullable=True)
-    num_pages = Column(Integer, nullable=True)
-    page_index = Column(JSONB, nullable=True)
-    status = Column(Text, default="parsed")
-    error = Column(Text, nullable=True)
-    indexed_at = Column(DateTime, nullable=True)
+    exchange = Column(Text, nullable=False)
+    country = Column(Text, nullable=False)
+    source = Column(Text, nullable=False, default="NSE")
+    filing_type = Column(Text, nullable=False, default="announcement")
+    market = Column(Text, nullable=True)
+    filed_at = Column(DateTime, nullable=True)
+    title = Column(Text, nullable=True)
+    description = Column(Text, nullable=True)
+    url = Column(Text, nullable=True)
+    file_size = Column(BigInteger, nullable=True)
+    has_xbrl = Column(Boolean, default=False)
+    pdf_index = Column(JSONB, nullable=True)
+    raw_data = Column(JSONB, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=_utcnow)
 
-    __table_args__ = (
-        UniqueConstraint("url", name="uq_document_index_url"),
-    )
 
+class MacroNews(Base):
+    """Market-wide news stories (RSS), keyed by country/market."""
 
-class NewsArticle(Base):
-    """News stories deduplicated by URL so repeat fetches are cheap."""
-
-    __tablename__ = "news_articles"
+    __tablename__ = "macro_news"
 
     id = Column(Integer, primary_key=True)
     country = Column(Text, nullable=False)
@@ -380,8 +368,35 @@ class NewsArticle(Base):
     fetched_at = Column(DateTime, nullable=False, default=_utcnow)
 
     __table_args__ = (
-        UniqueConstraint("url", name="uq_news_article_url"),
+        UniqueConstraint("url", name="uq_macro_news_url"),
     )
+
+    def to_dict(self) -> dict:
+        return {c.key: getattr(self, c.key) for c in self.__table__.columns}
+
+
+class StockNews(Base):
+    """Stock-specific news stories, keyed by symbol."""
+
+    __tablename__ = "stock_news"
+
+    id = Column(Integer, primary_key=True)
+    symbol = Column(Text, nullable=False)
+    exchange = Column(Text, nullable=True)
+    country = Column(Text, nullable=False)
+    source = Column(Text, nullable=False)
+    url = Column(Text, nullable=False)
+    title = Column(Text, nullable=True)
+    summary = Column(Text, nullable=True)
+    published_at = Column(DateTime, nullable=True)
+    fetched_at = Column(DateTime, nullable=False, default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "source", "url", name="uq_stock_news_symbol_source_url"),
+    )
+
+    def to_dict(self) -> dict:
+        return {c.key: getattr(self, c.key) for c in self.__table__.columns}
 
 
 class PriceOHLCV(Base):
@@ -409,6 +424,13 @@ class PriceOHLCV(Base):
 
 
 class DataCatalog(Base):
+    """Per-symbol data-availability ledger.
+
+    One row per (symbol, exchange, country). Each data type carries a record
+    count and the last time that type was pulled, so a caller can see what a
+    symbol has and how fresh it is without scanning every table.
+    """
+
     __tablename__ = "data_catalog"
 
     id = Column(Integer, primary_key=True)
@@ -417,33 +439,23 @@ class DataCatalog(Base):
     country = Column(Text, nullable=False)
     price_records = Column(Integer, default=0)
     price_last_updated = Column(DateTime, nullable=True)
+    income_statement_records = Column(Integer, default=0)
+    income_statement_last_updated = Column(DateTime, nullable=True)
+    balance_sheet_records = Column(Integer, default=0)
+    balance_sheet_last_updated = Column(DateTime, nullable=True)
+    cash_flow_records = Column(Integer, default=0)
+    cash_flow_last_updated = Column(DateTime, nullable=True)
     filing_records = Column(Integer, default=0)
     filing_last_updated = Column(DateTime, nullable=True)
-    announcement_records = Column(Integer, default=0)
-    announcement_last_updated = Column(DateTime, nullable=True)
+    news_records = Column(Integer, default=0)
+    news_last_updated = Column(DateTime, nullable=True)
+    social_media_records = Column(Integer, default=0)
+    social_media_last_updated = Column(DateTime, nullable=True)
     total_records = Column(Integer, default=0)
     last_updated = Column(DateTime, nullable=False, default=_utcnow)
 
     __table_args__ = (
         UniqueConstraint("symbol", "exchange", "country", name="uq_data_catalog"),
-    )
-
-    def to_dict(self) -> dict:
-        return {c.key: getattr(self, c.key) for c in self.__table__.columns}
-
-
-class MacroData(Base):
-    __tablename__ = "macro_data"
-
-    id = Column(Integer, primary_key=True)
-    category = Column(Text, nullable=False)
-    symbol = Column(Text, nullable=True)
-    source = Column(Text, nullable=False, default="nse")
-    data = Column(JSONB, nullable=False)
-    fetched_at = Column(DateTime, nullable=False, default=_utcnow)
-
-    __table_args__ = (
-        UniqueConstraint("category", "symbol", "source", name="uq_macro_data"),
     )
 
     def to_dict(self) -> dict:

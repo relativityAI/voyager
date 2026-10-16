@@ -20,11 +20,14 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.db.engine import get_session_factory
-from src.db.models import DocumentIndex
+from src.db.models import FilingDisclosure
+from src.services._common import (
+    InvalidRequestError,
+    ServiceUnavailableError,
+    UpstreamError,
+)
 from src.utils.helpers import utcnow
 from src.utils.web import generate_fake_headers
-
-from src.services._common import InvalidRequestError, ServiceUnavailableError, UpstreamError
 
 # PageIndex's char-level parser keeps ~1.4MB of RSS per 1k extracted characters
 # and never returns it, so an unbounded PDF OOMs the 512MB worker. Refuse
@@ -132,10 +135,17 @@ def _structure_and_text(data: bytes) -> tuple:
     return parsed, text
 
 
+def _market_for(source: str) -> tuple:
+    """(exchange, country) implied by a source code."""
+    from src.services._common import SOURCE_COUNTRY
+
+    return source, SOURCE_COUNTRY.get(source, "in")
+
+
 async def ingest_document(
     url: str, symbol: Optional[str] = None, source: str = "nse"
 ) -> Dict[str, Any]:
-    """Fetch + parse a PDF and cache it by URL+content hash.
+    """Fetch + parse a PDF and cache it in filings_disclosures by URL.
 
     Returns the tree payload (structure only, no text). Re-ingesting a URL
     whose bytes are unchanged is a cache hit; changed bytes re-parse and
@@ -143,33 +153,39 @@ async def ingest_document(
     """
     data = await asyncio.to_thread(_fetch_pdf, url)
     pdf_hash = _pdf_hash(data)
+    source = source.upper()
+    exchange, country = _market_for(source)
 
     factory = get_session_factory()
     async with factory() as session:
         existing = (
             await session.execute(
-                select(DocumentIndex).where(DocumentIndex.url == url)
+                select(FilingDisclosure).where(
+                    FilingDisclosure.source == source,
+                    FilingDisclosure.url == url,
+                )
             )
         ).scalar_one_or_none()
-        if existing and existing.pdf_hash == pdf_hash and existing.page_index:
-            logger.info(f"Serving cached page index for {url}")
-            # Rows written before text existed: extract now (PDF already in
-            # hand) and backfill, next call is a plain cache hit.
-            text = existing.page_index.get("text")
-            if not text:
-                text = await asyncio.to_thread(_page_texts, data)
-                existing.page_index = {**existing.page_index, "text": text}
-                await session.commit()
-            return {
-                "id": existing.id,
-                "url": url,
-                "symbol": existing.symbol,
-                "source": existing.source,
-                "doc_title": existing.doc_title,
-                "num_pages": existing.num_pages,
-                "structure": existing.page_index.get("structure", []),
-                "cached": True,
-            }
+        if existing and existing.pdf_index:
+            if existing.pdf_index.get("hash") == pdf_hash:
+                logger.info(f"Serving cached page index for {url}")
+                text = existing.pdf_index.get("text")
+                if not text:
+                    # Rows written before text existed: extract now (PDF
+                    # already in hand) and backfill.
+                    text = await asyncio.to_thread(_page_texts, data)
+                    existing.pdf_index = {**existing.pdf_index, "text": text}
+                    await session.commit()
+                return {
+                    "id": existing.id,
+                    "url": url,
+                    "symbol": existing.symbol,
+                    "source": source,
+                    "doc_title": existing.title,
+                    "num_pages": len(text),
+                    "structure": existing.pdf_index.get("structure", []),
+                    "cached": True,
+                }
 
         async with _parse_lock:
             parsed, text = await asyncio.to_thread(_structure_and_text, data)
@@ -179,28 +195,30 @@ async def ingest_document(
         num_pages = parsed.get("num_pages") or len(text)
 
         row = {
-            "url": url,
-            "pdf_hash": pdf_hash,
             "symbol": symbol,
+            "exchange": exchange,
+            "country": country,
             "source": source,
-            "doc_title": doc_title,
-            "num_pages": num_pages,
-            "page_index": {"structure": structure, "text": text},
-            "status": "parsed",
-            "indexed_at": utcnow(),
+            "filing_type": "document",
+            "url": url,
+            "title": doc_title,
+            "pdf_index": {"hash": pdf_hash, "structure": structure, "text": text},
+            "created_at": utcnow(),
         }
-        result = await session.execute(
-            pg_insert(DocumentIndex)
-            .values(**row)
-            .on_conflict_do_update(
-                index_elements=["url"],
-                set_={k: v for k, v in row.items() if k != "url"},
+        if existing:
+            for k, v in row.items():
+                setattr(existing, k, v)
+            result_id = existing.id
+        else:
+            result = await session.execute(
+                pg_insert(FilingDisclosure)
+                .values(**row)
+                .returning(FilingDisclosure.id)
             )
-            .returning(DocumentIndex.id)
-        )
+            result_id = result.scalar_one()
         await session.commit()
         return {
-            "id": result.scalar_one(),
+            "id": result_id,
             "url": url,
             "symbol": symbol,
             "source": source,

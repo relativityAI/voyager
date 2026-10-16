@@ -1,21 +1,13 @@
 import asyncio
-from datetime import datetime
 
 import yfinance as yf
 from loguru import logger
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.engine import get_session_factory
 from src.db.models import (
-    BalanceSheet,
-    CashFlow,
-    IncomeStatement,
-    NSEAnnouncement,
     PriceOHLCV,
-    Shareholding,
-    DataCatalog,
 )
 
 _EXCHANGE_TO_YF_SUFFIX = {
@@ -72,7 +64,8 @@ async def download_ohlcv(
                 )
             )
         if max_date:
-            from datetime import date as date_type, timedelta
+            from datetime import date as date_type
+            from datetime import timedelta
             today = date_type.today()
             start_date = max_date + timedelta(days=1)
             if start_date > today:
@@ -153,62 +146,6 @@ async def _upsert_rows(rows: list[dict]) -> int:
 
 
 async def _update_ledger(symbol: str, exchange: str, country: str) -> None:
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        from sqlalchemy import func as sql_func
+    from src.services._common import record_pull
 
-        source = "SEC" if country == "US" else "NSE"
-
-        price_count = await session.scalar(
-            select(sql_func.count(PriceOHLCV.id)).where(
-                PriceOHLCV.symbol == symbol,
-                PriceOHLCV.exchange == exchange,
-            )
-        ) or 0
-
-        filing_count = 0
-        for model in (IncomeStatement, BalanceSheet, CashFlow, Shareholding):
-            filing_count += await session.scalar(
-                select(sql_func.count(model.id)).where(
-                    model.symbol == symbol,
-                    model.source == source,
-                )
-            ) or 0
-
-        announcement_count = await session.scalar(
-            select(sql_func.count(NSEAnnouncement.id)).where(
-                NSEAnnouncement.symbol == symbol,
-            )
-        ) or 0
-
-        total = price_count + filing_count + announcement_count
-        now = datetime.utcnow()
-
-        stmt = pg_insert(DataCatalog).values(
-            symbol=symbol,
-            exchange=exchange,
-            country=country,
-            price_records=price_count,
-            price_last_updated=now if price_count > 0 else None,
-            filing_records=filing_count,
-            filing_last_updated=now if filing_count > 0 else None,
-            announcement_records=announcement_count,
-            announcement_last_updated=now if announcement_count > 0 else None,
-            total_records=total,
-            last_updated=now,
-        )
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["symbol", "exchange", "country"],
-            set_={
-                "price_records": stmt.excluded.price_records,
-                "price_last_updated": stmt.excluded.price_last_updated,
-                "filing_records": stmt.excluded.filing_records,
-                "filing_last_updated": stmt.excluded.filing_last_updated,
-                "announcement_records": stmt.excluded.announcement_records,
-                "announcement_last_updated": stmt.excluded.announcement_last_updated,
-                "total_records": stmt.excluded.total_records,
-                "last_updated": stmt.excluded.last_updated,
-            },
-        )
-        await session.execute(stmt)
-        await session.commit()
+    await record_pull(symbol, exchange, country)

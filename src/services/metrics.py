@@ -6,7 +6,7 @@ from loguru import logger
 from sqlalchemy import func, select
 
 from src.db.engine import get_session_factory
-from src.db.models import BalanceSheet, CashFlow, IncomeStatement, NSEStockMetadata
+from src.db.models import BalanceSheet, CashFlow, IncomeStatement, StockMetadata
 
 from ._common import InvalidRequestError, _validate_source
 
@@ -907,9 +907,9 @@ async def financial_metrics(
     async with factory() as session:
         if source == "SEC":
             result = await session.execute(
-                select(NSEStockMetadata).where(
-                    NSEStockMetadata.symbol == symbol,
-                    NSEStockMetadata.source == "SEC",
+                select(StockMetadata).where(
+                    StockMetadata.symbol == symbol,
+                    StockMetadata.country == "US",
                 )
             )
             meta = result.scalar_one_or_none()

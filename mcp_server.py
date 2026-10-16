@@ -449,35 +449,25 @@ async def macro_rates(country: str) -> dict:
 
 
 @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
-async def get_news_stories(
+async def get_news(
     country: str = "in",
     days: int = 7,
     limit: int = 20,
+    symbol: str | None = None,
     query: str | None = None,
 ) -> dict:
-    """Latest market news stories (RSS, cached).
+    """Recent market or stock news stories (RSS, cached).
 
     Args:
         country: 'in' (default) or 'us'.
         days: How many days back to fetch.
         limit: Max stories (1-50).
+        symbol: Exchange ticker in UPPER CASE. Omit for market-wide news.
         query: Filter stories by keyword.
     """
+    if symbol:
+        return await get_ticker_mentions(symbol, country, days)
     return await get_news_stories(country, days, limit, query)
-
-
-@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
-async def get_ticker_mentions(
-    symbol: str, country: str = "in", days: int = 7
-) -> dict:
-    """News stories mentioning a stock.
-
-    Args:
-        symbol: Exchange ticker in UPPER CASE.
-        country: 'in' (default) or 'us'.
-        days: How many days back to look.
-    """
-    return await get_ticker_mentions(symbol, country, days)
 
 
 @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)

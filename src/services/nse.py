@@ -18,7 +18,6 @@ from src.db.models import (
     BalanceSheet,
     CashFlow,
     IncomeStatement,
-    NSEStockMetadata,
     Shareholding,
 )
 from src.tools.nse.client import ENDPOINTS, CookieError, NSEIndia

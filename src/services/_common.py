@@ -161,54 +161,86 @@ def _validate_source(country: Optional[str], source: str) -> Tuple[str, str]:
 
 async def record_pull(symbol: str, exchange: str, country: str) -> None:
     from datetime import datetime
+
     from sqlalchemy import func, select
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
     from src.db.engine import get_session_factory
     from src.db.models import (
         BalanceSheet,
         CashFlow,
+        DataCatalog,
+        FilingDisclosure,
         IncomeStatement,
-        NSEAnnouncement,
         PriceOHLCV,
         Shareholding,
-        DataCatalog,
     )
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     source = "SEC" if country == "US" else "NSE"
     factory = get_session_factory()
-    async with factory() as session:
-        price_count = await session.scalar(
-            select(func.count(PriceOHLCV.id)).where(
-                PriceOHLCV.symbol == symbol,
-                PriceOHLCV.exchange == exchange,
-            )
-        ) or 0
-        filing_count = 0
-        for model in (IncomeStatement, BalanceSheet, CashFlow, Shareholding):
-            filing_count += await session.scalar(
-                select(func.count(model.id)).where(
-                    model.symbol == symbol,
-                    model.source == source,
-                )
-            ) or 0
-        announcement_count = await session.scalar(
-            select(func.count(NSEAnnouncement.id)).where(
-                NSEAnnouncement.symbol == symbol,
-            )
-        ) or 0
-    total = price_count + filing_count + announcement_count
     now = datetime.utcnow()
+
+    async def _count(model, *conds) -> int:
+        async with factory() as session:
+            return (
+                await session.scalar(select(func.count(model.id)).where(*conds))
+            ) or 0
+
+    price_count = await _count(
+        PriceOHLCV, PriceOHLCV.symbol == symbol, PriceOHLCV.exchange == exchange
+    )
+    income_count = await _count(
+        IncomeStatement, IncomeStatement.symbol == symbol, IncomeStatement.source == source
+    )
+    balance_count = await _count(
+        BalanceSheet, BalanceSheet.symbol == symbol, BalanceSheet.source == source
+    )
+    cashflow_count = await _count(
+        CashFlow, CashFlow.symbol == symbol, CashFlow.source == source
+    )
+    shareholding_count = await _count(
+        Shareholding, Shareholding.symbol == symbol, Shareholding.source == source
+    )
+    # Shareholding patterns are disclosures, so they count as filings too.
+    filing_count = (
+        await _count(FilingDisclosure, FilingDisclosure.symbol == symbol)
+        + shareholding_count
+    )
+    # News/social are written by their own ingest paths; 0 until those land.
+    news_count = 0
+    social_count = 0
+    total = (
+        price_count
+        + income_count
+        + balance_count
+        + cashflow_count
+        + filing_count
+        + news_count
+        + social_count
+    )
+
+    def _ts(n: int):
+        return now if n > 0 else None
+
     async with factory() as session:
         stmt = pg_insert(DataCatalog).values(
             symbol=symbol,
             exchange=exchange,
             country=country,
             price_records=price_count,
-            price_last_updated=now if price_count > 0 else None,
+            price_last_updated=_ts(price_count),
+            income_statement_records=income_count,
+            income_statement_last_updated=_ts(income_count),
+            balance_sheet_records=balance_count,
+            balance_sheet_last_updated=_ts(balance_count),
+            cash_flow_records=cashflow_count,
+            cash_flow_last_updated=_ts(cashflow_count),
             filing_records=filing_count,
-            filing_last_updated=now if filing_count > 0 else None,
-            announcement_records=announcement_count,
-            announcement_last_updated=now if announcement_count > 0 else None,
+            filing_last_updated=_ts(filing_count),
+            news_records=news_count,
+            news_last_updated=_ts(news_count),
+            social_media_records=social_count,
+            social_media_last_updated=_ts(social_count),
             total_records=total,
             last_updated=now,
         )
@@ -217,10 +249,18 @@ async def record_pull(symbol: str, exchange: str, country: str) -> None:
             set_={
                 "price_records": stmt.excluded.price_records,
                 "price_last_updated": stmt.excluded.price_last_updated,
+                "income_statement_records": stmt.excluded.income_statement_records,
+                "income_statement_last_updated": stmt.excluded.income_statement_last_updated,
+                "balance_sheet_records": stmt.excluded.balance_sheet_records,
+                "balance_sheet_last_updated": stmt.excluded.balance_sheet_last_updated,
+                "cash_flow_records": stmt.excluded.cash_flow_records,
+                "cash_flow_last_updated": stmt.excluded.cash_flow_last_updated,
                 "filing_records": stmt.excluded.filing_records,
                 "filing_last_updated": stmt.excluded.filing_last_updated,
-                "announcement_records": stmt.excluded.announcement_records,
-                "announcement_last_updated": stmt.excluded.announcement_last_updated,
+                "news_records": stmt.excluded.news_records,
+                "news_last_updated": stmt.excluded.news_last_updated,
+                "social_media_records": stmt.excluded.social_media_records,
+                "social_media_last_updated": stmt.excluded.social_media_last_updated,
                 "total_records": stmt.excluded.total_records,
                 "last_updated": stmt.excluded.last_updated,
             },

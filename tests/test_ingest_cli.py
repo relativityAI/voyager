@@ -111,7 +111,7 @@ def test_announcement_dedup_index_is_functional():
         async with eng.engine.begin() as conn:
             row = (
                 await conn.execute(
-                    text("select indexdef from pg_indexes where indexname='ux_nse_announcements_raw'")
+                    text("select indexdef from pg_indexes where indexname='uq_filing_raw'")
                 )
             ).first()
         return row[0] if row else ""

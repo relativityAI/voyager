@@ -8,7 +8,7 @@ import asyncio
 import os
 import time
 from datetime import timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from loguru import logger
 from sqlalchemy import func, select, text
@@ -18,10 +18,10 @@ from src.db.engine import get_session_factory
 from src.db.models import (
     BalanceSheet,
     CashFlow,
+    FilingDisclosure,
     IncomeStatement,
-    NSEAnnouncement,
-    NSEStockMetadata,
     Shareholding,
+    StockMetadata,
 )
 from src.services._common import (
     InvalidRequestError,
@@ -52,11 +52,11 @@ XBRL_PARSE_MAP: Dict[str, str] = {
 ANN_ENDPOINTS = ("announcements-equities", "announcements-sme")
 
 ANN_FIELD_MAP = {
-    "an_dt": "an_dt",
-    "attchmntText": "attchmnt_text",
-    "desc": "desc",
-    "attchmntFile": "attchmnt_file",
-    "attFileSize": "att_file_size",
+    "an_dt": "filed_at",
+    "attchmntText": "title",
+    "desc": "description",
+    "attchmntFile": "url",
+    "attFileSize": "file_size",
     "hasXbrl": "has_xbrl",
 }
 
@@ -287,23 +287,32 @@ async def pull_nse_data(
 
         ann_rows = []
         for ep_key in ANN_ENDPOINTS:
+            market = "sme" if ep_key.endswith("-sme") else "equities"
             for rec in raw_by_endpoint.get(ep_key, []):
-                row = {"symbol": symbol, "raw_data": rec}
+                row = {
+                    "symbol": symbol,
+                    "exchange": "NSE",
+                    "country": "IN",
+                    "source": "NSE",
+                    "filing_type": "announcement",
+                    "market": market,
+                    "raw_data": rec,
+                }
                 for src, col in ANN_FIELD_MAP.items():
                     if rec.get(src) is not None:
                         row[col] = rec[src]
-                if "att_file_size" in row:
+                if "file_size" in row:
                     try:
-                        row["att_file_size"] = int(row["att_file_size"])
+                        row["file_size"] = int(row["file_size"])
                     except (TypeError, ValueError):
-                        row["att_file_size"] = None
-                if "an_dt" in row:
-                    row["an_dt"] = _parse_datetime(row["an_dt"])
+                        row["file_size"] = None
+                if "filed_at" in row:
+                    row["filed_at"] = _parse_datetime(row["filed_at"])
                 ann_rows.append(row)
         if ann_rows:
             await _upsert_rows(
-                session, NSEAnnouncement, ann_rows,
-                on_conflict_cols=["symbol", text("md5(raw_data::text)")],
+                session, FilingDisclosure, ann_rows,
+                on_conflict_cols=["symbol", "source", text("md5(raw_data::text)")],
             )
             logger.info(f"Upserted {len(ann_rows)} announcements for {symbol}")
 
@@ -337,9 +346,10 @@ async def pull_nse_data(
         factory = get_session_factory()
         async with factory() as session:
             result = await session.execute(
-                select(NSEStockMetadata).where(
-                    NSEStockMetadata.symbol == symbol,
-                    NSEStockMetadata.source == "NSE",
+                select(StockMetadata).where(
+                    StockMetadata.symbol == symbol,
+                    StockMetadata.exchange == "NSE",
+                    StockMetadata.country == "IN",
                 )
             )
             meta = result.scalar_one_or_none()
@@ -352,8 +362,9 @@ async def pull_nse_data(
                 meta.updated_at = now
                 logger.info(f"Updated metadata for {symbol}")
             else:
-                meta = NSEStockMetadata(
-                    symbol=symbol, last_pull=now, previous_pulls=[], source="NSE",
+                meta = StockMetadata(
+                    symbol=symbol, exchange="NSE", country="IN",
+                    last_pull=now, previous_pulls=[],
                     created_at=now, updated_at=now,
                 )
                 session.add(meta)
@@ -370,7 +381,7 @@ async def pull_nse_data(
     factory = get_session_factory()
     async with factory() as session:
         ex_row = await session.execute(
-            select(NSEStockMetadata.exchange).where(NSEStockMetadata.symbol == symbol).limit(1)
+            select(StockMetadata.exchange).where(StockMetadata.symbol == symbol).limit(1)
         )
         ex = ex_row.scalar_one_or_none() or "NSE"
     await record_pull(symbol.upper(), ex, "IN")
@@ -414,38 +425,47 @@ async def pull_announcements(symbol: str) -> Dict[str, Any]:
                 continue
             records = data if isinstance(data, list) else []
             endpoint_breakdown[ep_key] = len(records)
+            market = "sme" if ep_key.endswith("-sme") else "equities"
             for rec in records:
                 if not isinstance(rec, dict):
                     continue
-                row = {"symbol": symbol, "raw_data": rec}
+                row = {
+                    "symbol": symbol,
+                    "exchange": "NSE",
+                    "country": "IN",
+                    "source": "NSE",
+                    "filing_type": "announcement",
+                    "market": market,
+                    "raw_data": rec,
+                }
                 for src, col in ANN_FIELD_MAP.items():
                     if rec.get(src) is not None:
                         row[col] = rec[src]
-                if "att_file_size" in row:
+                if "file_size" in row:
                     try:
-                        row["att_file_size"] = int(row["att_file_size"])
+                        row["file_size"] = int(row["file_size"])
                     except (TypeError, ValueError):
-                        row["att_file_size"] = None
-                if "an_dt" in row:
-                    row["an_dt"] = _parse_datetime(row["an_dt"])
+                        row["file_size"] = None
+                if "filed_at" in row:
+                    row["filed_at"] = _parse_datetime(row["filed_at"])
                 ann_rows.append(row)
 
         existing_count = await session.scalar(
-            select(func.count(NSEAnnouncement.id)).where(
-                NSEAnnouncement.symbol == symbol
+            select(func.count(FilingDisclosure.id)).where(
+                FilingDisclosure.symbol == symbol
             )
         ) or 0
 
         if ann_rows:
             await _upsert_rows(
-                session, NSEAnnouncement, ann_rows,
-                on_conflict_cols=["symbol", text("md5(raw_data::text)")],
+                session, FilingDisclosure, ann_rows,
+                on_conflict_cols=["symbol", "source", text("md5(raw_data::text)")],
             )
         await session.commit()
 
         total_count = await session.scalar(
-            select(func.count(NSEAnnouncement.id)).where(
-                NSEAnnouncement.symbol == symbol
+            select(func.count(FilingDisclosure.id)).where(
+                FilingDisclosure.symbol == symbol
             )
         ) or 0
 
@@ -457,7 +477,7 @@ async def pull_announcements(symbol: str) -> Dict[str, Any]:
     factory = get_session_factory()
     async with factory() as session:
         ex_row = await session.execute(
-            select(NSEStockMetadata.exchange).where(NSEStockMetadata.symbol == symbol).limit(1)
+            select(StockMetadata.exchange).where(StockMetadata.symbol == symbol).limit(1)
         )
         ex = ex_row.scalar_one_or_none() or "NSE"
     await record_pull(symbol, ex, "IN")

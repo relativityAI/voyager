@@ -11,16 +11,19 @@ from typing import Any, Dict, Optional
 from sqlalchemy import select
 
 from src.db.engine import get_session_factory
-from src.db.models import DocumentIndex
+from src.db.models import FilingDisclosure
 
 from ._common import InvalidRequestError, NotFoundError
 
 
-async def _load_indexed(url: str) -> Optional[DocumentIndex]:
+async def _load_indexed(url: str, source: str = "nse") -> Optional[FilingDisclosure]:
     async with get_session_factory()() as session:
         return (
             await session.execute(
-                select(DocumentIndex).where(DocumentIndex.url == url)
+                select(FilingDisclosure).where(
+                    FilingDisclosure.url == url,
+                    FilingDisclosure.source == source.upper(),
+                )
             )
         ).scalar_one_or_none()
 
@@ -30,19 +33,19 @@ async def read_document(
 ) -> Dict[str, Any]:
     """Per-page text for a whole PDF previously cached by
     ``voyager ingest documents <url>``."""
-    existing = await _load_indexed(url)
-    if not existing or not existing.page_index:
+    existing = await _load_indexed(url, source)
+    if not existing or not existing.pdf_index:
         raise NotFoundError(
             f"Document not indexed; run 'voyager ingest documents {url}'"
         )
-    page_index = existing.page_index
+    page_index = existing.pdf_index
     return {
         "id": existing.id,
         "url": url,
         "symbol": existing.symbol,
         "source": existing.source,
-        "doc_title": existing.doc_title,
-        "num_pages": existing.num_pages,
+        "doc_title": existing.title,
+        "num_pages": len(page_index.get("text") or []),
         "cached": True,
         "page_index": {
             "structure": page_index.get("structure", []),
@@ -58,20 +61,20 @@ async def read_document_pages(
 
     ``pages`` is a 1-based spec: "3,5-9" or "1-3,7". Nodes in the tree carry
     start/end_index page numbers, so a caller slices by a node's range."""
-    existing = await _load_indexed(url)
-    if not existing or not existing.page_index:
+    existing = await _load_indexed(url, source)
+    if not existing or not existing.pdf_index:
         raise NotFoundError(
             f"Document not indexed; run 'voyager ingest documents {url}'"
         )
-    page_index = existing.page_index
-    wanted = _parse_pages(pages, existing.num_pages)
+    page_index = existing.pdf_index
+    wanted = _parse_pages(pages, len(page_index.get("text") or []))
     return {
         "id": existing.id,
         "url": url,
         "symbol": existing.symbol,
         "source": existing.source,
-        "doc_title": existing.doc_title,
-        "num_pages": existing.num_pages,
+        "doc_title": existing.title,
+        "num_pages": len(page_index.get("text") or []),
         "cached": True,
         "page_index": {"structure": page_index.get("structure", [])},
         "pages": sorted(wanted),

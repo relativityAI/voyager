@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.db.engine import get_session_factory
-from src.db.models import NewsArticle
+from src.db.models import MacroNews
 from src.tools.news.feeds import fetch_news
 
 _COUNTRY_FRESHNESS = timedelta(hours=4)
@@ -22,9 +22,9 @@ async def refresh_news(country: str, days: int = 7) -> bool:
     factory = get_session_factory()
     async with factory() as session:
         result = await session.execute(
-            select(NewsArticle)
-            .where(NewsArticle.country == country)
-            .order_by(NewsArticle.fetched_at.desc())
+            select(MacroNews)
+            .where(MacroNews.country == country)
+            .order_by(MacroNews.fetched_at.desc())
             .limit(1)
         )
         latest = result.scalar_one_or_none()
@@ -56,7 +56,7 @@ async def refresh_news(country: str, days: int = 7) -> bool:
     async with factory() as session:
         for row in rows:
             stmt = (
-                pg_insert(NewsArticle)
+                pg_insert(MacroNews)
                 .values(**row)
                 .on_conflict_do_nothing(index_elements=["url"])
             )

@@ -252,7 +252,7 @@ DATA: List[Endpoint] = [
     },
     {
         "name": "Announcements",
-        "group": "Corporate actions",
+        "group": "Filings & Disclosures",
         "method": "GET",
         "path": "/announcements",
         "auth": "key",
@@ -269,7 +269,7 @@ DATA: List[Endpoint] = [
     },
     {
         "name": "Shareholdings",
-        "group": "Corporate actions",
+        "group": "Filings & Disclosures",
         "method": "GET",
         "path": "/shareholdings",
         "auth": "key",
@@ -351,13 +351,14 @@ ADVANCED: List[Endpoint] = [
         ],
     },
     {
-        "name": "News stories",
+        "name": "News",
         "group": "Advanced Data Suite",
         "method": "GET",
-        "path": "/news/stories",
+        "path": "/news",
         "auth": "key",
-        "description": "Latest RSS news stories for a market (cached).",
+        "description": "Market-wide or stock-specific RSS news stories (cached).",
         "params": [
+            {"name": "symbol", "type": "symbol", "required": False},
             {
                 "name": "country",
                 "type": "select",
@@ -366,24 +367,6 @@ ADVANCED: List[Endpoint] = [
             },
             {"name": "days", "type": "int", "default": 7, "min": 1, "max": 30},
             {"name": "limit", "type": "int", "default": 20, "min": 1, "max": 50},
-        ],
-    },
-    {
-        "name": "News by ticker",
-        "group": "Advanced Data Suite",
-        "method": "GET",
-        "path": "/news/ticker",
-        "auth": "key",
-        "description": "News stories mentioning a stock symbol.",
-        "params": [
-            {"name": "symbol", "type": "symbol", "required": True},
-            {
-                "name": "country",
-                "type": "select",
-                "default": "in",
-                "options": ["in", "us"],
-            },
-            {"name": "days", "type": "int", "default": 7, "min": 1, "max": 30},
         ],
     },
     {

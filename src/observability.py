@@ -23,7 +23,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 # GET paths whose responses are server-cached/semi-static — they get an ETag
 # (conditional-request support) and short Cache-Control (audit P2-10).
-_CACHEABLE_GET_PATHS = {"/news/stories", "/news/ticker", "/search-categories", "/announcements"}
+_CACHEABLE_GET_PATHS = {"/news", "/search-categories", "/announcements"}
 # Macro sub-routes that are immutable for a given date window (historical series,
 # whole-market valuation, RBI rate snapshot). Live routes (/macro/overview,
 # /macro/indices, /macro/indices/{symbol}, /macro/flows, ...) stay uncached.

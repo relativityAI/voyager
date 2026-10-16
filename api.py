@@ -112,7 +112,7 @@ openapi_tags = [
     {"name": "Explore", "description": "Enumerations of available categories (sources, countries, etc.)."},
     {"name": "Financials", "description": "Financial statements and computed financial metrics."},
     {"name": "Macro", "description": "India macro market endpoints: index universe, valuations, flows, turnover, F&O and rates."},
-    {"name": "Corporate Actions", "description": "Corporate announcements and shareholding patterns."},
+    {"name": "Filings & Disclosures", "description": "Corporate announcements and shareholding patterns."},
     {"name": "Price", "description": "OHLCV price history and technical analysis."},
     {"name": "Advanced Data Suite", "description": "News, social signals and document structuring."},
 ]
@@ -472,8 +472,7 @@ _RESPONSE_MODELS = {
     ("GET", "/macro/rates"): MacroRates,
     ("GET", "/announcements"): Announcements,
     ("GET", "/shareholdings"): Snapshot,
-    ("GET", "/news/stories"): Doc,
-    ("GET", "/news/ticker"): Doc,
+    ("GET", "/news"): Doc,
     ("GET", "/documents/pages"): Doc,
     ("GET", "/social/reddit"): Doc,
     ("GET", "/social/youtube/search"): Doc,
@@ -673,7 +672,7 @@ response reports `bars_available` (the true underlying count) plus
 `downsampled` so you know when granularity was reduced. A 1-week/1-month
 window is always returned in full.
 
-### Corporate Actions
+### Filings & Disclosures
 
 - `GET /announcements?symbol=X` — corporate announcements for a stock.
 - `GET /shareholdings?symbol=X&source=nse` — shareholding pattern parsed from XBRL (values in percent).
@@ -683,8 +682,7 @@ window is always returned in full.
 - `GET /history?symbol=X&interval=daily` — raw OHLCV price history (intraday via `interval`).
 - `GET /technicals?symbol=X` — end-to-end technical report (~61 sections: trend, indicators, levels).
 - `GET /technicals/chart?symbol=X&period=weekly` — close + SMA20/50/200 + volume as a PNG.
-- `GET /news/stories` — latest market news stories (RSS, cached).
-- `GET /news/ticker?symbol=X` — news stories mentioning a stock.
+- `GET /news` — recent market news stories (RSS, cached). Pass `?symbol=X` for stock-specific news.
 - `GET /social/reddit?symbol=X` · `GET /social/youtube/search?symbol=X` — mention search.
 - `GET /social/youtube/transcript?video_id=Y` — YouTube captions.
 - `GET /documents/pages?url=&pages=3,5-9` — per-page text of a PDF previously cached by `voyager ingest documents <url>`.
@@ -1072,7 +1070,7 @@ async def financial_metrics_endpoint(
 @app.get(
     "/announcements",
     summary="Fetch corporate announcements for a stock",
-    tags=["Corporate Actions"],
+    tags=["Filings & Disclosures"],
     dependencies=[Depends(require_api_key)],
 )
 async def announcements(
@@ -1104,7 +1102,7 @@ async def announcements(
 @app.get(
     "/shareholdings",
     summary="Fetch shareholding pattern for a stock (parsed from XBRL)",
-    tags=["Corporate Actions"],
+    tags=["Filings & Disclosures"],
     dependencies=[Depends(require_api_key)],
 )
 async def shareholdings(
@@ -1115,31 +1113,20 @@ async def shareholdings(
 
 
 @app.get(
-    "/news/stories",
-    summary="Latest news stories for a market (RSS, cached)",
+    "/news",
+    summary="Recent market or stock news stories (RSS, cached)",
     tags=["Advanced Data Suite"],
     dependencies=[Depends(require_api_key)],
 )
-async def news_stories(
+async def news(
+    symbol: Optional[str] = Query(None, description=_SYM),
     country: Literal["us", "in"] = Query("in", description="Market"),
     days: int = Query(7, ge=1, le=30),
     limit: int = Query(20, ge=1, le=50),
 ):
+    if symbol:
+        return await get_ticker_mentions(symbol, country, days)
     return await get_news_stories(country, days, limit)
-
-
-@app.get(
-    "/news/ticker",
-    summary="News stories mentioning a stock symbol",
-    tags=["Advanced Data Suite"],
-    dependencies=[Depends(require_api_key)],
-)
-async def news_ticker(
-    symbol: str = Query(..., description=_SYM),
-    country: Literal["us", "in"] = Query("in", description="Market"),
-    days: int = Query(7, ge=1, le=30),
-):
-    return await get_ticker_mentions(symbol, country, days)
 
 
 @app.get(

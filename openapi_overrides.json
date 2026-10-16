@@ -217,27 +217,15 @@
       }
     }
   },
-  "/news/stories": {
+  "/news": {
     "GET": {
-      "summary": "Latest news stories for a market (RSS, cached)",
-      "description": "Recent market news stories from RSS feeds. Cached for freshness.\n\n**Agent usage:**\n- `?country=in` \u2014 India market (default) or `us`\n- `?days=7` \u2014 lookback window (1-30 days)\n- `?limit=20` \u2014 max stories (1-50)",
+      "summary": "Recent market or stock news stories (RSS, cached)",
+      "description": "Market-wide RSS news, or stories mentioning a stock when `?symbol` is passed. Cached for freshness.\n\n**Agent usage:**\n- `?country=in` \u2014 India market (default) or `us`\n- `?symbol=RELIANCE` \u2014 stock-specific news\n- `?days=7` \u2014 lookback window (1-30 days)\n- `?limit=20` \u2014 max stories (1-50)",
       "openapi_extra": {
         "x-agent-tags": [
           "news"
         ],
-        "x-typical-use-case": "Get recent market news for context"
-      }
-    }
-  },
-  "/news/ticker": {
-    "GET": {
-      "summary": "News stories mentioning a stock symbol",
-      "description": "News stories that mention a specific stock symbol.\n\n**Agent usage:**\n- `?symbol=RELIANCE&days=7` \u2014 recent news for a stock\n- `?country=us` \u2014 US market news",
-      "openapi_extra": {
-        "x-agent-tags": [
-          "news"
-        ],
-        "x-typical-use-case": "Track news sentiment for a specific stock"
+        "x-typical-use-case": "Get recent market or stock news for context"
       }
     }
   },

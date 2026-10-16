@@ -18,8 +18,7 @@ from loguru import logger
 from sqlalchemy import func, select
 
 from src.db.engine import get_session_factory
-from src.db.models import IncomeStatement, NSEStockMetadata
-from src.services._common import NotFoundError, UpstreamError
+from src.db.models import IncomeStatement, StockMetadata
 from src.services.nse import STATEMENT_MODELS
 from src.services.sec import _one_company
 from src.utils.helpers import utcnow
@@ -915,9 +914,10 @@ async def pull_sec_data(
             upserted += len(rows)
 
         result = await session.execute(
-            select(NSEStockMetadata).where(
-                NSEStockMetadata.symbol == symbol,
-                NSEStockMetadata.source == "SEC",
+            select(StockMetadata).where(
+                StockMetadata.symbol == symbol,
+                StockMetadata.exchange == exchange,
+                StockMetadata.country == "US",
             )
         )
         meta = result.scalar_one_or_none()
@@ -939,10 +939,10 @@ async def pull_sec_data(
                 meta.updated_at = now
             else:
                 session.add(
-                    NSEStockMetadata(
+                    StockMetadata(
                         symbol=symbol,
-                        source="SEC",
                         exchange=exchange,
+                        country="US",
                         last_pull=now,
                         previous_pulls=[],
                         created_at=now,

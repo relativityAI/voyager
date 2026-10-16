@@ -11,14 +11,19 @@ from typing import Any, Dict
 from sqlalchemy import select
 
 from src.db.engine import get_session_factory
-from src.db.models import NewsArticle
+from src.db.models import MacroNews, StockNews
 
 from ._common import InvalidRequestError
 
 
-def _matches(article: Dict[str, Any], pattern: str) -> bool:
-    haystack = f"{article.get('title', '')} {article.get('summary', '')}"
-    return bool(re.search(pattern, haystack, re.IGNORECASE))
+def _story_dict(d) -> dict:
+    return {
+        "title": d.title,
+        "source": d.source,
+        "url": d.url,
+        "summary": d.summary or "",
+        "published_at": d.published_at.isoformat() if d.published_at else None,
+    }
 
 
 async def get_news_stories(
@@ -36,27 +41,18 @@ async def get_news_stories(
     factory = get_session_factory()
     async with factory() as session:
         result = await session.execute(
-            select(NewsArticle)
+            select(MacroNews)
             .where(
-                NewsArticle.country == country,
-                NewsArticle.published_at
+                MacroNews.country == country,
+                MacroNews.published_at
                 >= (datetime.now() - timedelta(days=days)),
             )
-            .order_by(NewsArticle.published_at.desc().nulls_last())
+            .order_by(MacroNews.published_at.desc().nulls_last())
             .limit(limit)
         )
         docs = result.scalars().all()
 
-    stories = [
-        {
-            "title": d.title,
-            "source": d.source,
-            "url": d.url,
-            "summary": d.summary or "",
-            "published_at": d.published_at.isoformat() if d.published_at else None,
-        }
-        for d in docs
-    ]
+    stories = [_story_dict(d) for d in docs]
     return {
         "country": country,
         "days": days,
@@ -75,35 +71,52 @@ async def get_ticker_mentions(
     if country not in ("us", "in"):
         raise InvalidRequestError("country must be 'us' or 'in'")
 
+    pattern = re.compile(rf"(?<![A-Za-z]){re.escape(symbol)}(?![A-Za-z])")
+    since = datetime.now() - timedelta(days=days)
+
     factory = get_session_factory()
     async with factory() as session:
-        result = await session.execute(
-            select(NewsArticle)
-            .where(
-                NewsArticle.country == country,
-                NewsArticle.published_at
-                >= (datetime.now() - timedelta(days=days)),
+        # Symbol-tagged news (stock_news) matches the symbol column directly.
+        stock_rows = (
+            await session.execute(
+                select(StockNews).where(
+                    StockNews.symbol == symbol,
+                    StockNews.country == country,
+                    StockNews.published_at >= since,
+                ).order_by(StockNews.published_at.desc().nulls_last()).limit(50)
             )
-            .order_by(NewsArticle.published_at.desc().nulls_last())
-        )
-        docs = result.scalars().all()
+        ).scalars().all()
 
-    pattern = rf"(?<![A-Za-z]){re.escape(symbol)}(?![A-Za-z])"
-    matches = [
-        {
+        # Market news (macro_news) that mention the symbol in title/summary.
+        macro_rows = (
+            await session.execute(
+                select(MacroNews).where(
+                    MacroNews.country == country,
+                    MacroNews.published_at >= since,
+                ).order_by(MacroNews.published_at.desc().nulls_last()).limit(200)
+            )
+        ).scalars().all()
+
+    seen = set()
+    matches = []
+    for d in list(stock_rows) + list(macro_rows):
+        if d.url in seen:
+            continue
+        payload = {
             "title": d.title,
-            "source": d.source,
-            "url": d.url,
             "summary": d.summary or "",
-            "published_at": d.published_at.isoformat() if d.published_at else None,
+            "url": d.url,
         }
-        for d in docs
-        if _matches({"title": d.title, "summary": d.summary or ""}, pattern)
-    ]
+        if not pattern.search(f"{payload['title']} {payload['summary']}"):
+            continue
+        seen.add(d.url)
+        matches.append(_story_dict(d))
+
+    matches.sort(key=lambda s: s["published_at"] or "", reverse=True)
     return {
         "symbol": symbol,
         "country": country,
         "days": days,
         "count": len(matches),
-        "stories": matches,
+        "stories": matches[:50],
     }

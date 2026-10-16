@@ -2,7 +2,7 @@ import csv
 import os
 from typing import Any, Dict, Optional
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import select
 
 from src.db.engine import get_session_factory
 from src.db.models import DataCatalog
@@ -147,11 +147,9 @@ async def search_symbols(
             "country": r.country,
             "price_records": r.price_records,
             "filing_records": r.filing_records,
-            "announcement_records": r.announcement_records,
+            "filing_last_updated": r.filing_last_updated.isoformat() if r.filing_last_updated else None,
             "total_records": r.total_records,
             "price_last_updated": r.price_last_updated.isoformat() if r.price_last_updated else None,
-            "filing_last_updated": r.filing_last_updated.isoformat() if r.filing_last_updated else None,
-            "announcement_last_updated": r.announcement_last_updated.isoformat() if r.announcement_last_updated else None,
         }
         for r in rows
     ]

@@ -39,12 +39,12 @@ class TestNews:
             "api.get_news_stories",
             new=AsyncMock(return_value={"country": "in", "stories": []}),
         ):
-            resp = client.get("/news/stories?country=in")
+            resp = client.get("/news?country=in")
         assert resp.status_code == 200
         assert resp.json()["stories"] == []
 
     def test_stories_rejects_bad_country(self):
-        resp = client.get("/news/stories?country=xx")
+        resp = client.get("/news?country=xx")
         # country is a spec enum now -> FastAPI 422 problem+json
         assert resp.status_code == 422
         assert resp.json()["code"] == "validation_error"
@@ -54,7 +54,7 @@ class TestNews:
             "api.get_ticker_mentions",
             new=AsyncMock(return_value={"symbol": "TEST", "stories": []}),
         ):
-            resp = client.get("/news/ticker?symbol=TEST&country=in")
+            resp = client.get("/news?symbol=TEST&country=in")
         assert resp.status_code == 200
         assert resp.json()["symbol"] == "TEST"
 
@@ -115,7 +115,7 @@ class TestCachingAndPagination:
             "api.get_news_stories",
             new=AsyncMock(return_value={"country": "in", "stories": []}),
         ):
-            resp = client.get("/news/stories?country=in")
+            resp = client.get("/news?country=in")
         assert resp.status_code == 200
         assert resp.headers.get("Cache-Control") == "public, max-age=120"
         assert resp.headers.get("ETag", "").startswith('"')
@@ -123,9 +123,9 @@ class TestCachingAndPagination:
     def test_conditional_get_returns_304(self):
         body = {"country": "in", "stories": []}
         with patch("api.get_news_stories", new=AsyncMock(return_value=body)):
-            first = client.get("/news/stories?country=in")
+            first = client.get("/news?country=in")
             second = client.get(
-                "/news/stories?country=in",
+                "/news?country=in",
                 headers={"If-None-Match": first.headers["ETag"]},
             )
         assert second.status_code == 304
@@ -134,10 +134,10 @@ class TestCachingAndPagination:
         """Proxies like Render's rewrite ETags to W/ form; 304 must still fire."""
         body = {"country": "in", "stories": []}
         with patch("api.get_news_stories", new=AsyncMock(return_value=body)):
-            first = client.get("/news/stories?country=in")
+            first = client.get("/news?country=in")
             weak = 'W/' + first.headers["ETag"]
             second = client.get(
-                "/news/stories?country=in",
+                "/news?country=in",
                 headers={"If-None-Match": weak},
             )
         assert second.status_code == 304
