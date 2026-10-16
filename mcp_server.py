@@ -246,59 +246,6 @@ async def financial_metrics(
 
 
 @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
-async def financial_metrics_batch(
-    symbols: str,
-    source: str = "nse",
-    consolidated: bool = True,
-    filing_type: str = "ttm",
-    fields: str | None = None,
-) -> dict:
-    """Computed financial metrics for several symbols in one call.
-
-    Mirrors ``GET /financial-metrics/batch``. Returns per-symbol metrics keyed by
-    symbol; symbols that fail individually report an ``error`` entry instead of
-    failing the whole request.
-
-    Args:
-        symbols: Comma-separated symbols, e.g. 'RELIANCE,TCS' (max 10).
-        source: 'nse' (default) or 'sec'.
-        consolidated: Consolidated (default).
-        filing_type: 'quarterly', 'annual', or 'ttm' (trailing twelve months).
-        fields: Comma-separated metric names to keep (e.g.
-            'price_to_earnings_ratio,return_on_equity'). Unknown names are ignored;
-            price/identifier meta is always kept.
-    """
-    wanted = [s.strip().upper() for s in (symbols or "").split(",") if s.strip()]
-    if not wanted:
-        raise ValueError("Provide at least one symbol")
-    if len(wanted) > 10:
-        raise ValueError("Max 10 symbols per batch call")
-    meta = {"symbol", "exchange", "country", "source", "consolidated", "filing_type"}
-    results = {}
-    for sym in wanted:
-        try:
-            data = await financial_metrics(
-                sym, None, source, consolidated, filing_type,
-            )
-            if fields and isinstance(data, dict):
-                wanted_fields = {f.strip() for f in fields.split(",") if f.strip()}
-                data = {
-                    k: v for k, v in data.items()
-                    if k in meta or k in wanted_fields
-                }
-            results[sym] = data
-        except Exception as exc:  # noqa: BLE001 — isolate per-symbol failures
-            results[sym] = {"error": str(exc)}
-    return {
-        "source": source.lower(),
-        "consolidated": consolidated,
-        "filing_type": filing_type,
-        "count": len(results),
-        "metrics": results,
-    }
-
-
-@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 async def get_announcements(
     symbol: str, source: str = "nse", market: str = "equities"
 ) -> dict:

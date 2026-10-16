@@ -46,7 +46,6 @@ from src.schemas import (
     MacroRates,
     MacroTurnover,
     MacroValuationOrBreadth,
-    MetricsBatch,
     OkResponse,
     SearchResponse,
     Snapshot,
@@ -457,7 +456,6 @@ _RESPONSE_MODELS = {
         "description": "PNG chart image (close + SMA20/50/200 + volume)",
     },
     ("GET", "/financial-metrics"): Snapshot,
-    ("GET", "/financial-metrics/batch"): MetricsBatch,
     ("GET", "/macro/overview"): MacroOverview,
     ("GET", "/macro/indices"): MacroIndices,
     ("GET", "/macro/indices/{symbol}"): MacroIndexQuoteOrSnapshot,
@@ -649,8 +647,7 @@ The `Price` group is intentionally omitted here.
 
 - `GET /financials?symbol=X&source=nse&consolidated=true&filing_type=quarterly|annual` — merged income/balance/cash-flow for a stock; `history=true` returns all stored periods (`report_period_gte`/`report_period_lte` window them).
 - `GET /financials/income-statements` · `GET /financials/balance-sheets` · `GET /financials/cash-flows` — per-statement, with `limit`/`offset` pagination and the same window/consolidation params.
-- `GET /financial-metrics?symbol=X` — computed ratios, margins and growth snapshot; `?fields=` narrows it.
-- `GET /financial-metrics/batch?symbols=A,B,C` — metrics for several symbols in one call (max 10).
+    - `GET /financial-metrics?symbol=X` — computed ratios, margins and growth snapshot; `?fields=` narrows it.
 
 ### Macro (NSE India / niftyindices / RBI)
 
@@ -1057,45 +1054,6 @@ async def financial_metrics_endpoint(
         return [_filter_fields(d, fields) for d in data]
     return _filter_fields(data, fields)
 
-
-@app.get(
-    "/financial-metrics/batch",
-    summary="Computed financial metrics for several symbols in one call",
-    tags=["Financials"],
-    dependencies=[Depends(require_api_key)],
-)
-async def financial_metrics_batch(
-    symbols: str = Query(
-        ..., description="Comma-separated symbols, e.g. 'RELIANCE,TCS' (max 10)"
-    ),
-    source: str = Query("nse", description=_SRC),
-    consolidated: bool = Query(True),
-    filing_type: Literal["quarterly", "annual", "ttm"] = Query(
-        "ttm", description="Window: 'quarterly', 'annual' or 'ttm' (trailing twelve months)"
-    ),
-    fields: str = Query(None, description="Comma-separated metric names to keep"),
-):
-    wanted = [s.strip().upper() for s in symbols.split(",") if s.strip()]
-    if not wanted:
-        raise InvalidRequestError("Provide at least one symbol")
-    if len(wanted) > 10:
-        raise InvalidRequestError("Max 10 symbols per batch call")
-    results = {}
-    for sym in wanted:
-        try:
-            results[sym] = _filter_fields(
-                await financial_metrics(sym, None, source, consolidated, filing_type),
-                fields,
-            )
-        except ServiceError as exc:
-            results[sym] = {"error": exc.message, "status": exc.status_code}
-    return {
-        "source": source.lower(),
-        "consolidated": consolidated,
-        "filing_type": filing_type,
-        "count": len(results),
-        "metrics": results,
-    }
 
 
 @app.get(

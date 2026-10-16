@@ -229,41 +229,6 @@ DATA: List[Endpoint] = [
         ],
     },
     {
-        "name": "Financial metrics batch",
-        "group": "Computed metrics",
-        "method": "GET",
-        "path": "/financial-metrics/batch",
-        "auth": "key",
-        "description": "Computed metrics for up to 10 symbols in one call; a bad symbol reports per-symbol error without failing the batch.",
-        "params": [
-            {
-                "name": "symbols",
-                "type": "text",
-                "required": True,
-                "help": "Comma-separated, e.g. RELIANCE,TCS",
-            },
-            {
-                "name": "source",
-                "type": "select",
-                "default": "nse",
-                "options": ["nse", "sec"],
-            },
-            {"name": "consolidated", "type": "bool", "default": True},
-            {
-                "name": "filing_type",
-                "type": "select",
-                "default": "ttm",
-                "options": ["ttm", "quarterly", "annual"],
-            },
-            {
-                "name": "fields",
-                "type": "text",
-                "default": "",
-                "help": "Comma-separated metric names to keep.",
-            },
-        ],
-    },
-    {
         "name": "Announcements",
         "group": "Corporate actions",
         "method": "GET",

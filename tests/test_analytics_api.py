@@ -204,36 +204,6 @@ class TestFieldFilterAndBatch:
             "price_to_earnings_ratio": 20.0,
         }
 
-    def test_batch_returns_per_symbol_results(self):
-        full = {"symbol": "X", "filing_type": "ttm", "price_to_earnings_ratio": 20.0}
-        with patch("api.financial_metrics", new=AsyncMock(return_value=full)):
-            resp = client.get(
-                "/financial-metrics/batch?symbols=X,Y&fields=price_to_earnings_ratio"
-            )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["count"] == 2
-        assert body["metrics"]["X"]["price_to_earnings_ratio"] == 20.0
-
-    def test_batch_survives_symbol_errors(self):
-        from src.services._common import NotFoundError
-
-        async def _fail(sym, *a, **kw):
-            if sym == "BAD":
-                raise NotFoundError("no data")
-            return {"symbol": sym, "filing_type": "ttm"}
-
-        with patch("api.financial_metrics", new=AsyncMock(side_effect=_fail)):
-            resp = client.get("/financial-metrics/batch?symbols=OK,BAD")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["metrics"]["OK"]["symbol"] == "OK"
-        assert body["metrics"]["BAD"]["status"] == 404
-
-    def test_batch_rejects_too_many(self):
-        syms = ",".join(f"S{i}" for i in range(11))
-        resp = client.get(f"/financial-metrics/batch?symbols={syms}")
-        assert resp.status_code == 400
 
 
 
