@@ -79,6 +79,7 @@ from src.services import (
     macro_overview,
     macro_rates,
     macro_turnover,
+    search_indices,
     search_symbols,
 )
 from src.services._common import _validate_source
@@ -440,6 +441,7 @@ _RESPONSE_MODELS = {
     ("GET", "/metrics"): OkResponse,
     ("GET", "/llms.txt"): {"type": "string", "description": "llms.txt agent guide"},
     ("GET", "/search-categories"): ListResponse,
+    ("GET", "/search-indices/{index}"): ListResponse,
     ("GET", "/search-symbol"): SearchResponse,
     ("GET", "/financials"): Snapshot,
     ("GET", "/financials/income-statements"): StatementPage,
@@ -638,7 +640,8 @@ The `Price` group is intentionally omitted here.
 
 ### Lists
 
-- `GET /search-categories?category=sources|countries&source=nse` — enumerate available categories.
+- `GET /search-categories?category=sources|countries|indices&source=nse` — enumerate available categories.
+- `GET /search-indices/{index}?source=nse` — list symbols in an index (e.g. nifty, nasdaq).
 - `GET /search?q=relian&source=nse&limit=20` — case-insensitive symbol search against the stored universe.
 
 ### Financials
@@ -715,13 +718,26 @@ def llms_txt():
     dependencies=[Depends(require_api_key)],
 )
 def search_categories_endpoint(
-    category: Literal["sources", "countries"] = Query(
+    category: Literal["sources", "countries", "indices"] = Query(
         "sources",
         description="Category to enumerate",
     ),
     source: str = Query("nse", description=_SRC),
 ):
     return list_category(category, source=source)
+
+
+@app.get(
+    "/search-indices/{index}",
+    summary="List symbols in an index (e.g. nifty, nasdaq, smallcap)",
+    tags=["Explore"],
+    dependencies=[Depends(require_api_key)],
+)
+def search_indices_endpoint(
+    index: str,
+    source: str = Query("nse", description=_SRC),
+):
+    return search_indices(index, source)
 
 
 @app.get(

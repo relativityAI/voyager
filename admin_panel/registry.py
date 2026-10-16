@@ -143,6 +143,28 @@ LIST: List[Endpoint] = [
             {"name": "limit", "type": "int", "default": 20, "min": 1, "max": 50},
         ],
     },
+    {
+        "name": "Search indices",
+        "group": "Explore",
+        "method": "GET",
+        "path": "/search-indices/{index}",
+        "auth": "key",
+        "description": "List symbols in an index (e.g. nifty, nasdaq, smallcap).",
+        "params": [
+            {
+                "name": "index",
+                "type": "text",
+                "required": True,
+                "help": "Index name, e.g. 'nifty'",
+            },
+            {
+                "name": "source",
+                "type": "select",
+                "default": "nse",
+                "options": ["nse", "sec"],
+            },
+        ],
+    },
 ]
 
 DATA: List[Endpoint] = [

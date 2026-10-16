@@ -12,6 +12,13 @@ from ._common import SOURCE_COUNTRY, InvalidRequestError, _validate_source
 ASSETS_DIR = os.path.join(os.path.dirname(__file__), "..", "assets")
 SOURCES_CSV = os.path.join(ASSETS_DIR, "sources.csv")
 COUNTRIES_CSV = os.path.join(ASSETS_DIR, "countries.csv")
+INDICES_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data", "indices")
+
+# Index files scoped to source market (NSE=IN, SEC=US).
+_INDEX_FILES: Dict[str, list[str]] = {
+    "nse": ["nifty", "midcap", "smallcap"],
+    "sec": ["nasdaq", "snp"],
+}
 
 
 def _load_csv(path: str) -> list[dict]:
@@ -19,6 +26,38 @@ def _load_csv(path: str) -> list[dict]:
     with open(path, newline="") as f:
         for row in csv.DictReader(f):
             rows.append({k: v.strip() for k, v in row.items()})
+    return rows
+
+
+def _index_entries(source: str) -> list[dict]:
+    source = source.lower()
+    out = []
+    for index in _INDEX_FILES.get(source, []):
+        path = os.path.join(INDICES_DIR, f"{index}.txt")
+        count = 0
+        if os.path.exists(path):
+            with open(path) as f:
+                count = sum(1 for line in f if line.strip())
+        out.append({"index": index, "symbols": count})
+    return out
+
+
+def _read_index(index: str) -> list[dict]:
+    path = os.path.join(INDICES_DIR, f"{index}.txt")
+    rows = []
+    if not os.path.exists(path):
+        return rows
+    with open(path) as f:
+        for line in f:
+            parts = line.split()
+            if parts:
+                rows.append(
+                    {
+                        "symbol": parts[0],
+                        "exchange": parts[1] if len(parts) > 1 else "",
+                        "country": parts[2] if len(parts) > 2 else "",
+                    }
+                )
     return rows
 
 
@@ -31,6 +70,7 @@ LIST_PROVIDERS: Dict[str, Any] = {
         for r in _load_csv(COUNTRIES_CSV)
         if r["id"] == SOURCE_COUNTRY.get(source, source).lower()
     ],
+    "indices": lambda source: _index_entries(source),
 }
 
 
@@ -49,6 +89,23 @@ def list_category(
         "source": source,
         "data": LIST_PROVIDERS[category](source),
     }
+
+
+def search_indices(index: str, source: str = "nse") -> Dict[str, Any]:
+    """List symbols in an index file (e.g. 'nifty', 'nasdaq').
+
+    Scoped to source market; returns 404-style empty when the index file is
+    missing for the source.
+    """
+    _, source = _validate_source(None, source)
+    source = source.lower()
+    valid = _INDEX_FILES.get(source, [])
+    if index not in valid:
+        raise InvalidRequestError(
+            f"Unknown index '{index}' for source '{source}'. Available: {valid}"
+        )
+    rows = _read_index(index)
+    return {"index": index, "source": source, "count": len(rows), "symbols": rows}
 
 
 async def search_symbols(

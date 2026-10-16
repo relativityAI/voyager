@@ -279,5 +279,22 @@ def list_categories(
         _fatal(exc)
 
 
+@app.command()
+def search_indices(
+    index: str,
+    source: str = typer.Option("nse"),
+):
+    """List symbols in an index (GET /search-indices/{index})."""
+    try:
+        _print(
+            _client().get(
+                f"/search-indices/{index}",
+                params={"source": source},
+            )
+        )
+    except VoyagerError as exc:
+        _fatal(exc)
+
+
 if __name__ == "__main__":
     app()

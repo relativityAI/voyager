@@ -7,7 +7,7 @@ from ._common import (
     UnsupportedSourceError,
     UpstreamError,
 )
-from .lists import list_category, search_symbols
+from .lists import list_category, search_indices, search_symbols
 from .macro import (
     macro_breadth,
     macro_derivatives,
@@ -49,6 +49,7 @@ __all__ = [
     "ServiceUnavailableError",
     "UpstreamError",
     "list_category",
+    "search_indices",
     "search_symbols",
     "get_news_stories",
     "get_ticker_mentions",

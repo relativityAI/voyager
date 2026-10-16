@@ -103,6 +103,7 @@ def test_enums_are_in_the_spec():
     assert param("/search-categories", "get", "category")["schema"]["enum"] == [
         "sources",
         "countries",
+        "indices",
     ]
     assert param("/history", "get", "period")["schema"]["enum"] == [
         "3mo",
