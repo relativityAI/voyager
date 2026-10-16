@@ -75,7 +75,6 @@ from src.services import (
     macro_index_quote,
     macro_index_returns,
     macro_index_valuation,
-    macro_indices,
     macro_market_valuation,
     macro_overview,
     macro_rates,
@@ -457,7 +456,6 @@ _RESPONSE_MODELS = {
     },
     ("GET", "/financial-metrics"): Snapshot,
     ("GET", "/macro/overview"): MacroOverview,
-    ("GET", "/macro/indices"): MacroIndices,
     ("GET", "/macro/indices/{symbol}"): MacroIndexQuoteOrSnapshot,
     ("GET", "/macro/indices/{symbol}/history"): MacroHistory,
     ("GET", "/macro/indices/{symbol}/valuation"): MacroHistory,
@@ -652,7 +650,6 @@ The `Price` group is intentionally omitted here.
 ### Macro (NSE India / niftyindices / RBI)
 
 - `GET /macro/overview` — one-shot dashboard: top indices, FII/DII flows, cash turnover, repo rate.
-- `GET /macro/indices?limit=50` — full NSE index universe with live snapshot, valuation and breadth.
 - `GET /macro/indices/{symbol}` — live snapshot for one index (e.g. `NIFTY 50`).
 - `GET /macro/indices/{symbol}/history` — daily OHLC history.
 - `GET /macro/indices/{symbol}/valuation` — historical PE/PB/DY.
@@ -1195,19 +1192,6 @@ _MACRO_DATES = "Window (YYYY-MM-DD). Default: trailing 1 year."
 )
 async def macro_overview_endpoint(country: str = _COUNTRY):
     return await macro_overview(country)
-
-
-@app.get(
-    "/macro/indices",
-    summary="Full NSE index universe with live snapshot, valuation and breadth",
-    tags=["Macro"],
-    dependencies=[Depends(require_api_key)],
-)
-async def macro_indices_endpoint(
-    country: str = _COUNTRY,
-    limit: int = Query(None, ge=1, le=300, description="Max indices to return"),
-):
-    return await macro_indices(country, limit)
 
 
 @app.get(
