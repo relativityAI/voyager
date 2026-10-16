@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 from sqlalchemy import func, or_, select
 
 from src.db.engine import get_session_factory
-from src.db.models import StockDataLedger
+from src.db.models import DataCatalog
 
 from ._common import SOURCE_COUNTRY, InvalidRequestError, _validate_source
 
@@ -75,10 +75,10 @@ async def search_symbols(
     factory = get_session_factory()
     async with factory() as session:
         stmt = (
-            select(StockDataLedger)
-            .where(StockDataLedger.symbol.ilike(pattern))
-            .where(StockDataLedger.country == country)
-            .order_by(StockDataLedger.total_records.desc(), StockDataLedger.symbol)
+            select(DataCatalog)
+            .where(DataCatalog.symbol.ilike(pattern))
+            .where(DataCatalog.country == country)
+            .order_by(DataCatalog.total_records.desc(), DataCatalog.symbol)
             .limit(limit)
         )
         rows = (await session.execute(stmt)).scalars().all()

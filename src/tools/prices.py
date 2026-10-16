@@ -15,7 +15,7 @@ from src.db.models import (
     NSEAnnouncement,
     PriceOHLCV,
     Shareholding,
-    StockDataLedger,
+    DataCatalog,
 )
 
 _EXCHANGE_TO_YF_SUFFIX = {
@@ -184,7 +184,7 @@ async def _update_ledger(symbol: str, exchange: str, country: str) -> None:
         total = price_count + filing_count + announcement_count
         now = datetime.utcnow()
 
-        stmt = pg_insert(StockDataLedger).values(
+        stmt = pg_insert(DataCatalog).values(
             symbol=symbol,
             exchange=exchange,
             country=country,

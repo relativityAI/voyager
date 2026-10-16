@@ -392,7 +392,7 @@ async def pull_announcements(symbol: str) -> Dict[str, Any]:
     Announcements are high-frequency, so there is no freshness gate — the
     unique index on md5(raw_data) dedups, and re-running only re-fetches the
     two announcement lists. Already-stored announcements are skipped (nothing
-    fetched again); the StockDataLedger is refreshed with the new count.
+    fetched again); the DataCatalog is refreshed with the new count.
     """
     symbol = symbol.upper()
     endpoint_breakdown: Dict[str, Any] = {}

@@ -170,7 +170,7 @@ async def record_pull(symbol: str, exchange: str, country: str) -> None:
         NSEAnnouncement,
         PriceOHLCV,
         Shareholding,
-        StockDataLedger,
+        DataCatalog,
     )
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -199,7 +199,7 @@ async def record_pull(symbol: str, exchange: str, country: str) -> None:
     total = price_count + filing_count + announcement_count
     now = datetime.utcnow()
     async with factory() as session:
-        stmt = pg_insert(StockDataLedger).values(
+        stmt = pg_insert(DataCatalog).values(
             symbol=symbol,
             exchange=exchange,
             country=country,
